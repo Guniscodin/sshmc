@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcpanel"
+version = "0.1.0"
+description = "Minecraft Server Panel"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "jinja2",
+    "python-multipart",
+    "pydantic",
+    "httpx",
+    "gitpython",
+    "psutil",
+    "aiofiles",
+    "websockets",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

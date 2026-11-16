@@ -1,0 +1,1217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>SSHMC Panel</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <style>[x-cloak] { display: none !important; }</style>
+</head>
+<body x-data="panelApp()" x-init="init()">
+    
+    <div class="dashboard-layout">
+        <!-- SIDEBAR -->
+        <aside class="sidebar">
+            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 2rem;">
+                <i class="fa-solid fa-server" style="color: var(--primary); font-size: 1.5rem;"></i>
+                <h1 style="margin: 0;">SSHMC</h1>
+            </div>
+            
+            <h2>Create Instance</h2>
+            <form id="create-profile-form" hx-post="/api/profiles" hx-swap="none" hx-disabled-elt="find button[type=submit]" @submit="isSubmitting = true"
+                  x-data="formApp()">
+            
+                <div class="form-group">
+                    <label for="create-name">Profile Name</label>
+                    <input id="create-name" type="text" name="name" placeholder="e.g. Survival SMP" required maxlength="50">
+                </div>
+                
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                    <div class="form-group">
+                        <label for="create-build">Build</label>
+                        <select id="create-build" name="build" x-model="currentBuild" @change="fetchLoaders()">
+                            <option value="vanilla">Vanilla</option>
+                            <option value="fabric">Fabric</option>
+                            <option value="forge">Forge</option>
+                            <option value="neoforge">NeoForge</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="create-mc-version">MC Version</label>
+                        <input id="create-mc-version" type="text" name="mc_version" placeholder="1.20.1" required maxlength="32"
+                               x-model="currentMcVersion" @input="loaderPending = true" @input.debounce.500ms="fetchLoaders()">
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="create-loader-version">Loader Version</label>
+                    <select id="create-loader-version" name="loader_version" x-model="selectedLoader" :disabled="isLoading || loaders.length === 0"
+                            x-html="loaders.map(v => `<option value='${v}'>${v}</option>`).join('')">
+                    </select>
+                    <div x-show="isLoading" style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;">Fetching versions...</div>
+                    <div x-show="loaderError" x-text="loaderError" role="status" style="font-size: 0.8rem; color: var(--danger); margin-top: 4px;"></div>
+                </div>
+
+                <div class="form-group">
+                    <label for="create-git-url">Git Repo (Optional)</label>
+                    <input id="create-git-url" type="text" name="git_url" placeholder="https://github.com/... or git@host:repo.git">
+                </div>
+
+                <div class="form-group">
+                    <label>Additional Mod Download Links (Optional)</label>
+                    <input type="hidden" name="mod_downloads" :value="serializeModDownloads()">
+                    <template x-for="(download, index) in modDownloads" :key="index">
+                        <div class="mod-download-row">
+                            <input type="url" x-model="download.url" placeholder="https://site.example/mod.jar" aria-label="Mod download URL" maxlength="2048">
+                            <input type="text" x-model="download.filename" placeholder="Filename (optional)" aria-label="Mod filename" maxlength="180">
+                            <input type="text" x-model="download.sha256" placeholder="Expected SHA-256 (optional)" aria-label="Expected SHA-256 checksum" maxlength="64">
+                            <button type="button" class="danger icon-btn" @click="removeModDownload(index)" :disabled="modDownloads.length === 1" aria-label="Remove mod link"><i class="fa-solid fa-xmark"></i></button>
+                        </div>
+                    </template>
+                    <button type="button" class="quiet-button" @click="addModDownload()" :disabled="modDownloads.length >= 200"><i class="fa-solid fa-plus"></i> Add another mod link</button>
+                    <p class="form-hint">Up to 200 public HTTPS JAR links (1 GiB each). Git mods sync first, then these are added and cached locally. Filename and SHA-256 are optional. Saving never restarts a running server; apply with Start or Restart.</p>
+                </div>
+
+                <div class="form-group">
+                    <label for="create-java-path">Java Path</label>
+                    <input id="create-java-path" type="text" name="java_path" value="java">
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                    <div class="form-group">
+                        <label for="create-ram">RAM (MB)</label>
+                        <input id="create-ram" type="number" name="ram_mb" value="2048" min="512" max="32768">
+                    </div>
+                    <div class="form-group">
+                        <label for="create-port">Port</label>
+                        <input id="create-port" type="number" name="port" min="1024" max="65535" placeholder="Auto assign">
+                    </div>
+                </div>
+
+                <button type="submit" :disabled="isLoading || loaderPending || isSubmitting || (currentBuild !== 'vanilla' && (!loaders.length || !selectedLoader))" style="width: 100%; padding: 0.8rem; font-size: 1rem;">
+                    <span x-show="!isSubmitting"><i class="fa-solid fa-plus"></i> Create Instance</span>
+                    <span x-show="isSubmitting"><i class="fa-solid fa-spinner fa-spin"></i> Creating profile...</span>
+                </button>
+            </form>
+        </aside>
+
+        <!-- MAIN CONTENT -->
+        <main class="main-content">
+            <div id="stats-bar" class="stats-bar" hx-get="/api/profiles/stats" hx-trigger="every 3s, refresh" hx-swap="innerHTML">
+                <div class="stat-card"><span class="stat-label">Total Servers</span><span class="stat-value">-</span></div>
+                <div class="stat-card"><span class="stat-label">Running</span><span class="stat-value">-</span></div>
+                <div class="stat-card"><span class="stat-label">Allocated RAM</span><span class="stat-value">-</span></div>
+            </div>
+
+            <section class="monitoring-section" x-data="monitoringApp()" x-init="init()" aria-labelledby="monitoring-title">
+                <div class="monitoring-heading">
+                    <div><h2 id="monitoring-title">Machine Monitoring</h2><span class="form-hint" x-text="stats.timestamp ? `Updated ${new Date(stats.timestamp).toLocaleTimeString()}` : 'Waiting for the first sample…'"></span></div>
+                    <span class="monitoring-load" x-show="stats.host && stats.host.load_average" x-text="stats.host && stats.host.load_average ? `Load ${stats.host.load_average.map(value => value.toFixed(2)).join(' · ')}` : ''"></span>
+                </div>
+                <div class="monitoring-grid">
+                    <article class="monitor-card">
+                        <div class="monitor-card-heading"><h3>CPU</h3><strong x-text="stats.host ? `${stats.host.cpu_percent.toFixed(1)}%` : '—'"></strong></div>
+                        <div class="monitor-core-grid" x-show="stats.host">
+                            <template x-for="(usage, index) in (stats.host ? stats.host.cpu_per_core_percent : [])" :key="index">
+                                <div class="monitor-core"><span x-text="`Core ${index + 1}`"></span><div class="monitor-track"><i :style="`width: ${Math.min(100, usage)}%`"></i></div><b x-text="`${usage.toFixed(0)}%`"></b></div>
+                            </template>
+                        </div>
+                        <div class="monitor-sparkline"><span>10 minute CPU</span><svg viewBox="0 0 120 32" preserveAspectRatio="none" role="img" aria-label="Host CPU history"><polyline :points="cpuHistoryPoints()"></polyline></svg></div>
+                    </article>
+                    <article class="monitor-card">
+                        <div class="monitor-card-heading"><h3>Memory</h3><strong x-text="stats.host ? `${stats.host.memory.percent.toFixed(1)}% used` : '—'"></strong></div>
+                        <div class="monitor-metric-line" x-show="stats.host"><span>Used</span><b x-text="formatBytes(stats.host ? stats.host.memory.used_bytes : 0)"></b></div>
+                        <div class="monitor-metric-line" x-show="stats.host"><span>Available</span><b x-text="formatBytes(stats.host ? stats.host.memory.available_bytes : 0)"></b></div>
+                        <div class="monitor-metric-line" x-show="stats.host"><span>Total</span><b x-text="formatBytes(stats.host ? stats.host.memory.total_bytes : 0)"></b></div>
+                        <div class="monitor-track monitor-large-track"><i :class="ramSeverity()" :style="`width: ${stats.host ? stats.host.memory.percent : 0}%`"></i></div>
+                        <div class="monitor-sparkline"><span>10 minute RAM</span><svg viewBox="0 0 120 32" preserveAspectRatio="none" role="img" aria-label="Host memory history"><polyline :points="ramHistoryPoints()"></polyline></svg></div>
+                    </article>
+                    <article class="monitor-card monitor-disk-card">
+                        <div class="monitor-card-heading"><h3>Disk</h3><span class="form-hint">One row per filesystem</span></div>
+                        <template x-for="disk in stats.disks || []" :key="`${disk.device}:${disk.mountpoint}`">
+                            <div class="monitor-disk-row">
+                                <div class="monitor-disk-title"><strong :title="disk.device" x-text="`${disk.mountpoint} · ${disk.filesystem || 'filesystem'}`"></strong><span x-show="disk.is_data_filesystem">Panel data</span><b x-text="`${disk.percent.toFixed(1)}%`"></b></div>
+                                <div class="monitor-track monitor-large-track"><i :class="diskSeverity(disk)" :style="`width: ${disk.percent}%`"></i></div>
+                                <div class="monitor-disk-detail"><span x-text="`${formatBytes(disk.used_bytes)} used`"></span><span x-text="`${formatBytes(disk.free_bytes)} free / ${formatBytes(disk.total_bytes)}`"></span></div>
+                            </div>
+                        </template>
+                        <p class="form-hint" x-show="!stats.disks || !stats.disks.length">No disk data available.</p>
+                    </article>
+                </div>
+                <div class="monitoring-footnote" x-show="stats.profile_sizes_timestamp">Folder sizes updated <span x-text="stats.profile_sizes_timestamp ? new Date(stats.profile_sizes_timestamp).toLocaleTimeString() : ''"></span>; directory scans run every minute.</div>
+            </section>
+
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+                <h2 style="margin: 0;">Your Instances</h2>
+                <form method="post" action="/logout"><button type="submit" class="quiet-button">Log out</button></form>
+            </div>
+            
+            <div id="profile-list" class="profile-grid" hx-get="/api/profiles/partials/list" hx-trigger="every 3s, refresh" hx-swap="innerHTML">
+                {% include 'partials/profile_list.html' %}
+            </div>
+
+            <section class="modpack-library" x-data="modPacksApp()" x-init="init()" aria-labelledby="modpack-library-title">
+                <div class="modpack-section-heading">
+                    <div><h2 id="modpack-library-title">Mod Pack Library</h2><p>Import a ZIP, individual JARs, or a folder of mods and configs.</p></div>
+                    <span class="modpack-count" x-text="`${packs.length} packs`"></span>
+                </div>
+                <div class="modpack-dropzone" :class="{ 'is-dragging': dragging }"
+                     @dragover.prevent="dragging = true" @dragleave.prevent="dragging = false"
+                     @drop.prevent="dragging = false; handleDrop($event)"
+                     @click="$refs.multiPicker.click()" @keydown.enter="$refs.multiPicker.click()" @keydown.space.prevent="$refs.multiPicker.click()"
+                     tabindex="0" role="button" aria-label="Choose mod files or drop a ZIP, JARs, or folder here">
+                    <i class="fa-solid fa-cloud-arrow-up"></i>
+                    <strong>Drop a ZIP, JARs, or a mod folder here</strong>
+                    <span>ZIP limit <span x-text="uploadLimit"></span>; each JAR limit <span x-text="formatSize(maxSingleModBytes)"></span>. Files stream in batches of up to three.</span>
+                    <input x-ref="multiPicker" type="file" accept=".zip,.jar,application/zip" multiple hidden @click.stop @change="handleFiles(Array.from($event.target.files)); $event.target.value = ''">
+                    <input x-ref="folderPicker" type="file" webkitdirectory directory multiple hidden @click.stop @change="handleFiles(Array.from($event.target.files), true); $event.target.value = ''">
+                </div>
+                <div class="modpack-picker-actions"><button type="button" class="quiet-button" @click="$refs.multiPicker.click()">Choose files</button><button type="button" class="quiet-button" @click="$refs.folderPicker.click()">Choose folder</button></div>
+                <div class="modpack-upload-status" x-show="uploading || uploadId || uploadSession || importResult || uploadError || skippedFiles.length" x-cloak>
+                    <div class="modpack-progress-row" x-show="uploading || uploadId || uploadSession">
+                        <span x-text="uploading ? 'Uploading ' + selectedFilename : 'Ready to import ' + selectedFilename"></span>
+                        <button type="button" class="quiet-button" @click="cancelUpload()" x-show="uploading">Cancel upload</button>
+                        <button type="button" class="quiet-button" @click="discardUpload()" x-show="!uploading && (uploadId || uploadSession) && !importing">Cancel</button>
+                    </div>
+                    <progress max="100" :value="uploadId ? uploadProgress : batchProgress()" x-show="uploading"></progress>
+                    <span class="form-hint" x-show="uploading" x-text="(uploadId ? uploadProgress : batchProgress()) + '%' "></span>
+                    <div class="modpack-file-progress" x-show="fileUploads.length">
+                        <template x-for="file in fileUploads" :key="file.key">
+                            <div class="modpack-file-progress-row"><span x-text="file.label"></span><progress max="100" :value="file.progress"></progress><b x-text="file.status"></b></div>
+                        </template>
+                    </div>
+                    <div class="modpack-warning" x-show="skippedFiles.length"><strong>Skipped files</strong><ul><template x-for="(name, index) in skippedFiles" :key="index"><li x-text="name"></li></template></ul></div>
+                    <div class="modpack-import-fields" x-show="uploadId || uploadSession">
+                        <label x-show="!uploadSession || destinationMode === 'new'">Pack name<input type="text" x-model="packName" maxlength="100" placeholder="e.g. Survival Fabric 1.21"></label>
+                        <label x-show="uploadSession">Destination
+                            <select x-model="destinationMode" @change="setTargetFromPack()"><option value="new">Create a new pack</option><option value="existing" :disabled="!packs.length">Add to an existing pack</option></select>
+                        </label>
+                        <label x-show="uploadSession && destinationMode === 'existing'">Existing pack
+                            <select x-model="selectedPack" @change="setTargetFromPack()"><option value="">Choose pack</option><template x-for="pack in packs" :key="pack.name"><option :value="pack.name" x-text="pack.name"></option></template></select>
+                        </label>
+                        <label>Pack target loader
+                            <select x-model="targetLoader" :disabled="uploadSession && destinationMode === 'existing'"><option value="">Choose loader</option><option value="vanilla">Vanilla</option><option value="fabric">Fabric</option><option value="forge">Forge</option><option value="neoforge">NeoForge</option></select>
+                        </label>
+                        <button type="button" class="success" @click="importPack()" :disabled="importing || (!uploadId && !uploadSession) || (uploadId && (!packName.trim() || !targetLoader)) || (uploadSession && destinationMode === 'new' && (!packName.trim() || !targetLoader)) || (uploadSession && destinationMode === 'existing' && !selectedPack)">
+                            <span x-show="!importing" x-text="uploadSession && destinationMode === 'existing' ? 'Add files to pack' : 'Import pack'"></span><span x-show="importing"><i class="fa-solid fa-spinner fa-spin"></i> Publishing...</span>
+                        </button>
+                    </div>
+                    <p class="form-error" x-show="uploadError" x-text="uploadError"></p>
+                    <div class="modpack-conflict" x-show="conflict" x-cloak>
+                        <button type="button" class="danger" @click="importPack(true)" :disabled="importing">Replace existing pack</button>
+                        <button type="button" class="quiet-button" @click="conflict = false">Choose another name</button>
+                    </div>
+                    <div class="modpack-result" x-show="importResult" x-cloak>
+                        <strong x-text="importResult ? `${importResult.jar_count} JARs imported into ${importResult.name}` : ''"></strong>
+                        <span x-show="importResult" x-text="importResult ? `Loaders: Fabric ${importResult.loader_counts.fabric}, Forge ${importResult.loader_counts.forge}, NeoForge ${importResult.loader_counts.neoforge}, unknown ${importResult.loader_counts.unknown}` : ''"></span>
+                        <ul x-show="importResult && importResult.warnings.length"><template x-for="(warning, index) in (importResult ? importResult.warnings : [])" :key="index"><li x-text="warning"></li></template></ul>
+                    </div>
+                </div>
+                <div class="modpack-list" x-show="packs.length">
+                    <template x-for="pack in packs" :key="pack.name">
+                        <article class="modpack-card">
+                            <div class="modpack-card-content">
+                                <strong x-text="pack.name"></strong>
+                                <span x-text="pack.jar_count + ' JARs · ' + pack.target_loader + ' · Fabric ' + pack.loader_counts.fabric + ', Forge ' + pack.loader_counts.forge + ', NeoForge ' + pack.loader_counts.neoforge + ', unknown ' + pack.loader_counts.unknown"></span>
+                                <div class="modpack-card-actions"><button type="button" class="quiet-button" @click="selectPackForAdd(pack.name)">Add files</button><button type="button" class="danger icon-btn" @click="deletePack(pack.name)" :aria-label="'Delete ' + pack.name" title="Delete pack"><i class="fa-solid fa-trash"></i></button></div>
+                                <details class="modpack-jar-details">
+                                    <summary>View JARs</summary>
+                                    <p class="form-hint">Profiles linked to this pack receive changes on their next Start or Restart.</p>
+                                    <template x-for="jar in pack.jars || []" :key="jar.filename">
+                                        <div class="modpack-jar-row"><div><strong x-text="jar.filename"></strong><span x-text="formatSize(jar.size_bytes) + ' · ' + jar.loader"></span></div><button type="button" class="danger icon-btn" @click="deletePackJar(pack.name, jar.filename)" :aria-label="'Delete ' + jar.filename" title="Delete JAR"><i class="fa-solid fa-trash"></i></button></div>
+                                    </template>
+                                    <p class="form-hint" x-show="!pack.jars || !pack.jars.length">This pack contains no JAR files.</p>
+                                </details>
+                            </div>
+                        </article>
+                    </template>
+                </div>
+                <p class="form-hint" x-show="!packs.length && !loadingPacks">No mod packs imported yet.</p>
+            </section>
+        </main>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+    <div x-show="modDownloadPromptOpen" class="console-modal" x-cloak role="presentation">
+        <div role="dialog" aria-modal="true" aria-labelledby="mod-download-title" class="decision-modal">
+            <h3 id="mod-download-title" style="margin-top: 0; color: var(--warning, #f0ad4e);"><i class="fa-solid fa-triangle-exclamation"></i> Mod download failed</h3>
+            <p>SSHMC could not download <strong x-text="modDownloadFailure.filename"></strong>.</p>
+            <p class="form-error" x-text="modDownloadFailure.message"></p>
+            <p>Continue startup without this linked download? If the missing mod changes terrain or world data, creating the world without it may make a later retry incompatible. Choosing Stop keeps the repo mods and any already downloaded mods in place.</p>
+            <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 1.5rem;">
+                <button type="button" class="quiet-button" @click="cancelModDownloadStartup()" :disabled="isResolvingModFailure">Stop startup</button>
+                <button type="button" class="success" @click="continueWithoutFailedMod()" :disabled="isResolvingModFailure">
+                    <span x-show="!isResolvingModFailure">Continue without this download</span>
+                    <span x-show="isResolvingModFailure"><i class="fa-solid fa-spinner fa-spin"></i> Continuing...</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- EDIT MODAL -->
+    <div x-show="editModalOpen" class="console-modal" x-cloak @keydown.escape.window="editModalOpen = false">
+        <div id="edit-modal-container" role="dialog" aria-modal="true" aria-labelledby="edit-title" style="background: var(--surface); width: min(600px, 94vw); max-height: 92vh; overflow-y: auto; border-radius: var(--radius); border: 1px solid var(--border); padding: 2rem;" x-data="editApp()">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+                <h3 id="edit-title" style="margin: 0; color: var(--primary);"><i class="fa-solid fa-pen-to-square"></i> Edit Profile</h3>
+                <button @click="$dispatch('close-edit')" aria-label="Close edit profile" style="background: none; border: none; font-size: 1.5rem; color: var(--text-muted); cursor: pointer;"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            
+            <form @submit.prevent="saveEdit()">
+                <div class="form-group">
+                <label for="edit-name">Profile Name</label>
+                    <input id="edit-name" type="text" x-model="profile.name" required maxlength="50">
+                </div>
+                
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                    <div class="form-group">
+                    <label for="edit-build">Build (replaces server files if changed)</label>
+                        <select id="edit-build" x-model="profile.build" @change="fetchLoaders()">
+                            <option value="vanilla">Vanilla</option>
+                            <option value="fabric">Fabric</option>
+                            <option value="forge">Forge</option>
+                            <option value="neoforge">NeoForge</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                    <label for="edit-mc-version">MC Version (replaces server files if changed)</label>
+                        <input id="edit-mc-version" type="text" x-model="profile.mc_version" @input="loaderPending = true" @input.debounce.500ms="fetchLoaders()" required maxlength="32">
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Loader Version</label>
+                    <select x-model="profile.loader_version" :disabled="isLoading || loaders.length === 0"
+                            x-html="loaders.map(v => `<option value='${v}'>${v}</option>`).join('')">
+                    </select>
+                    <div x-show="loaderError" x-text="loaderError" role="status" class="form-error"></div>
+                </div>
+
+                <div x-show="needsReset()" class="world-backup-option">
+                    <label><input type="checkbox" x-model="profile.backup_worlds_on_change"> Back up world folders before replacing this server</label>
+                    <p>On the next Start, unchecked worlds are removed. Mods, config, and datapacks are backed up either way. The connected repository is disconnected so you can attach a version-compatible one.</p>
+                    <p>Changing server build or version also clears configured direct mod links.</p>
+                    <p x-show="profile.modpack_name">The selected mod pack stays linked, but its contents may not match the new build or Minecraft version. Review compatibility warnings after saving.</p>
+                </div>
+
+                <div class="world-backup-option">
+                    <label><input type="checkbox" x-model="profile.backup_on_restart"> Create a smart backup on Restart</label>
+                    <p>Backups keep the newest configured set and stay under the per-profile size cap when possible. A required pre-wipe backup is still attempted when replacing an incompatible install.</p>
+                    <label><input type="checkbox" x-model="profile.exclude_regenerable_backup_folders"> Exclude cache, crash-reports, and logs folders</label>
+                </div>
+
+                <div class="form-group">
+                    <label>Git Repo</label>
+                    <input type="text" x-model="profile.git_url">
+                </div>
+
+                <div class="form-group">
+                    <label>Reusable Mod Pack</label>
+                    <select x-model="profile.modpack_name" :disabled="needsReset()">
+                        <option value="">No mod pack</option>
+                        <template x-for="pack in packs" :key="pack.name"><option :value="pack.name" x-text="`${pack.name} (${pack.jar_count} JARs)`"></option></template>
+                    </select>
+                    <div class="form-hint" x-show="profile.modpack_name">The pack replaces all JARs in the profile's mods folder after Git sync. Direct-link mods are added afterward.</div>
+                    <div class="form-hint" x-show="needsReset()">Save the version change first to keep the current pack linked, then change packs separately if needed.</div>
+                    <div class="modpack-warning" x-show="packWarnings().length" x-cloak role="status">
+                        <strong>Check pack compatibility</strong>
+                        <ul><template x-for="(warning, index) in packWarnings()" :key="index"><li x-text="warning"></li></template></ul>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Additional Mod Download Links</label>
+                    <template x-for="(download, index) in profile.mod_downloads || []" :key="index">
+                        <div class="mod-download-row">
+                            <input type="url" x-model="download.url" @input="download.skip_on_start = false" placeholder="https://site.example/mod.jar" aria-label="Mod download URL" maxlength="2048">
+                            <input type="text" x-model="download.filename" @input="download.skip_on_start = false" placeholder="Filename (optional)" aria-label="Mod filename" maxlength="180">
+                            <input type="text" x-model="download.sha256" @input="download.skip_on_start = false" placeholder="Expected SHA-256 (optional)" aria-label="Expected SHA-256 checksum" maxlength="64">
+                            <button type="button" class="danger icon-btn" @click="removeModDownload(index)" :disabled="(profile.mod_downloads || []).length === 1" aria-label="Remove mod link"><i class="fa-solid fa-xmark"></i></button>
+                        </div>
+                        <div x-show="download.skip_on_start" class="form-hint" role="status">Skipped after a previous failed startup. Save after editing this link or click “Retry on next start” to try it again.</div>
+                        <button type="button" class="quiet-button" x-show="download.skip_on_start" @click="download.skip_on_start = false">Retry on next start</button>
+                    </template>
+                    <button type="button" class="quiet-button" @click="addModDownload()" :disabled="(profile.mod_downloads || []).length >= 200"><i class="fa-solid fa-plus"></i> Add another mod link</button>
+                    <p class="form-hint">Changes apply on your next manual Start or Restart. Existing downloaded files are cached and are not fetched again each time.</p>
+                    <button type="button" class="quiet-button" @click="clearModDownloadCache()" :disabled="isClearingCache || isSaving"><span x-show="!isClearingCache">Forget cache and retry links next start</span><span x-show="isClearingCache"><i class="fa-solid fa-spinner fa-spin"></i> Clearing cache...</span></button>
+                </div>
+
+                <div class="form-group">
+                    <label>Java Path</label>
+                    <input type="text" x-model="profile.java_path">
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+                    <div class="form-group">
+                        <label>RAM (MB)</label>
+                        <input type="number" x-model="profile.ram_mb">
+                    </div>
+                    <div class="form-group">
+                        <label>Port</label>
+                        <input type="number" x-model="profile.port">
+                    </div>
+                </div>
+
+                <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 2rem;">
+                    <button type="button" @click="$dispatch('close-edit')" style="background: var(--border);">Cancel</button>
+                    <button type="submit" class="success" :disabled="isSaving || isLoading || loaderPending || !profile.loader_version || (profile.build !== 'vanilla' && (!loaders.length || !!loaderError))">
+                        <span x-show="!isSaving">Save Changes</span>
+                        <span x-show="isSaving"><i class="fa-solid fa-spinner fa-spin"></i> Saving...</span>
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- CONSOLE MODAL -->
+    <div x-show="consoleOpen" class="console-modal" x-cloak @keydown.escape.window="closeConsole()">
+        <div class="console-container" role="dialog" aria-modal="true" aria-labelledby="console-title">
+            <div class="console-header">
+                <h3 id="console-title" style="margin:0; font-family: monospace; display: flex; align-items: center; gap: 10px;">
+                    <i class="fa-solid fa-terminal"></i> Server Console
+                </h3>
+                <div class="console-actions">
+                    <label for="log-limit">Visible lines</label>
+                    <select id="log-limit" :value="maxLogs" @change="setLogLimit($event.target.value)" aria-label="Maximum visible log lines">
+                        <option value="100">100</option><option value="500">500</option><option value="1000">1,000</option><option value="2000">2,000</option><option value="5000">5,000</option>
+                    </select>
+                    <button @click="closeConsole()" aria-label="Close server console" class="danger icon-btn"><i class="fa-solid fa-xmark"></i></button>
+                </div>
+            </div>
+            <div id="console-output" class="console-output">
+                <template x-for="log in logs">
+                    <div x-text="log"></div>
+                </template>
+            </div>
+        </div>
+    </div>
+
+    <!-- DELETE MODAL -->
+    <div x-show="deleteModalOpen" class="console-modal" x-cloak @keydown.escape.window="deleteModalOpen = false">
+        <div role="dialog" aria-modal="true" aria-labelledby="delete-title" style="background: var(--surface); width: min(420px, 94vw); max-height: 92vh; overflow-y: auto; border-radius: var(--radius); border: 1px solid var(--border); padding: 2rem;">
+            <h3 id="delete-title" style="margin-top: 0; color: var(--danger); display: flex; align-items: center; gap: 10px;">
+                <i class="fa-solid fa-triangle-exclamation"></i> Delete Profile
+            </h3>
+            <p>Are you sure you want to delete <strong x-text="deleteName"></strong>?</p>
+            <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: 10px;">
+                A running server will be stopped first. If it cannot be stopped safely, deletion is blocked.
+            </p>
+            
+            <label style="display: flex; align-items: center; gap: 10px; margin: 1.5rem 0; cursor: pointer; background: var(--bg); padding: 1rem; border-radius: 8px; border: 1px solid var(--border);">
+                <input type="checkbox" x-model="deleteFiles" style="width: auto;">
+                <span style="font-size: 0.9rem;">Also delete world and server files permanently?</span>
+            </label>
+            
+            <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                <button @click="deleteModalOpen = false" style="background: var(--border);">Cancel</button>
+                <button class="danger" @click="confirmDelete()" :disabled="isDeleting">
+                    <span x-show="!isDeleting">Delete Profile</span>
+                    <span x-show="isDeleting"><i class="fa-solid fa-spinner fa-spin"></i> Deleting...</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function showToast(message) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.hidden = false;
+            clearTimeout(window.panelToastTimer);
+            window.panelToastTimer = setTimeout(() => { toast.hidden = true; }, 5000);
+        }
+        async function responseMessage(response, fallback) {
+            try {
+                const data = typeof response.json === 'function'
+                    ? await response.json()
+                    : JSON.parse(response.responseText || '{}');
+                if (typeof data.detail === 'string') return data.detail;
+                if (data.detail) return JSON.stringify(data.detail);
+            } catch (_) {}
+            return fallback;
+        }
+        document.body.addEventListener('htmx:afterRequest', async (event) => {
+            const detail = event.detail;
+            const path = detail.pathInfo && detail.pathInfo.requestPath || '';
+            if (detail.elt && detail.elt.id === 'create-profile-form') {
+                const form = detail.elt;
+                const formState = Alpine.$data(form);
+                formState.isSubmitting = false;
+                if (detail.successful) {
+                    form.reset();
+                    formState.resetForm();
+                    htmx.trigger('#profile-list', 'refresh');
+                    htmx.trigger('#stats-bar', 'refresh');
+                    showToast('Profile created. Press Start to install the server and create its world.');
+                }
+            }
+            if (!detail.successful) {
+                if (detail.xhr.status === 401) { window.location.assign('/login'); return; }
+                if (detail.xhr.status === 409) {
+                    try {
+                        const payload = JSON.parse(detail.xhr.responseText || '{}');
+                        if (payload.detail && payload.detail.code === 'mod_download_failed') {
+                            Alpine.$data(document.body).showModDownloadFailure(payload.detail, path);
+                            htmx.trigger('#profile-list', 'refresh');
+                            htmx.trigger('#stats-bar', 'refresh');
+                            return;
+                        }
+                    } catch (_) {}
+                }
+                showToast(await responseMessage(detail.xhr, `Request failed (${detail.xhr.status}).`));
+            } else if (path.includes('/api/lifecycle/')) {
+                htmx.trigger('#profile-list', 'refresh');
+                htmx.trigger('#stats-bar', 'refresh');
+                if (path.endsWith('/cancel-start')) {
+                    showToast('Startup cancelled. Mods and existing world files were kept; late cancellation can leave a partial world.');
+                }
+            }
+        });
+
+        // Startup readiness is monitored by the panel after the request returns.
+        // Surface its later failures and refresh the card state without keeping
+        // the original Start request open for several minutes.
+        window.setInterval(async () => {
+            try {
+                const response = await fetch('/api/lifecycle/startup-events');
+                if (response.status === 401) { window.location.assign('/login'); return; }
+                if (!response.ok) return;
+                const { events = [] } = await response.json();
+                for (const item of events) {
+                    showToast(`${item.profile_name}: ${item.message}`);
+                    htmx.trigger('#profile-list', 'refresh');
+                    htmx.trigger('#stats-bar', 'refresh');
+                }
+            } catch (_) {}
+        }, 2000);
+
+        function monitoringApp() {
+            return {
+                stats: { host: null, disks: [] }, history: [], busy: false, timer: null, visibilityHandler: null,
+                init() {
+                    this.refresh();
+                    this.startPolling();
+                    this.visibilityHandler = () => {
+                        if (document.hidden) this.stopPolling();
+                        else { this.refresh(); this.startPolling(); }
+                    };
+                    document.addEventListener('visibilitychange', this.visibilityHandler);
+                },
+                startPolling() {
+                    if (this.timer || document.hidden) return;
+                    this.timer = window.setInterval(() => this.refresh(), 3000);
+                },
+                stopPolling() {
+                    if (this.timer) window.clearInterval(this.timer);
+                    this.timer = null;
+                },
+                destroy() {
+                    this.stopPolling();
+                    if (this.visibilityHandler) document.removeEventListener('visibilitychange', this.visibilityHandler);
+                },
+                async refresh() {
+                    if (document.hidden || this.busy) return;
+                    this.busy = true;
+                    try {
+                        const [statsResponse, historyResponse] = await Promise.all([
+                            fetch('/api/monitoring/stats'), fetch('/api/monitoring/history')
+                        ]);
+                        if (statsResponse.status === 401 || historyResponse.status === 401) { window.location.assign('/login'); return; }
+                        if (!statsResponse.ok || !historyResponse.ok) return;
+                        this.stats = await statsResponse.json();
+                        this.history = (await historyResponse.json()).samples || [];
+                        window.latestMonitoringStats = this.stats;
+                        const panel = Alpine.$data(document.body);
+                        panel.monitoringAvailableBytes = this.stats.host ? this.stats.host.memory.available_bytes : null;
+                        this.updateServerCards();
+                    } catch (_) {
+                        // Keep the last successful sample visible during brief API interruptions.
+                    } finally { this.busy = false; }
+                },
+                formatBytes(bytes) {
+                    if (!Number.isFinite(bytes) || bytes < 0) return '—';
+                    if (bytes < 1024) return `${bytes} B`;
+                    const units = ['KiB', 'MiB', 'GiB', 'TiB'];
+                    let value = bytes;
+                    let unit = -1;
+                    do { value /= 1024; unit++; } while (value >= 1024 && unit < units.length - 1);
+                    return `${value.toFixed(1)} ${units[unit]}`;
+                },
+                ramSeverity() {
+                    if (!this.stats.host) return '';
+                    const available = this.stats.host.memory.available_bytes;
+                    const thresholds = this.stats.thresholds;
+                    if (available < thresholds.ram_available_critical_bytes) return 'is-critical';
+                    if (available < thresholds.ram_available_warning_bytes) return 'is-warning';
+                    return '';
+                },
+                diskSeverity(disk) {
+                    if (disk.percent > this.stats.thresholds.disk_critical_percent) return 'is-critical';
+                    if (disk.percent > this.stats.thresholds.disk_warning_percent) return 'is-warning';
+                    return '';
+                },
+                sparkPoints(values) {
+                    if (!values.length) return '0,30 120,30';
+                    const max = Math.max(100, ...values);
+                    return values.map((value, index) => {
+                        const x = values.length === 1 ? 120 : index * 120 / (values.length - 1);
+                        const y = 30 - Math.max(0, Math.min(100, value / max * 100)) * 0.28;
+                        return `${x.toFixed(1)},${y.toFixed(1)}`;
+                    }).join(' ');
+                },
+                cpuHistoryPoints() { return this.sparkPoints(this.history.map(sample => sample.host.cpu_percent)); },
+                ramHistoryPoints() {
+                    return this.sparkPoints(this.history.map(sample => sample.host.memory_total_bytes
+                        ? sample.host.memory_used_bytes / sample.host.memory_total_bytes * 100 : 0));
+                },
+                updateServerCards() {
+                    const sizes = new Map((this.stats.profile_sizes || []).map(item => [item.profile_id, item]));
+                    for (const card of document.querySelectorAll('[data-server-monitor]')) {
+                        const id = card.dataset.serverMonitor;
+                        const server = (this.stats.servers || []).find(item => item.profile_id === id);
+                        const size = sizes.get(id);
+                        const cpu = server && server.available
+                            ? `${server.cpu_percent_one_core.toFixed(1)}% core · ${server.cpu_percent_machine.toFixed(1)}% host`
+                            : 'Process unavailable';
+                        const rss = server && server.available
+                            ? `${this.formatBytes(server.rss_bytes)} / ${this.formatBytes(server.ram_allocation_bytes)}`
+                            : '—';
+                        card.querySelector('[data-monitor-cpu]').textContent = cpu;
+                        card.querySelector('[data-monitor-rss]').textContent = rss;
+                        card.querySelector('[data-monitor-server-size]').textContent = size ? this.formatBytes(size.server_bytes) : 'Calculating…';
+                        card.querySelector('[data-monitor-world-size]').textContent = size ? this.formatBytes(size.world_bytes) : 'Calculating…';
+                        card.querySelector('[data-monitor-backup-size]').textContent = size ? this.formatBytes(size.backups_bytes) : 'Calculating…';
+                    }
+                }
+            };
+        }
+
+        // --- Form Logic (Create Profile) ---
+        function formApp() {
+            return {
+                currentBuild: 'vanilla', currentMcVersion: '', loaders: ['latest'], selectedLoader: 'latest', isLoading: false, loaderPending: false, loaderError: '', isSubmitting: false, loaderRequest: 0,
+                modDownloads: [{ url: '', filename: '', sha256: '', skip_on_start: false }],
+                addModDownload() { if (this.modDownloads.length < 200) this.modDownloads.push({ url: '', filename: '', sha256: '', skip_on_start: false }); },
+                removeModDownload(index) { if (this.modDownloads.length > 1) this.modDownloads.splice(index, 1); },
+                serializeModDownloads() { return JSON.stringify(this.modDownloads.filter(item => item.url.trim()).map(item => ({ url: item.url.trim(), filename: item.filename.trim() || null, sha256: item.sha256.trim() || null, skip_on_start: false }))); },
+                async fetchLoaders() {
+                    const requestId = ++this.loaderRequest;
+                    this.loaderPending = false;
+                    this.loaderError = '';
+                    if (this.currentBuild === 'vanilla') { this.loaders = ['latest']; this.selectedLoader = 'latest'; this.isLoading = false; return; }
+                    if (this.currentMcVersion.trim().length < 3) { this.loaders = []; this.selectedLoader = ''; this.isLoading = false; return; }
+                    this.isLoading = true;
+                    try {
+                        const query = new URLSearchParams({ build: this.currentBuild, mc_version: this.currentMcVersion.trim() });
+                        const res = await fetch(`/api/profiles/loaders?${query}`);
+                        if (!res.ok) throw new Error(`Loader lookup failed (${res.status}).`);
+                        const data = await res.json();
+                        if (requestId !== this.loaderRequest) return;
+                        this.loaders = data.versions || [];
+                        this.selectedLoader = this.loaders.length > 0 ? this.loaders[0] : '';
+                        if (!this.loaders.length) this.loaderError = data.error || 'No compatible loader versions were returned.';
+                    } catch (e) { if (requestId === this.loaderRequest) { this.loaders = []; this.selectedLoader = ''; this.loaderError = e.message || 'Could not load loader versions.'; } }
+                    finally { if (requestId === this.loaderRequest) this.isLoading = false; }
+                },
+                resetForm() { this.currentBuild = 'vanilla'; this.currentMcVersion = ''; this.loaders = ['latest']; this.selectedLoader = 'latest'; this.loaderPending = false; this.loaderError = ''; this.isSubmitting = false; this.modDownloads = [{ url: '', filename: '', sha256: '', skip_on_start: false }]; }
+            }
+        }
+
+        function modPacksApp() {
+            return {
+                packs: [], loadingPacks: true, uploadLimit: '4 GiB', maxUploadBytes: 4 * 1024 ** 3,
+                maxSingleModBytes: 1024 ** 3, uploading: false, importing: false, uploadProgress: 0,
+                uploadId: '', uploadSession: '', selectedFilename: '', packName: '', targetLoader: '',
+                destinationMode: 'new', selectedPack: '', fileUploads: [], skippedFiles: [], fileXhrs: [],
+                uploadError: '', importResult: null, conflict: false, dragging: false, xhr: null, importController: null,
+                async init() { await this.loadPacks(); },
+                async loadPacks() {
+                    this.loadingPacks = true;
+                    try {
+                        const response = await fetch('/api/modpacks');
+                        if (response.status === 401) { window.location.assign('/login'); return; }
+                        if (!response.ok) throw new Error(await responseMessage(response, 'Could not load mod packs.'));
+                        const data = await response.json();
+                        this.packs = data.packs || [];
+                        const bytes = data.max_upload_bytes || 4 * 1024 ** 3;
+                        this.maxUploadBytes = bytes;
+                        this.maxSingleModBytes = data.max_single_mod_upload_bytes || 1024 ** 3;
+                        this.uploadLimit = bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GiB` : `${Math.round(bytes / 1024 ** 2)} MiB`;
+                    } catch (error) { showToast(error.message || 'Could not load mod packs.'); }
+                    finally { this.loadingPacks = false; }
+                },
+                async handleFiles(files, fromFolder = false) {
+                    if (!files.length || this.uploading || this.importing) return;
+                    const zips = fromFolder ? [] : files.filter(file => file.name.toLowerCase().endsWith('.zip'));
+                    if (zips.length) {
+                        if (files.length !== 1 || zips.length !== 1) {
+                            this.uploadError = 'Upload a ZIP by itself. JARs and folders can be selected together.';
+                            return;
+                        }
+                        if (this.uploadId || this.uploadSession) await this.discardUpload();
+                        this.chooseFile(zips[0]);
+                        return;
+                    }
+                    if (this.uploadId || this.uploadSession) await this.discardUpload();
+                    this.importResult = null; this.uploadError = ''; this.conflict = false; this.skippedFiles = [];
+                    const records = [];
+                    const seen = new Set();
+                    for (const file of files) {
+                        const raw = file._sshRelativePath || file.webkitRelativePath || file.name;
+                        const parts = raw.replaceAll('\\', '/').split('/').filter(part => part && part !== '.');
+                        if (parts.some(part => part === '..' || part.includes('..'))) {
+                            this.skippedFiles.push(file.name + ' (unsafe path)');
+                            continue;
+                        }
+                        const contentIndex = parts.findIndex(part => part === 'config' || part === 'datapacks');
+                        let relativePath = '';
+                        if (file.name.toLowerCase().endsWith('.jar')) {
+                            relativePath = file.name;
+                        } else if (contentIndex >= 0 && contentIndex < parts.length - 1) {
+                            relativePath = parts.slice(contentIndex).join('/');
+                        } else {
+                            this.skippedFiles.push(raw);
+                            continue;
+                        }
+                        const key = (relativePath.toLowerCase().endsWith('.jar') ? 'mods/' + file.name : relativePath).toLowerCase();
+                        if (seen.has(key)) {
+                            this.skippedFiles.push(raw + ' (duplicate destination)');
+                            continue;
+                        }
+                        seen.add(key);
+                        if (file.name.toLowerCase().endsWith('.jar') && file.size > this.maxSingleModBytes) {
+                            this.skippedFiles.push(raw + ' (larger than ' + this.formatSize(this.maxSingleModBytes) + ')');
+                            continue;
+                        }
+                        records.push({ file, filename: file.name, relativePath });
+                    }
+                    if (!records.length) {
+                        this.uploadError = this.skippedFiles.length ? 'No supported JARs or config/datapack files were found.' : 'Choose at least one file.';
+                        return;
+                    }
+                    this.uploadSession = crypto.randomUUID().replaceAll('-', '');
+                    this.uploadId = '';
+                    this.fileUploads = records.map((record, index) => ({
+                        ...record, key: index + ':' + record.relativePath, label: record.relativePath,
+                        progress: 0, status: 'Queued', error: ''
+                    }));
+                    this.selectedFilename = records.length + ' files';
+                    this.packName = '';
+                    this.destinationMode = this.selectedPack ? 'existing' : 'new';
+                    this.targetLoader = '';
+                    this.uploading = true;
+                    let nextIndex = 0;
+                    const workers = Array.from({ length: Math.min(3, records.length) }, async () => {
+                        while (nextIndex < this.fileUploads.length && this.uploading) {
+                            const index = nextIndex++;
+                            await this.uploadOneFile(this.fileUploads[index]);
+                        }
+                    });
+                    await Promise.all(workers);
+                    this.uploading = false;
+                    this.fileXhrs = [];
+                    const succeeded = this.fileUploads.filter(file => file.status === 'Uploaded').length;
+                    this.selectedFilename = succeeded + ' of ' + records.length + ' files uploaded';
+                    if (!succeeded) {
+                        this.uploadError = 'No files uploaded successfully. Failed files can be selected again.';
+                        await this.discardUpload();
+                        return;
+                    }
+                    if (this.destinationMode === 'existing') this.setTargetFromPack();
+                    if (this.fileUploads.some(file => file.status === 'Failed')) {
+                        this.uploadError = 'Some files failed after one retry. You can import the uploaded files or cancel and retry the failed files.';
+                    }
+                },
+                async handleDrop(event) {
+                    const items = Array.from(event.dataTransfer.items || []);
+                    const entries = items.map(item => item.webkitGetAsEntry && item.webkitGetAsEntry()).filter(Boolean);
+                    if (!entries.length) {
+                        await this.handleFiles(Array.from(event.dataTransfer.files || []));
+                        return;
+                    }
+                    const readEntry = entry => new Promise((resolve, reject) => {
+                        if (entry.isFile) {
+                            entry.file(file => { file._sshRelativePath = entry.fullPath.replace(/^\/+/, ''); resolve([file]); }, reject);
+                        } else if (entry.isDirectory) {
+                            const reader = entry.createReader();
+                            const all = [];
+                            const readBatch = () => reader.readEntries(async batch => {
+                                if (!batch.length) { resolve((await Promise.all(all)).flat()); return; }
+                                all.push(...batch.map(readEntry));
+                                readBatch();
+                            }, reject);
+                            readBatch();
+                        } else resolve([]);
+                    });
+                    try {
+                        const files = [];
+                        for (const entry of entries) files.push(...await readEntry(entry));
+                        await this.handleFiles(files, entries.some(entry => entry.isDirectory));
+                    } catch (_) { this.uploadError = 'Could not read the dropped folder. Try the Choose folder button.'; }
+                },
+                async uploadOneFile(file) {
+                    for (let attempt = 0; attempt < 2 && this.uploading; attempt++) {
+                        file.status = attempt ? 'Retrying…' : 'Uploading';
+                        file.progress = 0;
+                        try {
+                            await new Promise((resolve, reject) => {
+                                const query = new URLSearchParams({ filename: file.filename, relative_path: file.relativePath });
+                                const xhr = new XMLHttpRequest();
+                                this.fileXhrs.push(xhr);
+                                xhr.open('POST', '/api/modpacks/sessions/' + this.uploadSession + '/files?' + query);
+                                xhr.withCredentials = true;
+                                xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+                                xhr.upload.onprogress = event => {
+                                    if (event.lengthComputable) file.progress = Math.round(event.loaded / event.total * 100);
+                                };
+                                xhr.onload = () => {
+                                    let payload = {};
+                                    try { payload = JSON.parse(xhr.responseText || '{}'); } catch (_) {}
+                                    if (xhr.status === 401) { window.location.assign('/login'); reject(new Error('Authentication required')); }
+                                    else if (xhr.status < 200 || xhr.status >= 300) reject(new Error(typeof payload.detail === 'string' ? payload.detail : 'Upload failed (' + xhr.status + ').'));
+                                    else { file.progress = 100; resolve(); }
+                                };
+                                xhr.onerror = () => reject(new Error('Connection failed.'));
+                                xhr.onabort = () => reject(new DOMException('Upload cancelled.', 'AbortError'));
+                                xhr.send(file.file);
+                            });
+                            file.status = 'Uploaded';
+                            return;
+                        } catch (error) {
+                            if (error.name === 'AbortError' || !this.uploading) { file.status = 'Cancelled'; return; }
+                            file.error = error.message;
+                            if (attempt === 1) file.status = 'Failed';
+                        }
+                    }
+                },
+                batchProgress() {
+                    const total = this.fileUploads.reduce((sum, file) => sum + file.file.size, 0);
+                    if (!total) return 0;
+                    return Math.round(this.fileUploads.reduce((sum, file) => sum + file.file.size * file.progress / 100, 0) / total * 100);
+                },
+                formatSize(bytes) {
+                    if (!Number.isFinite(bytes) || bytes < 0) return '—';
+                    if (bytes < 1024) return bytes + ' B';
+                    const units = ['KiB', 'MiB', 'GiB', 'TiB'];
+                    let value = bytes, unit = -1;
+                    do { value /= 1024; unit++; } while (value >= 1024 && unit < units.length - 1);
+                    return value.toFixed(1) + ' ' + units[unit];
+                },
+                setTargetFromPack() {
+                    if (this.destinationMode !== 'existing' || !this.selectedPack) return;
+                    const pack = this.packs.find(item => item.name === this.selectedPack);
+                    if (pack) this.targetLoader = pack.target_loader;
+                },
+                selectPackForAdd(name) {
+                    this.destinationMode = 'existing';
+                    this.selectedPack = name;
+                    this.setTargetFromPack();
+                    this.$refs.multiPicker.click();
+                },
+                chooseFile(file) {
+                    if (!file || this.uploading || this.importing) return;
+                    if (!file.name.toLowerCase().endsWith('.zip')) { this.uploadError = 'Choose a .zip archive.'; return; }
+                    if (file.size > this.maxUploadBytes) { this.uploadError = `This ZIP is larger than the ${this.uploadLimit} upload limit.`; return; }
+                    if (this.uploadId) fetch(`/api/modpacks/uploads/${this.uploadId}`, { method: 'DELETE' }).catch(() => {});
+                    this.importResult = null; this.uploadError = ''; this.conflict = false;
+                    this.uploadId = crypto.randomUUID().replaceAll('-', '');
+                    this.uploadSession = '';
+                    this.fileUploads = []; this.skippedFiles = [];
+                    this.destinationMode = 'new'; this.selectedPack = '';
+                    this.selectedFilename = file.name;
+                    this.packName = file.name.replace(/\.zip$/i, '').replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
+                    this.targetLoader = '';
+                    this.uploading = true; this.uploadProgress = 0;
+                    const xhr = new XMLHttpRequest();
+                    this.xhr = xhr;
+                    xhr.open('POST', '/api/modpacks/uploads');
+                    xhr.withCredentials = true;
+                    xhr.setRequestHeader('Content-Type', 'application/zip');
+                    xhr.setRequestHeader('X-Upload-Filename', file.name.replace(/[^A-Za-z0-9._-]/g, '_'));
+                    xhr.setRequestHeader('X-Upload-ID', this.uploadId);
+                    xhr.upload.onprogress = event => { if (event.lengthComputable) this.uploadProgress = Math.round(event.loaded / event.total * 100); };
+                    xhr.onload = async () => {
+                        this.uploading = false; this.xhr = null;
+                        let payload = {};
+                        try { payload = JSON.parse(xhr.responseText || '{}'); } catch (_) {}
+                        if (xhr.status === 401) { window.location.assign('/login'); return; }
+                        if (xhr.status < 200 || xhr.status >= 300) {
+                            this.uploadError = typeof payload.detail === 'string' ? payload.detail : `Upload failed (${xhr.status}).`;
+                            this.uploadId = '';
+                            return;
+                        }
+                        this.uploadId = payload.upload_id;
+                    };
+                    xhr.onerror = () => {
+                        this.uploading = false; this.xhr = null;
+                        if (this.uploadId) fetch(`/api/modpacks/uploads/${this.uploadId}`, { method: 'DELETE' }).catch(() => {});
+                        this.uploadId = ''; this.uploadError = 'Upload failed. Check the connection and try again.';
+                    };
+                    xhr.onabort = () => { this.uploading = false; this.xhr = null; };
+                    xhr.send(file);
+                },
+                async cancelUpload() {
+                    const uploadId = this.uploadId;
+                    const sessionId = this.uploadSession;
+                    if (this.xhr) this.xhr.abort();
+                    for (const xhr of this.fileXhrs) xhr.abort();
+                    if (this.importController) this.importController.abort();
+                    this.uploading = false;
+                    if (uploadId) fetch(`/api/modpacks/uploads/${uploadId}`, { method: 'DELETE' }).catch(() => {});
+                    if (sessionId) fetch(`/api/modpacks/sessions/${sessionId}`, { method: 'DELETE' }).catch(() => {});
+                    this.uploadId = ''; this.uploadSession = ''; this.fileXhrs = []; this.fileUploads = [];
+                    this.selectedFilename = ''; this.uploadError = ''; this.importing = false; this.importController = null;
+                },
+                async discardUpload() {
+                    if (this.uploadId) await fetch(`/api/modpacks/uploads/${this.uploadId}`, { method: 'DELETE' }).catch(() => {});
+                    if (this.uploadSession) await fetch(`/api/modpacks/sessions/${this.uploadSession}`, { method: 'DELETE' }).catch(() => {});
+                    this.uploadId = ''; this.uploadSession = ''; this.selectedFilename = '';
+                    this.fileUploads = []; this.fileXhrs = []; this.uploadError = ''; this.conflict = false;
+                },
+                async importPack(replace = false, replaceFiles = false) {
+                    if (!this.uploadId && !this.uploadSession) return;
+                    this.importing = true; this.uploadError = ''; this.conflict = false;
+                    const controller = new AbortController();
+                    this.importController = controller;
+                    try {
+                        const addToExisting = !!this.uploadSession && this.destinationMode === 'existing';
+                        const url = this.uploadId ? '/api/modpacks/import' : (addToExisting ? '/api/modpacks/' + encodeURIComponent(this.selectedPack) + '/files' : '/api/modpacks/import-files');
+                        const body = this.uploadId
+                            ? { upload_id: this.uploadId, name: this.packName, target_loader: this.targetLoader, replace }
+                            : (addToExisting
+                                ? { session_id: this.uploadSession, replace_filenames: replaceFiles }
+                                : { session_id: this.uploadSession, name: this.packName, target_loader: this.targetLoader, replace });
+                        const response = await fetch(url, {
+                            method: 'POST', headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(body),
+                            signal: controller.signal
+                        });
+                        if (response.status === 401) { window.location.assign('/login'); return; }
+                        const payload = await response.json().catch(() => ({}));
+                        if (response.status === 409 && payload.detail?.code === 'pack_exists') {
+                            this.conflict = true; this.uploadError = payload.detail.message; return;
+                        }
+                        if (response.status === 409 && payload.detail?.code === 'jar_conflicts') {
+                            const names = (payload.detail.filenames || []).join(', ');
+                            if (window.confirm('Replace these same-named JARs in ' + this.selectedPack + '?\n\n' + names)) {
+                                this.importing = false;
+                                return await this.importPack(false, true);
+                            }
+                            this.uploadError = 'Existing JARs were left unchanged.';
+                            return;
+                        }
+                        if (!response.ok) {
+                            this.uploadError = typeof payload.detail === 'string' ? payload.detail : `Import failed (${response.status}).`;
+                            return;
+                        }
+                        this.importResult = payload.pack;
+                        const wasAdding = addToExisting;
+                        this.uploadId = ''; this.uploadSession = ''; this.selectedFilename = ''; this.packName = '';
+                        this.destinationMode = 'new'; this.selectedPack = '';
+                        this.fileUploads = []; this.fileXhrs = []; this.skippedFiles = [];
+                        await this.loadPacks();
+                        htmx.trigger('#profile-list', 'refresh');
+                        showToast(wasAdding ? `Updated mod pack ${payload.pack.name}; linked profiles use it on their next Start or Restart.` : `Imported mod pack ${payload.pack.name}.`);
+                    } catch (error) { if (error.name !== 'AbortError') this.uploadError = error.message || 'Could not import this mod pack.'; }
+                    finally { this.importing = false; if (this.importController === controller) this.importController = null; }
+                },
+                async deletePackJar(packName, filename) {
+                    if (!window.confirm(`Delete ${filename} from ${packName}? Linked profiles receive this change on their next Start or Restart.`)) return;
+                    try {
+                        const response = await fetch(`/api/modpacks/${encodeURIComponent(packName)}/jars/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+                        if (response.status === 401) { window.location.assign('/login'); return; }
+                        if (!response.ok) throw new Error(await responseMessage(response, 'Could not delete this JAR.'));
+                        await this.loadPacks();
+                        htmx.trigger('#profile-list', 'refresh');
+                        showToast(`Removed ${filename} from ${packName}. Linked profiles update on their next Start or Restart.`);
+                    } catch (error) { showToast(error.message || 'Could not delete this JAR.'); }
+                },
+                async deletePack(name) {
+                    if (!window.confirm(`Delete mod pack "${name}"? Profiles linked to it will be unlinked.`)) return;
+                    try {
+                        const response = await fetch(`/api/modpacks/${encodeURIComponent(name)}`, { method: 'DELETE' });
+                        if (response.status === 401) { window.location.assign('/login'); return; }
+                        if (!response.ok) throw new Error(await responseMessage(response, 'Could not delete mod pack.'));
+                        await this.loadPacks();
+                        htmx.trigger('#profile-list', 'refresh');
+                        showToast(`Deleted mod pack ${name}.`);
+                    } catch (error) { showToast(error.message || 'Could not delete mod pack.'); }
+                }
+            }
+        }
+
+        // --- Edit Profile Logic ---
+        function editApp() {
+            return {
+                profile: {}, packs: [],
+                loaders: [],
+                isLoading: false,
+                loaderPending: false,
+                isSaving: false,
+                isClearingCache: false,
+                loaderError: '', loaderRequest: 0,
+                originalBuild: '', originalMcVersion: '', originalLoaderVersion: '', originalModpackName: '',
+                setProfile(profile) {
+                    this.profile = { ...profile };
+                    this.profile.modpack_name = profile.modpack_name || '';
+                    this.profile.mod_downloads = (profile.mod_downloads || []).map(item => ({ ...item, filename: item.filename || '', sha256: item.sha256 || '', skip_on_start: !!item.skip_on_start }));
+                    if (!this.profile.mod_downloads.length) this.profile.mod_downloads = [{ url: '', filename: '', sha256: '', skip_on_start: false }];
+                    this.loaderPending = false;
+                    this.originalBuild = profile.build;
+                    this.originalMcVersion = profile.mc_version;
+                    this.originalLoaderVersion = profile.loader_version;
+                    this.originalModpackName = profile.modpack_name || '';
+                    this.fetchLoaders(true);
+                },
+                needsReset() {
+                    return this.profile.build !== this.originalBuild || this.profile.mc_version !== this.originalMcVersion || this.profile.loader_version !== this.originalLoaderVersion;
+                },
+                packWarnings() {
+                    const pack = this.packs.find(item => item.name === this.profile.modpack_name);
+                    if (!pack) return [];
+                    const selectedLoader = this.profile.build;
+                    const warnings = [...(pack.warnings || [])];
+                    if (pack.target_loader !== selectedLoader) warnings.unshift(`Pack target is ${pack.target_loader}; profile uses ${selectedLoader}.`);
+                    warnings.push(...pack.jars.flatMap(jar => {
+                        if (jar.loader === 'unknown') return [`${jar.filename}: no supported loader metadata was found.`];
+                        if (jar.loader !== selectedLoader) return [`${jar.filename}: detected ${jar.loader}; profile uses ${selectedLoader}.`];
+                        return [];
+                    }));
+                    return [...new Set(warnings)];
+                },
+                addModDownload() { if (!this.profile.mod_downloads) this.profile.mod_downloads = []; if (this.profile.mod_downloads.length < 200) this.profile.mod_downloads.push({ url: '', filename: '', sha256: '', skip_on_start: false }); },
+                removeModDownload(index) { if (this.profile.mod_downloads.length > 1) this.profile.mod_downloads.splice(index, 1); },
+                serializeModDownloads() { return JSON.stringify((this.profile.mod_downloads || []).filter(item => item.url.trim()).map(item => ({ url: item.url.trim(), filename: item.filename.trim() || null, sha256: item.sha256.trim() || null, skip_on_start: !!item.skip_on_start }))); },
+                async clearModDownloadCache() {
+                    this.isClearingCache = true;
+                    try {
+                        const response = await fetch(`/api/profiles/${this.profile.id}/mod-download-cache/clear`, { method: 'POST' });
+                        if (response.status === 401) { window.location.assign('/login'); return; }
+                        if (!response.ok) throw new Error(await responseMessage(response, 'Could not clear cached mod downloads.'));
+                        showToast('Mod download cache cleared. Links will download on the next manual Start or Restart.');
+                    } catch (error) { showToast(error.message || 'Could not clear cached mod downloads.'); }
+                    finally { this.isClearingCache = false; }
+                },
+                async fetchLoaders(preserveSelection = false) {
+                    const requestId = ++this.loaderRequest;
+                    this.loaderPending = false;
+                    this.loaderError = '';
+                    if (!this.profile.mc_version || this.profile.mc_version.trim().length < 3) { this.loaders = []; this.isLoading = false; return; }
+                    if (this.profile.build === 'vanilla') { this.loaders = ['latest']; this.profile.loader_version = 'latest'; this.isLoading = false; return; }
+                    this.isLoading = true;
+                    try {
+                        const query = new URLSearchParams({ build: this.profile.build, mc_version: this.profile.mc_version.trim() });
+                        const res = await fetch(`/api/profiles/loaders?${query}`);
+                        if (!res.ok) throw new Error(`Loader lookup failed (${res.status}).`);
+                        const data = await res.json();
+                        if (requestId !== this.loaderRequest) return;
+                        this.loaders = data.versions || [];
+                        if (preserveSelection && this.profile.loader_version && !this.loaders.includes(this.profile.loader_version)) {
+                            this.loaders.unshift(this.profile.loader_version);
+                        } else if (!this.loaders.includes(this.profile.loader_version) && this.loaders.length > 0) {
+                            this.profile.loader_version = this.loaders[0];
+                        }
+                        if (!this.loaders.length) this.loaderError = data.error || 'No compatible loader versions were returned.';
+                    } catch (e) { if (requestId === this.loaderRequest) { this.loaders = []; this.loaderError = e.message || 'Could not load loader versions.'; } }
+                    finally { if (requestId === this.loaderRequest) this.isLoading = false; }
+                },
+                async saveEdit() {
+                    this.isSaving = true;
+                    if (this.needsReset()) this.profile.modpack_name = this.originalModpackName;
+                    const formData = new FormData();
+                    const fields = ['name', 'build', 'mc_version', 'loader_version', 'git_url', 'modpack_name', 'java_path', 'ram_mb', 'port', 'backup_worlds_on_change', 'backup_on_restart', 'exclude_regenerable_backup_folders'];
+                    for (const key of fields) {
+                        const value = this.profile[key];
+                        formData.append(key, typeof value === 'boolean' ? String(value) : (value ?? ''));
+                    }
+                    formData.append('mod_downloads', this.serializeModDownloads());
+                    
+                    try {
+                        const res = await fetch(`/api/profiles/${this.profile.id}`, { method: 'PUT', body: formData });
+                        if (res.ok) {
+                            this.$dispatch('close-edit');
+                            htmx.trigger('#profile-list', 'refresh');
+                            htmx.trigger('#stats-bar', 'refresh');
+                            showToast(this.needsReset() ? 'Profile saved. The old repo and direct mod links were disconnected. The mod pack stays linked and may need a compatibility review.' : 'Profile saved. Changes apply on your next manual Start or Restart.');
+                        } else { showToast(await responseMessage(res, 'Could not update profile.')); }
+                    } catch (e) { showToast(e.message || 'Could not update profile.'); } finally { this.isSaving = false; }
+                }
+            }
+        }
+
+        // --- Main Dashboard Logic ---
+        function panelApp() {
+            return {
+                consoleOpen: false, logs: [], ws: null,
+                maxLogs: 1000,
+                modDownloadPromptOpen: false, modDownloadFailure: {}, modDownloadAction: '', skippedModIndexes: [], modDownloadWorkflow: false, isResolvingModFailure: false,
+                deleteModalOpen: false, deleteId: null, deleteName: '', deleteFiles: false, isDeleting: false,
+                editModalOpen: false, monitoringAvailableBytes: null,
+
+                init() {
+                    // Listen for the custom close event fired by the edit modal
+                    this.$el.addEventListener('close-edit', () => { this.editModalOpen = false; });
+                    const savedLimit = Number(localStorage.getItem('sshmc-log-limit'));
+                    if ([100, 500, 1000, 2000, 5000].includes(savedLimit)) this.maxLogs = savedLimit;
+                },
+
+                async deleteBackup(profileId, filename) {
+                    if (!window.confirm(`Delete backup ${filename}?`)) return;
+                    try {
+                        const response = await fetch(`/api/profiles/${encodeURIComponent(profileId)}/backups/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+                        if (response.status === 401) { window.location.assign('/login'); return; }
+                        if (!response.ok) throw new Error(await responseMessage(response, 'Could not delete backup.'));
+                        htmx.trigger('#profile-list', 'refresh');
+                        showToast(`Deleted backup ${filename}.`);
+                    } catch (error) { showToast(error.message || 'Could not delete backup.'); }
+                },
+
+                warnIfInsufficientRam(ramMb) {
+                    const available = this.monitoringAvailableBytes ?? (window.latestMonitoringStats?.host?.memory?.available_bytes ?? null);
+                    if (available !== null && ramMb * 1024 ** 2 > available) {
+                        showToast(`Warning: this profile allocates ${ramMb} MB, but only about ${Math.floor(available / 1024 ** 2)} MB is currently available. Startup will continue.`);
+                    }
+                },
+
+                showModDownloadFailure(failure, requestPath) {
+                    const action = requestPath.includes('/restart') ? 'restart' : 'start';
+                    if (!this.modDownloadWorkflow || this.modDownloadAction !== action) this.skippedModIndexes = [];
+                    this.modDownloadWorkflow = true;
+                    this.modDownloadAction = action;
+                    this.modDownloadFailure = failure;
+                    this.modDownloadPromptOpen = true;
+                    this.isResolvingModFailure = false;
+                },
+                cancelModDownloadStartup() {
+                    this.modDownloadPromptOpen = false;
+                    this.modDownloadWorkflow = false;
+                    this.skippedModIndexes = [];
+                    this.isResolvingModFailure = false;
+                    htmx.trigger('#profile-list', 'refresh');
+                    showToast('Startup stopped. Synced and downloaded mod files were kept.');
+                },
+                async continueWithoutFailedMod() {
+                    const failedIndex = this.modDownloadFailure.index;
+                    if (!this.skippedModIndexes.includes(failedIndex)) this.skippedModIndexes.push(failedIndex);
+                    this.isResolvingModFailure = true;
+                    const profileId = this.modDownloadFailure.profile_id;
+                    if (!profileId) {
+                        this.isResolvingModFailure = false;
+                        this.modDownloadPromptOpen = false;
+                        showToast('Could not identify the profile for startup continuation.');
+                        return;
+                    }
+                    const query = new URLSearchParams();
+                    this.skippedModIndexes.forEach(index => query.append('skip_mod_download_indexes', index));
+                    const url = `/api/lifecycle/${profileId}/${this.modDownloadAction}?${query}`;
+                    await this.resumeModStartup(url);
+                },
+                async resumeModStartup(url) {
+                    try {
+                        const response = await fetch(url, { method: 'POST' });
+                        if (response.status === 401) { window.location.assign('/login'); return; }
+                        const payload = await response.json().catch(() => ({}));
+                        if (response.ok) {
+                            this.modDownloadPromptOpen = false;
+                            this.modDownloadWorkflow = false;
+                            this.skippedModIndexes = [];
+                            this.isResolvingModFailure = false;
+                            htmx.trigger('#profile-list', 'refresh');
+                            htmx.trigger('#stats-bar', 'refresh');
+                            showToast('Startup launched. The profile will show Running when Minecraft is ready.');
+                        } else if (response.status === 409 && payload.detail && payload.detail.code === 'mod_download_failed') {
+                            this.modDownloadFailure = payload.detail;
+                            this.isResolvingModFailure = false;
+                            htmx.trigger('#profile-list', 'refresh');
+                        } else {
+                            this.modDownloadPromptOpen = false;
+                            this.modDownloadWorkflow = false;
+                            this.isResolvingModFailure = false;
+                            this.skippedModIndexes = [];
+                            showToast(typeof payload.detail === 'string' ? payload.detail : `Startup failed (${response.status}).`);
+                            htmx.trigger('#profile-list', 'refresh');
+                            htmx.trigger('#stats-bar', 'refresh');
+                        }
+                    } catch (error) {
+                        this.modDownloadPromptOpen = false;
+                        this.modDownloadWorkflow = false;
+                        this.isResolvingModFailure = false;
+                        showToast(error.message || 'Could not continue server startup.');
+                    }
+                },
+                
+                async openEditModal(profileId) {
+                    try {
+                        const [response, packsResponse] = await Promise.all([
+                            fetch(`/api/profiles/${profileId}/settings`), fetch('/api/modpacks')
+                        ]);
+                        if (response.status === 401) { window.location.assign('/login'); return; }
+                        if (!response.ok) throw new Error(await responseMessage(response, 'Could not load profile settings.'));
+                        if (packsResponse.status === 401) { window.location.assign('/login'); return; }
+                        if (!packsResponse.ok) throw new Error(await responseMessage(packsResponse, 'Could not load mod packs.'));
+                        const profileData = await response.json();
+                        const packData = await packsResponse.json();
+                        this.editModalOpen = true;
+                        this.$nextTick(() => {
+                            const modalEl = document.getElementById('edit-modal-container');
+                            const editor = Alpine.$data(modalEl);
+                            editor.packs = packData.packs || [];
+                            editor.setProfile(profileData);
+                        });
+                    } catch (error) {
+                        showToast(error.message || 'Could not load profile settings.');
+                    }
+                },
+                
+                openConsole(profileId) {
+                    if (this.ws) { this.ws.onclose = null; this.ws.close(); this.ws = null; }
+                    this.logs = []; this.consoleOpen = true;
+                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    this.ws = new WebSocket(`${protocol}//${window.location.host}/ws/${profileId}/console`);
+                    this.ws.onmessage = (e) => this.appendLog(e.data);
+                    this.ws.onerror = () => showToast('Could not connect to the server console.');
+                    this.ws.onclose = () => { if (this.consoleOpen) this.appendLog('--- Connection closed ---'); };
+                },
+                appendLog(line) {
+                    const el = document.getElementById('console-output');
+                    const stickToBottom = !el || el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+                    this.logs.push(line);
+                    if (this.logs.length > this.maxLogs) this.logs.splice(0, this.logs.length - this.maxLogs);
+                    if (stickToBottom) this.$nextTick(() => { const output = document.getElementById('console-output'); if (output) output.scrollTop = output.scrollHeight; });
+                },
+                closeConsole() {
+                    this.consoleOpen = false;
+                    if (this.ws) { this.ws.onclose = null; this.ws.close(); this.ws = null; }
+                },
+                setLogLimit(value) {
+                    const parsed = Number(value);
+                    if (![100, 500, 1000, 2000, 5000].includes(parsed)) return;
+                    this.maxLogs = parsed;
+                    localStorage.setItem('sshmc-log-limit', String(parsed));
+                    if (this.logs.length > parsed) this.logs.splice(0, this.logs.length - parsed);
+                },
+                
+                openDeleteModal(id, name) {
+                    this.deleteId = id; this.deleteName = name;
+                    this.deleteFiles = false; this.isDeleting = false;
+                    this.deleteModalOpen = true;
+                },
+                async confirmDelete() {
+                    this.isDeleting = true;
+                    try {
+                        const res = await fetch(`/api/profiles/${this.deleteId}?delete_files=${this.deleteFiles}`, { method: 'DELETE' });
+                        if (res.ok) {
+                            this.deleteModalOpen = false;
+                            htmx.trigger('#profile-list', 'refresh');
+                            htmx.trigger('#stats-bar', 'refresh');
+                            showToast('Profile deleted.');
+                        } else { showToast(await responseMessage(res, 'Could not delete profile.')); }
+                    } catch (e) { showToast(e.message || 'Could not delete profile.'); } finally { this.isDeleting = false; }
+                }
+            }
+        }
+    </script>
+</body>
+</html>

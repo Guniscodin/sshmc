@@ -1,0 +1,107 @@
+import asyncio
+import struct
+import logging
+
+logger = logging.getLogger(__name__)
+
+class RCONError(Exception):
+    """Base exception for RCON errors."""
+    pass
+
+class RCONAuthError(RCONError):
+    """Raised when authentication fails."""
+    pass
+
+# RCON Packet Types
+SERVERDATA_AUTH = 3
+SERVERDATA_EXECCOMMAND = 2
+
+def _pack_packet(req_id: int, req_type: int, payload: str) -> bytes:
+    """Packs an RCON packet into its binary format."""
+    payload_bytes = payload.encode("utf-8")
+    # Packet format: Length(int32) + ID(int32) + Type(int32) + Payload + Null(2 bytes)
+    packet = struct.pack("<ii", req_id, req_type) + payload_bytes + b"\x00\x00"
+    # Prepend the total length of the packet
+    return struct.pack("<i", len(packet)) + packet
+
+async def _read_packet(reader: asyncio.StreamReader) -> tuple[int, int, str]:
+    """Reads and unpacks a single RCON response packet."""
+    try:
+        # Read the length of the incoming packet (first 4 bytes)
+        length_data = await reader.readexactly(4)
+        length = struct.unpack("<i", length_data)[0]
+        if length < 10 or length > 4096:
+            raise RCONError(f"Invalid RCON packet length: {length}")
+        
+        # Read the rest of the packet based on the length
+        data = await reader.readexactly(length)
+        
+        # Unpack ID, Type, and Payload (payload ends with two null bytes)
+        req_id, req_type = struct.unpack("<ii", data[:8])
+        if data[-2:] != b"\x00\x00":
+            raise RCONError("Invalid RCON packet terminator")
+        payload = data[8:-2].decode("utf-8")
+        
+        return req_id, req_type, payload
+    except (asyncio.IncompleteReadError, UnicodeDecodeError, struct.error) as e:
+        raise RCONError("Connection closed unexpectedly while reading packet") from e
+
+async def send_command(
+    host: str, port: int, password: str, command: str, timeout: float = 5.0
+) -> str:
+    """
+    Connects to an RCON server, authenticates, sends a command, and returns the response.
+    Strictly typed, heavily logged, and async.
+    """
+    logger.debug(f"Connecting to RCON at {host}:{port}")
+    
+    try:
+        # Open async connection with a strict timeout
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port), timeout=timeout
+        )
+    except (OSError, asyncio.TimeoutError) as e:
+        logger.error(f"RCON connection failed to {host}:{port}: {e}")
+        raise RCONError(f"Could not connect to RCON: {e}") from e
+
+    try:
+        # 1. Authentication Phase
+        auth_packet = _pack_packet(req_id=1, req_type=SERVERDATA_AUTH, payload=password)
+        writer.write(auth_packet)
+        await writer.drain()
+
+        # Read auth response
+        auth_id, auth_type, _ = await asyncio.wait_for(_read_packet(reader), timeout=timeout)
+        
+        # According to RCON spec, failed auth returns ID -1
+        if auth_id == -1:
+            logger.error("RCON authentication failed: Bad password.")
+            raise RCONAuthError("Authentication failed: incorrect RCON password.")
+        if auth_id != 1 or auth_type != SERVERDATA_EXECCOMMAND:
+            raise RCONError("Unexpected RCON authentication response.")
+
+        logger.debug("RCON authentication successful.")
+
+        # 2. Command Phase
+        cmd_packet = _pack_packet(req_id=2, req_type=SERVERDATA_EXECCOMMAND, payload=command)
+        writer.write(cmd_packet)
+        await writer.drain()
+
+        # Read command response
+        response_id, _, response = await asyncio.wait_for(_read_packet(reader), timeout=timeout)
+        if response_id != 2:
+            raise RCONError("Unexpected RCON command response.")
+        
+        logger.debug(f"RCON command '{command}' executed successfully.")
+        return response
+
+    except asyncio.TimeoutError as e:
+        logger.error(f"RCON timeout while executing '{command}'.")
+        raise RCONError("RCON operation timed out.") from e
+    finally:
+        # Always close the connection cleanly
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except OSError:
+            logger.debug("RCON connection closed with a socket error.")

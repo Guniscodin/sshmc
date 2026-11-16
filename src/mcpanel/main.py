@@ -1,0 +1,195 @@
+import logging
+import asyncio
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request, Form
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from pathlib import Path
+
+from mcpanel import db
+from mcpanel.api import profiles, lifecycle, console, modpacks as modpack_api, monitoring as monitoring_api
+from mcpanel.models import ProfileStatus
+from mcpanel.core import process, runtime, modpacks, monitoring, backups
+from mcpanel.config import (
+    DATA_DIR,
+    LOGS_DIR,
+    PANEL_LOG_BACKUP_COUNT,
+    PANEL_LOG_MAX_BYTES,
+)
+from mcpanel.core.panel_logging import PollingAccessFilter, SafePanelRotatingHandler
+from mcpanel.security import (
+    PanelAuthMiddleware, SESSION_COOKIE, SESSION_MAX_AGE,
+    create_session_token, credentials_configured, same_origin, unlock_panel, valid_login,
+)
+
+# Keep a terminal log and a bounded file log under the configured data directory.
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
+panel_log = LOGS_DIR / "panel.log"
+panel_log.resolve().relative_to(DATA_DIR.resolve())
+panel_file_handler = SafePanelRotatingHandler(
+    panel_log, DATA_DIR, PANEL_LOG_MAX_BYTES, PANEL_LOG_BACKUP_COUNT
+)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(), panel_file_handler],
+    force=True,
+)
+logging.getLogger("uvicorn.access").addFilter(PollingAccessFilter())
+logger = logging.getLogger(__name__)
+
+# Setup templates
+BASE_DIR = Path(__file__).resolve().parent
+templates = Jinja2Templates(directory=str(BASE_DIR / "web" / "templates"))
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Runs before the app starts."""
+    logger.info("Starting SSHMC Panel...")
+    unlock_panel()
+    db.init_db()
+    modpacks.cleanup_temporary_data()
+    for profile in db.list_profiles():
+        state = db.get_runtime_state(profile.id)
+        if not state:
+            continue
+        alive = bool(
+            state.pid and state.pid_create_time
+            and process.is_process_alive(state.pid, state.pid_create_time)
+        )
+        if alive:
+            state.status = ProfileStatus.RUNNING
+        elif state.pid is not None or state.status in (
+            ProfileStatus.RUNNING, ProfileStatus.STARTING, ProfileStatus.STOPPING
+        ):
+            state.status = ProfileStatus.STOPPED
+            state.pid = None
+            state.pid_create_time = None
+        else:
+            continue
+        db.update_runtime_state(state)
+
+    # Re-run port repair after dead processes have been reconciled to inactive.
+    db.init_db()
+
+    await monitoring.start_monitoring()
+    monitor = asyncio.create_task(_monitor_servers())
+    upload_cleanup = asyncio.create_task(modpacks.upload_session_cleanup_loop())
+    try:
+        yield
+    finally:
+        await monitoring.stop_monitoring()
+        await runtime.shutdown_starting_servers()
+        monitor.cancel()
+        upload_cleanup.cancel()
+        try:
+            await asyncio.gather(monitor, upload_cleanup, return_exceptions=True)
+        except asyncio.CancelledError:
+            pass
+        logger.info("Shutting down SSHMC Panel...")
+
+async def _monitor_servers() -> None:
+    """Keep persisted RUNNING states aligned with the tracked process."""
+    while True:
+        for profile in db.list_profiles():
+            state = db.get_runtime_state(profile.id)
+            if not state:
+                continue
+            if state.status == ProfileStatus.CRASHED and state.pid and state.pid_create_time:
+                if process.is_process_alive(state.pid, state.pid_create_time):
+                    state.status = ProfileStatus.RUNNING
+                else:
+                    state.pid = None
+                    state.pid_create_time = None
+                db.update_runtime_state(state)
+                continue
+            if state.status != ProfileStatus.RUNNING:
+                continue
+            if not state.pid or not state.pid_create_time or not process.is_process_alive(state.pid, state.pid_create_time):
+                state.status = ProfileStatus.CRASHED
+                state.pid = None
+                state.pid_create_time = None
+                db.update_runtime_state(state)
+        await asyncio.sleep(2)
+
+app = FastAPI(title="SSHMC Panel", lifespan=lifespan)
+app.add_middleware(PanelAuthMiddleware)
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page():
+    if not credentials_configured():
+        return HTMLResponse(
+            "<h1>SSHMC password is not configured</h1><p>Stop the panel and start it from an interactive terminal to set a local password.</p>",
+            status_code=503,
+        )
+    return HTMLResponse("""
+        <!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Sign in · SSHMC</title><link rel="stylesheet" href="/static/css/style.css">
+        <body style="display:grid;place-items:center;overflow:auto;height:100vh">
+          <form method="post" action="/auth/login" style="width:min(420px,92vw);padding:2rem;background:var(--surface);border:1px solid var(--border);border-radius:12px">
+            <h1>Sign in to SSHMC</h1>
+            <label for="password">Panel password</label><input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
+            <button type="submit" style="width:100%;margin-top:1rem">Sign in</button>
+          </form>
+        </body></html>
+    """)
+
+@app.post("/auth/login")
+async def login(request: Request, password: str = Form(...)):
+    if not credentials_configured():
+        return HTMLResponse("Panel password is not configured.", status_code=503)
+    origin = request.headers.get("origin")
+    if origin and not same_origin(origin, request.headers.get("host")):
+        return HTMLResponse("Cross-origin login denied.", status_code=403)
+    if not valid_login(password):
+        return HTMLResponse(
+            "<p>Incorrect password.</p><p><a href='/login'>Try again</a></p>",
+            status_code=401,
+        )
+    response = RedirectResponse("/", status_code=303)
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip()
+    response.set_cookie(
+        SESSION_COOKIE,
+        create_session_token(),
+        max_age=SESSION_MAX_AGE,
+        httponly=True,
+        secure=request.url.scheme == "https" or forwarded_proto == "https",
+        samesite="strict",
+        path="/",
+    )
+    return response
+
+@app.post("/logout")
+async def logout():
+    response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    return response
+
+# Mount static files (CSS/JS)
+app.mount("/static", StaticFiles(directory=str(BASE_DIR / "web" / "static")), name="static")
+
+# Include API Routers
+app.include_router(profiles.router)
+app.include_router(lifecycle.router)
+app.include_router(console.router)
+app.include_router(modpack_api.router)
+app.include_router(monitoring_api.router)
+
+# src/mcpanel/main.py (at the bottom)
+
+@app.get("/")
+async def serve_dashboard(request: Request):
+    """Serves the main HTMX dashboard."""
+    all_profiles = db.list_profiles()
+    profile_data = []
+    for p in all_profiles:
+        state = db.get_runtime_state(p.id)
+        profile_data.append({"profile": p, "state": state, "backups": backups.list_backups(p.id)})
+        
+    # FIX: Pass request as the first argument (or explicitly as a kwarg)
+    return templates.TemplateResponse(
+        request=request,
+        name="index.html", 
+        context={"data": profile_data}
+    )
