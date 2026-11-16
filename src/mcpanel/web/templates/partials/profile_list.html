@@ -13,6 +13,9 @@
     </div>
     {% if item.backup_state %}<div class="backup-running" role="status"><i class="fa-solid fa-spinner fa-spin"></i> Backing up… {{ item.backup_state.elapsed_seconds }}s</div>{% endif %}
     
+    <details class="profile-details" data-profile-details="{{ item.profile.id }}" open>
+    <summary><span>Profile details</span><i class="fa-solid fa-chevron-down"></i></summary>
+    <div class="profile-detail-content">
     <div style="background: var(--bg); padding: 0.8rem; border-radius: 8px; font-size: 0.85rem; margin-bottom: 1.5rem; border: 1px solid var(--border);">
         <div style="display: flex; justify-content: space-between; margin-bottom: 0.4rem;">
             <span style="color: var(--text-muted);">Port</span>
@@ -61,6 +64,8 @@
         <p class="form-hint">No backups yet.</p>
         {% endfor %}
     </details>
+    </div>
+    </details>
     
     <div class="profile-actions">
         <div class="profile-primary-actions">
@@ -92,7 +97,7 @@
                 </button>
             {% endif %}
             
-            <button class="icon-btn" style="background: var(--border);" @click="openConsole('{{ item.profile.id }}')" title="View Console" aria-label="View server console">
+            <button class="icon-btn" style="background: var(--border);" @click='openConsole({{ item.profile.id | tojson }}, {{ item.profile.name | tojson }})' title="View Console" aria-label="View server console">
                 <i class="fa-solid fa-terminal"></i>
             </button>
         </div>

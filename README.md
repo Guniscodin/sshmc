@@ -113,12 +113,12 @@ Monitoring API endpoints, protected by the panel login session:
 From the project directory, install the environment once and use the small launcher:
 
 ```sh
-python -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
+./sshmc install
 ./sshmc help
 ./sshmc start
 ```
+
+`./sshmc install` creates the project's `.venv` when needed and installs the Python packages listed in `requirements.txt`. Starting the panel checks that those imports are available and prints a direct install hint if anything is missing.
 
 `./sshmc start` runs the panel in the foreground so it can prompt for the panel password. Open <http://127.0.0.1:8000> in a browser. Press Ctrl+C, use `./sshmc stop` from another terminal, or use **Shut down panel** in the GUI. These only stop SSHMC; Minecraft server processes keep running. The launcher uses one Uvicorn worker and binds to `127.0.0.1` by default. Avoid `--reload` or multiple workers for normal use because each process may prompt for the panel password separately. Set `MCPANEL_HOST` or `MCPANEL_PORT` to change the launch bind address or port.
 

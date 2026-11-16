@@ -1,20 +1,20 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
 :root {
-    --bg: #0f1115;
-    --surface: #181b21;
-    --surface-hover: #1f232b;
-    --primary: #3b82f6;
-    --primary-hover: #2563eb;
+    --bg: #080b12;
+    --surface: #111722;
+    --surface-hover: #1a2433;
+    --primary: #4d8dff;
+    --primary-hover: #76a7ff;
     --danger: #ef4444;
     --danger-hover: #dc2626;
     --success: #10b981;
     --success-hover: #059669;
     --warning: #f59e0b;
     --critical: #ef4444;
-    --text-main: #f3f4f6;
-    --text-muted: #9ca3af;
-    --border: #2d3748;
+    --text-main: #f8fafc;
+    --text-muted: #aab7ca;
+    --border: #29384f;
     --radius: 12px;
 }
 
@@ -43,7 +43,15 @@ body {
     overflow-y: auto;
     display: flex;
     flex-direction: column;
+    transition: width 0.25s ease, padding 0.25s ease;
+    flex: 0 0 380px;
 }
+.sidebar-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 2rem; }
+.sidebar-toggle { margin-left: auto; white-space: nowrap; }
+.sidebar-collapsed { flex-basis: 76px; width: 76px; padding: 1.2rem 0.75rem; }
+.sidebar-collapsed .sidebar-brand { flex-wrap: wrap; justify-content: center; }
+.sidebar-collapsed .sidebar-brand h1, .sidebar-collapsed .sidebar-content, .sidebar-collapsed .sidebar-toggle-label { display: none; }
+.sidebar-collapsed .sidebar-toggle { margin: 0; padding: 0.55rem; }
 
 .main-content {
     flex: 1;
@@ -141,6 +149,12 @@ h3 { font-size: 1.2rem; font-weight: 600; margin-bottom: 0.5rem; }
 }
 
 .profile-grid > .card:only-child { grid-column: 1 / -1; width: min(100%, 560px); }
+.profile-details { margin: 0 0 1rem; }
+.profile-details > summary { display: flex; align-items: center; justify-content: space-between; cursor: pointer; padding: 0.65rem 0.8rem; border: 1px solid var(--border); border-radius: 8px; color: var(--text-muted); background: var(--bg); font-size: 0.8rem; list-style: none; }
+.profile-details > summary::-webkit-details-marker { display: none; }
+.profile-details[open] > summary { margin-bottom: 0.75rem; color: var(--text-main); border-color: var(--primary); }
+.profile-details[open] > summary i { transform: rotate(180deg); }
+.profile-detail-content { padding-top: 0.15rem; }
 .profile-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.6rem; }
 .profile-primary-actions, .profile-secondary-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; min-width: 0; }
 .profile-primary-actions { flex: 1 1 220px; }
@@ -221,11 +235,14 @@ input:focus, select:focus { outline: none; border-color: var(--primary); box-sha
     display: flex; flex-direction: column; border-radius: var(--radius); 
     border: 1px solid var(--border); box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5);
 }
+.console-container:fullscreen, .console-container.console-fullscreen { width: 100vw; max-width: none; height: 100vh; border: 0; border-radius: 0; background: var(--surface); }
 .console-header {
-    padding: 1rem 1.5rem; border-bottom: 1px solid var(--border); 
+    min-height: 48px; padding: 0.45rem 0.8rem; border-bottom: 1px solid var(--border);
     display: flex; justify-content: space-between; align-items: center; 
     background: #14161a; border-radius: var(--radius) var(--radius) 0 0;
 }
+.console-header h3 { font-size: 0.95rem; }
+.console-fullscreen-toggle { padding: 0.45rem 0.65rem; font-size: 0.75rem; }
 .console-actions { display: flex; align-items: center; gap: 0.6rem; }
 .console-actions label { white-space: nowrap; }
 .console-actions select { width: auto; padding: 0.5rem; }
@@ -372,6 +389,9 @@ input:focus, select:focus { outline: none; border-color: var(--primary); box-sha
 .profile-backups { margin: 0 0 1rem; padding: 0.7rem; border-radius: 8px; background: var(--bg); border: 1px solid var(--border); }
 .profile-backups[open] summary { margin-bottom: 0.5rem; }
 .modpack-warning { color: var(--warning, #f0ad4e); font-size: 0.82rem; }
+.modpack-warning-heading { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
+.warning-dismiss { width: 28px; height: 28px; padding: 0; color: var(--warning); background: transparent; border: 1px solid currentColor; }
+.warning-dismiss:hover { color: var(--bg); background: var(--warning); }
 
 @media (max-width: 1100px) {
     .monitoring-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -381,7 +401,10 @@ input:focus, select:focus { outline: none; border-color: var(--primary); box-sha
 @media (max-width: 800px) {
     body { height: auto; min-height: 100vh; overflow: auto; }
     .dashboard-layout { min-height: 100vh; height: auto; flex-direction: column; }
-    .sidebar { width: 100%; border-right: 0; border-bottom: 1px solid var(--border); padding: 1.25rem; }
+    .sidebar { flex: auto; width: 100%; border-right: 0; border-bottom: 1px solid var(--border); padding: 1.25rem; }
+    .sidebar-collapsed { width: 100%; padding: 0.8rem 1rem; }
+    .sidebar-collapsed .sidebar-brand { justify-content: flex-start; margin: 0; }
+    .sidebar-collapsed .sidebar-brand h1 { display: block; }
     .main-content { min-width: 0; padding: 1.25rem; }
     .profile-grid { grid-template-columns: minmax(0, 1fr); }
     .stats-bar { flex-wrap: wrap; gap: 0.75rem; }
@@ -395,7 +418,7 @@ input:focus, select:focus { outline: none; border-color: var(--primary); box-sha
     .profile-primary-actions { flex-basis: 100%; }
     .profile-secondary-actions { margin-left: 0; }
     .dashboard-session-actions { flex-wrap: wrap; justify-content: flex-end; }
-    .console-header { padding: 0.7rem; }
+    .console-header { padding: 0.5rem; }
     .console-actions { gap: 0.35rem; }
     .console-actions label { display: none; }
     .modpack-library { padding: 1rem; }

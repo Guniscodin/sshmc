@@ -142,7 +142,7 @@ async def login_page():
         )
     return HTMLResponse("""
         <!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>Sign in · SSHMC</title><link rel="stylesheet" href="/static/css/style.css">
+        <title>Sign in · SSHMC</title><link rel="icon" type="image/svg+xml" href="/static/favicon.svg"><link rel="stylesheet" href="/static/css/style.css">
         <body style="display:grid;place-items:center;overflow:auto;height:100vh">
           <form method="post" action="/auth/login" style="width:min(420px,92vw);padding:2rem;background:var(--surface);border:1px solid var(--border);border-radius:12px">
             <h1>Sign in to SSHMC</h1>

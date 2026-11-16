@@ -17,6 +17,9 @@ Usage:
   ./sshmc start
       Start the panel in this terminal. The first run asks you to set a password.
 
+  ./sshmc install
+      Create/update the local virtual environment and install panel requirements.
+
   ./sshmc stop
       Gracefully stop a panel started with ./sshmc start. Minecraft servers keep running.
 
@@ -64,8 +67,11 @@ is_our_panel() {
 start_panel() {
     uvicorn="$ROOT/.venv/bin/uvicorn"
     if [ ! -x "$uvicorn" ]; then
-        echo "SSHMC virtual environment not found. Create it and install requirements first." >&2
-        echo "  python3 -m venv .venv && .venv/bin/pip install -r requirements.txt" >&2
+        echo "SSHMC dependencies are not installed. Run: ./sshmc install" >&2
+        exit 1
+    fi
+    if ! "$ROOT/.venv/bin/python" -c 'import fastapi, uvicorn, jinja2, multipart, pydantic, httpx, git, psutil, aiofiles, websockets' >/dev/null 2>&1; then
+        echo "One or more SSHMC Python packages are missing. Run: ./sshmc install" >&2
         exit 1
     fi
     cd "$ROOT"
@@ -88,6 +94,24 @@ start_panel() {
     echo "Starting SSHMC on ${MCPANEL_HOST:-127.0.0.1}:${MCPANEL_PORT:-8000}. Press Ctrl+C to stop the panel."
     exec "$uvicorn" mcpanel.main:app --app-dir "$ROOT/src" \
         --host "${MCPANEL_HOST:-127.0.0.1}" --port "${MCPANEL_PORT:-8000}"
+}
+
+install_panel() {
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo "Python 3 is required. Install Python 3 and its venv/pip support, then run ./sshmc install again." >&2
+        exit 1
+    fi
+    if [ ! -x "$ROOT/.venv/bin/python" ]; then
+        echo "Creating SSHMC virtual environment..."
+        if ! python3 -m venv "$ROOT/.venv"; then
+            echo "Could not create the virtual environment. On Ubuntu/Debian, install python3-venv, then run ./sshmc install." >&2
+            exit 1
+        fi
+    fi
+    echo "Installing SSHMC requirements..."
+    "$ROOT/.venv/bin/python" -m pip install --upgrade pip
+    "$ROOT/.venv/bin/python" -m pip install -r "$ROOT/requirements.txt"
+    echo "SSHMC is ready. Start it with ./sshmc start."
 }
 
 stop_panel() {
@@ -138,6 +162,7 @@ tunnel_panel() {
 }
 
 case "${1:-help}" in
+    install) shift; [ "$#" -eq 0 ] || { echo "Usage: ./sshmc install" >&2; exit 2; }; install_panel ;;
     start) shift; [ "$#" -eq 0 ] || { echo "Usage: ./sshmc start" >&2; exit 2; }; start_panel ;;
     stop) shift; [ "$#" -eq 0 ] || { echo "Usage: ./sshmc stop" >&2; exit 2; }; stop_panel ;;
     tunnel) shift; tunnel_panel "$@" ;;

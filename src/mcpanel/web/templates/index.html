@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <title>SSHMC Panel</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
     <link rel="stylesheet" href="/static/css/style.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
@@ -13,12 +14,13 @@
     
     <div class="dashboard-layout">
         <!-- SIDEBAR -->
-        <aside class="sidebar">
-            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 2rem;">
+        <aside class="sidebar" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
+            <div class="sidebar-brand">
                 <i class="fa-solid fa-server" style="color: var(--primary); font-size: 1.5rem;"></i>
                 <h1 style="margin: 0;">SSHMC</h1>
+                <button type="button" class="sidebar-toggle quiet-button" @click="toggleSidebar()" :aria-expanded="(!sidebarCollapsed).toString()" aria-controls="sidebar-tools" :title="sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'"><i class="fa-solid" :class="sidebarCollapsed ? 'fa-angles-right' : 'fa-angles-left'"></i><span class="sidebar-toggle-label" x-text="sidebarCollapsed ? 'Expand' : 'Collapse'"></span></button>
             </div>
-            
+            <div id="sidebar-tools" class="sidebar-content">
             <h2>Create Instance</h2>
             <form id="create-profile-form" hx-post="/api/profiles" hx-swap="none" hx-disabled-elt="find button[type=submit]" @submit="isSubmitting = true"
                   x-data="formApp()">
@@ -95,6 +97,7 @@
                     <span x-show="isSubmitting"><i class="fa-solid fa-spinner fa-spin"></i> Creating profile...</span>
                 </button>
             </form>
+            </div>
         </aside>
 
         <!-- MAIN CONTENT -->
@@ -187,7 +190,10 @@
                             <div class="modpack-file-progress-row"><span x-text="file.label"></span><progress max="100" :value="file.progress"></progress><b x-text="file.status"></b></div>
                         </template>
                     </div>
-                    <div class="modpack-warning" x-show="skippedFiles.length"><strong>Skipped files</strong><ul><template x-for="(name, index) in skippedFiles" :key="index"><li x-text="name"></li></template></ul></div>
+                    <div class="modpack-warning" x-show="skippedFiles.length">
+                        <div class="modpack-warning-heading"><strong>Skipped files</strong><button type="button" class="warning-dismiss" @click="clearSkippedFiles()" aria-label="Dismiss skipped files warning" title="Dismiss warning"><i class="fa-solid fa-xmark"></i></button></div>
+                        <ul><template x-for="(name, index) in skippedFiles" :key="index"><li x-text="name"></li></template></ul>
+                    </div>
                     <div class="modpack-import-fields" x-show="uploadId || uploadSession">
                         <label x-show="!uploadSession || destinationMode === 'new'">Pack name<input type="text" x-model="packName" maxlength="100" placeholder="e.g. Survival Fabric 1.21"></label>
                         <label x-show="uploadSession">Destination
@@ -395,12 +401,13 @@
 
     <!-- CONSOLE MODAL -->
     <div x-show="consoleOpen" class="console-modal" x-cloak @keydown.escape.window="closeConsole()">
-        <div class="console-container" role="dialog" aria-modal="true" aria-labelledby="console-title">
+        <div class="console-container" :class="{ 'console-fullscreen': consoleFullscreen }" role="dialog" aria-modal="true" aria-labelledby="console-title" x-ref="consoleContainer">
             <div class="console-header">
                 <h3 id="console-title" style="margin:0; font-family: monospace; display: flex; align-items: center; gap: 10px;">
                     <i class="fa-solid fa-terminal"></i> Server Console
                 </h3>
                 <div class="console-actions">
+                    <button type="button" class="quiet-button console-fullscreen-toggle" @click="toggleConsoleFullscreen()" :aria-label="consoleFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'" :title="consoleFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'"><i class="fa-solid" :class="consoleFullscreen ? 'fa-compress' : 'fa-expand'"></i><span x-text="consoleFullscreen ? 'Exit fullscreen' : 'Fullscreen'"></span></button>
                     <label for="log-limit">Visible lines</label>
                     <select id="log-limit" :value="maxLogs" @change="setLogLimit($event.target.value)" aria-label="Maximum visible log lines">
                         <option value="100">100</option><option value="500">500</option><option value="1000">1,000</option><option value="2000">2,000</option><option value="5000">5,000</option>
@@ -679,6 +686,7 @@
                     } catch (error) { showToast(error.message || 'Could not load mod packs.'); }
                     finally { this.loadingPacks = false; }
                 },
+                clearSkippedFiles() { this.skippedFiles = []; },
                 async handleFiles(files, fromFolder = false) {
                     if (!files.length || this.uploading || this.importing) return;
                     const zips = fromFolder ? [] : files.filter(file => file.name.toLowerCase().endsWith('.zip'));
@@ -1090,19 +1098,43 @@
         // --- Main Dashboard Logic ---
         function panelApp() {
             return {
-                consoleOpen: false, logs: [], ws: null,
+                consoleOpen: false, consoleFullscreen: false, logs: [], ws: null,
                 maxLogs: 1000,
                 modDownloadPromptOpen: false, modDownloadFailure: {}, modDownloadAction: '', skippedModIndexes: [], modDownloadWorkflow: false, isResolvingModFailure: false,
                 deleteModalOpen: false, deleteId: null, deleteName: '', deleteFiles: false, isDeleting: false,
                 editModalOpen: false, monitoringAvailableBytes: null,
                 shutdownPending: false,
+                sidebarCollapsed: localStorage.getItem('sshmc-sidebar-collapsed') === 'true',
+                profileDetailsState: {},
                 backupDialogOpen: false, backupProfileId: '', backupProfileName: '', backupSelection: { worlds: true, mods: false, config: false, datapacks: false, server_settings: true }, backupLabel: '', backupBusy: false, backupElapsed: 0, backupTimer: null,
 
                 init() {
                     // Listen for the custom close event fired by the edit modal
                     this.$el.addEventListener('close-edit', () => { this.editModalOpen = false; });
+                    document.body.addEventListener('htmx:beforeSwap', event => {
+                        if (event.detail.target?.id !== 'profile-list') return;
+                        this.profileDetailsState = Object.fromEntries(
+                            Array.from(document.querySelectorAll('[data-profile-details]'))
+                                .map(details => [details.dataset.profileDetails, details.open])
+                        );
+                    });
+                    document.body.addEventListener('htmx:afterSwap', event => {
+                        if (event.detail.target?.id !== 'profile-list') return;
+                        document.querySelectorAll('[data-profile-details]').forEach(details => {
+                            const saved = this.profileDetailsState[details.dataset.profileDetails];
+                            details.open = saved === undefined ? true : saved;
+                        });
+                    });
                     const savedLimit = Number(localStorage.getItem('sshmc-log-limit'));
                     if ([100, 500, 1000, 2000, 5000].includes(savedLimit)) this.maxLogs = savedLimit;
+                    document.addEventListener('fullscreenchange', () => {
+                        this.consoleFullscreen = document.fullscreenElement === this.$refs.consoleContainer;
+                    });
+                },
+
+                toggleSidebar() {
+                    this.sidebarCollapsed = !this.sidebarCollapsed;
+                    localStorage.setItem('sshmc-sidebar-collapsed', this.sidebarCollapsed ? 'true' : 'false');
                 },
 
                 async deleteBackup(profileId, filename) {
@@ -1272,9 +1304,29 @@
                     }
                 },
                 
-                openConsole(profileId) {
+                async toggleConsoleFullscreen() {
+                    try {
+                        if (document.fullscreenElement) await document.exitFullscreen();
+                        else await this.$refs.consoleContainer.requestFullscreen();
+                    } catch (error) { showToast(error.message || 'Fullscreen is unavailable in this browser.'); }
+                },
+                openConsole(profileId, profileName = '') {
                     if (this.ws) { this.ws.onclose = null; this.ws.close(); this.ws = null; }
                     this.logs = []; this.consoleOpen = true;
+                    this.consoleFullscreen = false;
+                    if (profileName.trim().toLowerCase() === 'console test') {
+                        this.logs = [
+                            '[12:00:00] [Server thread/INFO]: Starting minecraft server version 1.21.1',
+                            '[12:00:01] [Server thread/INFO]: Loading properties',
+                            '[12:00:02] [Server thread/INFO]: Default game type: SURVIVAL',
+                            '[12:00:03] [Server thread/INFO]: Preparing level "world"',
+                            '[12:00:04] [Server thread/INFO]: Preparing spawn area: 18%',
+                            '[12:00:05] [Server thread/INFO]: Preparing spawn area: 67%',
+                            '[12:00:06] [Server thread/INFO]: Done (5.842s)! For help, type "help"',
+                            '[12:00:06] [Server thread/INFO]: Server console preview — sample lines only.'
+                        ];
+                        return;
+                    }
                     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
                     this.ws = new WebSocket(`${protocol}//${window.location.host}/ws/${profileId}/console`);
                     this.ws.onmessage = (e) => this.appendLog(e.data);
@@ -1290,6 +1342,8 @@
                 },
                 closeConsole() {
                     this.consoleOpen = false;
+                    if (document.fullscreenElement === this.$refs.consoleContainer) document.exitFullscreen().catch(() => {});
+                    this.consoleFullscreen = false;
                     if (this.ws) { this.ws.onclose = null; this.ws.close(); this.ws = null; }
                 },
                 setLogLimit(value) {
