@@ -276,13 +276,13 @@
 
     <!-- EDIT MODAL -->
     <div x-show="editModalOpen" class="console-modal" x-cloak @keydown.escape.window="editModalOpen = false">
-        <div id="edit-modal-container" role="dialog" aria-modal="true" aria-labelledby="edit-title" style="background: var(--surface); width: min(600px, 94vw); max-height: 92vh; overflow-y: auto; border-radius: var(--radius); border: 1px solid var(--border); padding: 2rem;" x-data="editApp()">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+        <div id="edit-modal-container" class="edit-modal-panel" role="dialog" aria-modal="true" aria-labelledby="edit-title" x-data="editApp()">
+            <div class="edit-modal-header">
                 <h3 id="edit-title" style="margin: 0; color: var(--primary);"><i class="fa-solid fa-pen-to-square"></i> Edit Profile</h3>
                 <button @click="$dispatch('close-edit')" aria-label="Close edit profile" style="background: none; border: none; font-size: 1.5rem; color: var(--text-muted); cursor: pointer;"><i class="fa-solid fa-xmark"></i></button>
             </div>
             
-            <form @submit.prevent="saveEdit()">
+            <form class="edit-modal-form" @submit.prevent="saveEdit()">
                 <div class="form-group">
                 <label for="edit-name">Profile Name</label>
                     <input id="edit-name" type="text" x-model="profile.name" required maxlength="50">
@@ -377,7 +377,7 @@
                     </div>
                 </div>
 
-                <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 2rem;">
+                <div class="edit-modal-footer">
                     <button type="button" @click="$dispatch('close-edit')" style="background: var(--border);">Cancel</button>
                     <button type="submit" class="success" :disabled="isSaving || isLoading || loaderPending || !profile.loader_version || (profile.build !== 'vanilla' && (!loaders.length || !!loaderError))">
                         <span x-show="!isSaving">Save Changes</span>
@@ -493,6 +493,15 @@
             }
         });
 
+        document.body.addEventListener('htmx:afterSwap', (event) => {
+            if (!event.detail.target || event.detail.target.id !== 'profile-list' || !window.latestMonitoringStats) return;
+            const section = document.querySelector('.monitoring-section');
+            if (!section) return;
+            const monitor = Alpine.$data(section);
+            monitor.stats = window.latestMonitoringStats;
+            monitor.updateServerCards();
+        });
+
         // Startup readiness is monitored by the panel after the request returns.
         // Surface its later failures and refresh the card state without keeping
         // the original Start request open for several minutes.
@@ -597,15 +606,15 @@
                         const size = sizes.get(id);
                         const cpu = server && server.available
                             ? `${server.cpu_percent_one_core.toFixed(1)}% core · ${server.cpu_percent_machine.toFixed(1)}% host`
-                            : 'Process unavailable';
+                            : '—';
                         const rss = server && server.available
                             ? `${this.formatBytes(server.rss_bytes)} / ${this.formatBytes(server.ram_allocation_bytes)}`
                             : '—';
                         card.querySelector('[data-monitor-cpu]').textContent = cpu;
                         card.querySelector('[data-monitor-rss]').textContent = rss;
-                        card.querySelector('[data-monitor-server-size]').textContent = size ? this.formatBytes(size.server_bytes) : 'Calculating…';
-                        card.querySelector('[data-monitor-world-size]').textContent = size ? this.formatBytes(size.world_bytes) : 'Calculating…';
-                        card.querySelector('[data-monitor-backup-size]').textContent = size ? this.formatBytes(size.backups_bytes) : 'Calculating…';
+                        card.querySelector('[data-monitor-server-size]').textContent = size ? this.formatBytes(size.server_bytes) : '—';
+                        card.querySelector('[data-monitor-world-size]').textContent = size ? this.formatBytes(size.world_bytes) : '—';
+                        card.querySelector('[data-monitor-backup-size]').textContent = size ? this.formatBytes(size.backups_bytes) : '—';
                     }
                 }
             };

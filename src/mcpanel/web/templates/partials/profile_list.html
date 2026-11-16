@@ -40,11 +40,11 @@
 
     {% if item.state.status.value == 'running' %}
     <div class="server-monitoring" data-server-monitor="{{ item.profile.id }}">
-        <div><span>CPU</span><strong data-monitor-cpu>Sampling…</strong></div>
-        <div><span>RSS / allocation</span><strong data-monitor-rss>Sampling…</strong></div>
-        <div><span>Server folder</span><strong data-monitor-server-size>Calculating…</strong></div>
-        <div><span>World folders</span><strong data-monitor-world-size>Calculating…</strong></div>
-        <div><span>Backups</span><strong data-monitor-backup-size>Calculating…</strong></div>
+        <div><span>CPU</span><strong data-monitor-cpu>—</strong></div>
+        <div><span>RSS / allocation</span><strong data-monitor-rss>—</strong></div>
+        <div><span>Server folder</span><strong data-monitor-server-size>—</strong></div>
+        <div><span>World folders</span><strong data-monitor-world-size>—</strong></div>
+        <div><span>Backups</span><strong data-monitor-backup-size>—</strong></div>
     </div>
     {% endif %}
 
@@ -62,8 +62,8 @@
         {% endfor %}
     </details>
     
-    <div style="display: flex; gap: 8px; justify-content: space-between;">
-        <div style="display: flex; gap: 8px;">
+    <div class="profile-actions">
+        <div class="profile-primary-actions">
             <button type="button" class="quiet-button" @click="openBackupModal({{ item.profile.id | tojson }}, {{ item.profile.name | tojson }})" {% if item.backup_state %}disabled{% endif %}>
                 <i class="fa-solid fa-box-archive"></i> {% if item.backup_state %}Backing up…{% else %}Backup{% endif %}
             </button>
@@ -97,7 +97,7 @@
             </button>
         </div>
         
-        <div style="display: flex; gap: 8px;">
+        <div class="profile-secondary-actions">
             <!-- The Edit Button passes the profile data into the Alpine function -->
             <button class="icon-btn" style="background: var(--border);" @click='openEditModal({{ item.profile.id | tojson }})' title="Edit Profile" aria-label="Edit profile" {% if item.state.status.value in ['starting', 'stopping'] or item.backup_state %}disabled{% endif %}>
                 <i class="fa-solid fa-pen"></i>

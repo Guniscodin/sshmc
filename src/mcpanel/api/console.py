@@ -57,7 +57,8 @@ async def websocket_console(websocket: WebSocket, profile_id: str):
                 else:
                     try:
                         path_stat = os.stat(log_path)
-                        handle_stat = os.fstat(await f.fileno())
+                        # aiofiles exposes fileno() as a synchronous descriptor lookup.
+                        handle_stat = os.fstat(f.fileno())
                         if (path_stat.st_dev, path_stat.st_ino) != (handle_stat.st_dev, handle_stat.st_ino):
                             await f.close()
                             f = await aiofiles.open(log_path, mode="rb")
