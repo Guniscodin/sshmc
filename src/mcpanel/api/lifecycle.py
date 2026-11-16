@@ -2,7 +2,7 @@ import logging
 from fastapi import APIRouter, HTTPException, Query
 from mcpanel import db
 from mcpanel.models import ProfileStatus
-from mcpanel.core import lifecycle, runtime, mod_downloads
+from mcpanel.core import lifecycle, runtime, mod_downloads, backups
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/lifecycle", tags=["lifecycle"])
@@ -39,6 +39,8 @@ async def start_profile(profile_id: str, skip_mod_download_indexes: list[int] = 
     
     if not profile or not state:
         raise HTTPException(status_code=404, detail="Profile not found")
+    if backups.is_backup_running(profile_id):
+        raise HTTPException(status_code=409, detail="This profile is backing up. Wait for the backup to finish.")
         
     if state.pid and state.pid_create_time and runtime.process.is_process_alive(state.pid, state.pid_create_time):
         raise HTTPException(status_code=409, detail="A server process is already running for this profile.")
@@ -48,6 +50,9 @@ async def start_profile(profile_id: str, skip_mod_download_indexes: list[int] = 
         profile_id, [ProfileStatus.STOPPED, ProfileStatus.CRASHED], ProfileStatus.STARTING
     ):
         raise HTTPException(status_code=409, detail="Server is already starting, running, or stopping.")
+    if backups.is_backup_running(profile_id):
+        db.claim_runtime_state(profile_id, [ProfileStatus.STARTING], ProfileStatus.STOPPED)
+        raise HTTPException(status_code=409, detail="This profile is backing up. Wait for the backup to finish.")
     state.status = ProfileStatus.STARTING
     db.update_runtime_state(state)
 
@@ -77,7 +82,10 @@ async def start_profile(profile_id: str, skip_mod_download_indexes: list[int] = 
         logger.error(f"Start failed for {profile.name}: {e}")
         # Unlock the state and mark it as crashed so the UI updates
         state = db.get_runtime_state(profile_id) or state
-        state.status = ProfileStatus.CRASHED
+        state.status = ProfileStatus.STOPPED if "replacement aborted because" in str(e).lower() else ProfileStatus.CRASHED
+        if state.status == ProfileStatus.STOPPED:
+            state.pid = None
+            state.pid_create_time = None
         db.update_runtime_state(state)
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
@@ -95,8 +103,13 @@ async def stop_profile(profile_id: str):
     
     if not profile or not state:
         raise HTTPException(status_code=404, detail="Profile not found")
+    if backups.is_backup_running(profile_id):
+        raise HTTPException(status_code=409, detail="This profile is backing up. Wait for the backup to finish.")
     if not db.claim_runtime_state(profile_id, [ProfileStatus.RUNNING], ProfileStatus.STOPPING):
         raise HTTPException(status_code=409, detail="Server is not in a stoppable state.")
+    if backups.is_backup_running(profile_id):
+        db.claim_runtime_state(profile_id, [ProfileStatus.STOPPING], ProfileStatus.RUNNING)
+        raise HTTPException(status_code=409, detail="This profile is backing up. Wait for the backup to finish.")
 
     # Lock the state so people can't spam Stop
     state.status = ProfileStatus.STOPPING
@@ -125,9 +138,14 @@ async def restart_profile(
     
     if not profile or not state:
         raise HTTPException(status_code=404, detail="Profile not found")
+    if backups.is_backup_running(profile_id):
+        raise HTTPException(status_code=409, detail="This profile is backing up. Wait for the backup to finish.")
     if state.status == ProfileStatus.RUNNING:
         if not db.claim_runtime_state(profile_id, [ProfileStatus.RUNNING], ProfileStatus.STOPPING):
             raise HTTPException(status_code=409, detail="Server state changed; refresh and retry.")
+        if backups.is_backup_running(profile_id):
+            db.claim_runtime_state(profile_id, [ProfileStatus.STOPPING], ProfileStatus.RUNNING)
+            raise HTTPException(status_code=409, detail="This profile is backing up. Wait for the backup to finish.")
         state.status = ProfileStatus.STOPPING
         try:
             state = await runtime.stop_server(profile, state)
@@ -147,6 +165,9 @@ async def restart_profile(
 
     if not db.claim_runtime_state(profile_id, [ProfileStatus.STOPPED, ProfileStatus.CRASHED], ProfileStatus.STARTING):
         raise HTTPException(status_code=409, detail="Server state changed; refresh and retry.")
+    if backups.is_backup_running(profile_id):
+        db.claim_runtime_state(profile_id, [ProfileStatus.STARTING], ProfileStatus.STOPPED)
+        raise HTTPException(status_code=409, detail="This profile is backing up. Wait for the backup to finish.")
     state.status = ProfileStatus.STARTING
     db.update_runtime_state(state)
 
@@ -157,7 +178,6 @@ async def restart_profile(
             state,
             force_wipe=force_wipe,
             skip_mod_download_indexes=set(skip_mod_download_indexes),
-            create_restart_backup=True,
         )
         new_state = db.get_runtime_state(profile_id) or new_state
         return {"status": new_state.status.value, "state": new_state}
@@ -178,7 +198,10 @@ async def restart_profile(
     except lifecycle.LifecycleError as e:
         logger.error(f"Restart failed for {profile.name}: {e}")
         state = db.get_runtime_state(profile_id) or state
-        state.status = ProfileStatus.CRASHED
+        state.status = ProfileStatus.STOPPED if "replacement aborted because" in str(e).lower() else ProfileStatus.CRASHED
+        if state.status == ProfileStatus.STOPPED:
+            state.pid = None
+            state.pid_create_time = None
         db.update_runtime_state(state)
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:

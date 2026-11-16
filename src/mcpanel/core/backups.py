@@ -37,6 +37,17 @@ class BackupInProgress(BackupError):
     """A backup is already running for this profile."""
 
 
+class _CancelableReader:
+    def __init__(self, source, cancel: threading.Event | None):
+        self.source = source
+        self.cancel = cancel
+
+    def read(self, size: int = -1):
+        if self.cancel and self.cancel.is_set():
+            raise BackupCancelled("Backup cancelled.")
+        return self.source.read(size)
+
+
 def _valid_profile_id(profile_id: str) -> None:
     if not re.fullmatch(r"[0-9a-f]{32}", profile_id):
         raise ValueError("Invalid profile identifier.")
@@ -49,7 +60,10 @@ def _backup_dir(profile_id: str) -> Path:
         candidate = base / profile_id
     else:
         base = PROFILES_DIR.resolve()
-        candidate = base / profile_id / "backups"
+        profile_directory = base / profile_id
+        if profile_directory.is_symlink():
+            raise ValueError("Profile backup directories cannot be symbolic links.")
+        candidate = profile_directory / "backups"
     base_resolved = base.resolve()
     try:
         candidate.resolve().relative_to(base_resolved)
@@ -135,11 +149,14 @@ def _tree_size(path: Path) -> int:
 
 
 def _selected_sources(profile: Profile, selection: dict[str, bool]) -> list[tuple[str, Path]]:
-    server = PROFILES_DIR / profile.id / "server"
+    profile_directory = PROFILES_DIR / profile.id
+    if profile_directory.is_symlink():
+        raise BackupError("The profile folder is a symbolic link; refusing to archive it.")
+    server = profile_directory / "server"
     if server.is_symlink():
         raise BackupError("The server folder is a symbolic link; refusing to archive it.")
     try:
-        server.resolve().relative_to(PROFILES_DIR.resolve())
+        server.resolve().relative_to(profile_directory.resolve())
     except ValueError as exc:
         raise BackupError("The server folder is outside the profile data directory.") from exc
     choices = []
@@ -199,6 +216,9 @@ def _make_archive(
     suffix = f"_{label}" if label else ""
     archive = backup_dir / f"backup_{stamp}{suffix}.tar.gz"
     partial = backup_dir / f".backup_{stamp}{suffix}.partial"
+    if archive.exists() or archive.is_symlink() or partial.exists() or partial.is_symlink():
+        raise BackupError("A backup with this timestamp already exists. Try again.")
+    _inside_backup_root(partial)
     manifest = {
         "included": [name for name, _ in sources],
         "selected": selected_categories,
@@ -213,23 +233,35 @@ def _make_archive(
         "server_was_running": bool(was_running),
     }
 
-    def filter_member(member: tarfile.TarInfo):
+    def add_path(archive_file: tarfile.TarFile, source: Path, archive_name: str) -> None:
         if cancel and cancel.is_set():
             raise BackupCancelled("Backup cancelled.")
-        if member.issym() or member.islnk() or member.isdev():
-            return None
-        return member
+        try:
+            info = source.lstat()
+        except OSError:
+            return
+        if stat.S_ISDIR(info.st_mode):
+            member = archive_file.gettarinfo(str(source), arcname=archive_name)
+            archive_file.addfile(member)
+            try:
+                children = sorted(source.iterdir(), key=lambda path: path.name.casefold())
+            except OSError:
+                return
+            for child in children:
+                add_path(archive_file, child, f"{archive_name}/{child.name}")
+        elif stat.S_ISREG(info.st_mode):
+            member = archive_file.gettarinfo(str(source), arcname=archive_name)
+            with source.open("rb") as file_stream:
+                archive_file.addfile(member, _CancelableReader(file_stream, cancel))
 
     try:
-        with tarfile.open(partial, "w:gz") as archive_file:
+        with tarfile.open(partial, "x:gz") as archive_file:
             manifest_bytes = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
             manifest_info = tarfile.TarInfo("backup-manifest.json")
             manifest_info.size = len(manifest_bytes)
             archive_file.addfile(manifest_info, io.BytesIO(manifest_bytes))
             for archive_name, source in sources:
-                if cancel and cancel.is_set():
-                    raise BackupCancelled("Backup cancelled.")
-                archive_file.add(source, arcname=archive_name, recursive=True, filter=filter_member)
+                add_path(archive_file, source, archive_name)
         if cancel and cancel.is_set():
             raise BackupCancelled("Backup cancelled.")
         os.replace(_inside_backup_root(partial), archive)
@@ -259,7 +291,7 @@ def create_manual_backup(
         raise BackupError(f"Backup failed: {exc}") from exc
 
 
-def create_change_backup(profile: Profile) -> dict | None:
+def create_change_backup(profile: Profile, cancel: threading.Event | None = None) -> dict | None:
     selection = {
         "worlds": profile.backup_worlds_on_change,
         "mods": profile.backup_mods_on_change,
@@ -269,13 +301,16 @@ def create_change_backup(profile: Profile) -> dict | None:
     }
     if not any(selection.values()):
         return None
-    return create_manual_backup(profile, selection, "before-version-change", False)
+    return create_manual_backup(profile, selection, "before-version-change", False, cancel)
 
 
 def _manifest_for(path: Path) -> dict | None:
     try:
         with tarfile.open(path, "r:gz") as archive:
-            member = archive.extractfile("backup-manifest.json")
+            first_entry = archive.next()
+            if first_entry is None or first_entry.name != "backup-manifest.json":
+                return None
+            member = archive.extractfile(first_entry)
             if member is None:
                 return None
             raw = member.read(1024 * 1024 + 1)
@@ -332,3 +367,14 @@ def resolve_backup(profile_id: str, filename: str) -> Path:
 
 def delete_backup(profile_id: str, filename: str) -> None:
     resolve_backup(profile_id, filename).unlink()
+
+
+def delete_backup_storage(profile_id: str) -> None:
+    directory = _backup_dir(profile_id)
+    if not directory.exists():
+        return
+    if directory.is_symlink():
+        raise ValueError("Backup directories cannot be symbolic links.")
+    resolved = _inside_backup_root(directory)
+    resolved.relative_to(directory.resolve())
+    shutil.rmtree(resolved)

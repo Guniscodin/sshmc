@@ -1,18 +1,21 @@
 import asyncio
 import logging
+import os
 import shutil
 import json
 from typing import Optional
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, status, Form, Request
+from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse
 from pydantic import ValidationError
 
 from mcpanel.models import Profile, BuildType, ProfileStatus
 from mcpanel.config import PROFILES_DIR
-from mcpanel.core import runtime, loader, ports, process, modpacks, backups
+from mcpanel.core import runtime, loader, ports, process, modpacks, backups, rcon
 from mcpanel import db
 
 logger = logging.getLogger(__name__)
@@ -20,6 +23,15 @@ router = APIRouter(prefix="/api/profiles", tags=["profiles"])
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "web" / "templates"))
+
+
+class BackupRequest(BaseModel):
+    worlds: bool = True
+    mods: bool = False
+    config: bool = False
+    datapacks: bool = False
+    server_settings: bool = True
+    label: str | None = Field(default=None, max_length=200)
 
 
 def _parse_mod_downloads(raw: str) -> list[dict]:
@@ -30,6 +42,21 @@ def _parse_mod_downloads(raw: str) -> list[dict]:
     if not isinstance(parsed, list):
         raise HTTPException(status_code=422, detail="Mod downloads must be a list of download links.")
     return parsed
+
+
+def _replacement_pending(profile: Profile) -> bool:
+    metadata = PROFILES_DIR / profile.id / "server" / "profile_meta.json"
+    if not metadata.is_file():
+        return False
+    try:
+        old = json.loads(metadata.read_text(encoding="utf-8"))
+        return any((
+            old.get("build") != profile.build.value,
+            old.get("mc_version") != profile.mc_version,
+            old.get("loader_version") != profile.loader_version,
+        ))
+    except (OSError, json.JSONDecodeError):
+        return False
 
 @router.get("")
 def list_all_profiles():
@@ -108,14 +135,18 @@ async def update_existing_profile(
     java_path: str = Form("java"),
     ram_mb: int = Form(2048),
     port: Optional[int] = Form(None),
-    backup_worlds_on_change: bool = Form(False),
-    backup_on_restart: bool = Form(True),
-    exclude_regenerable_backup_folders: bool = Form(True)
+    backup_worlds_on_change: bool = Form(True),
+    backup_mods_on_change: bool = Form(False),
+    backup_config_on_change: bool = Form(False),
+    backup_datapacks_on_change: bool = Form(False),
+    backup_server_settings_on_change: bool = Form(False)
 ):
     """Updates an existing profile."""
     existing = db.get_profile(profile_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Profile not found")
+    if backups.is_backup_running(profile_id):
+        raise HTTPException(status_code=409, detail="Profile settings cannot be changed while a backup is running.")
     mc_version = mc_version.strip()
     loader_version = loader_version.strip()
         
@@ -167,8 +198,10 @@ async def update_existing_profile(
             rcon_port=existing.rcon_port,
             rcon_password=existing.rcon_password,
             backup_worlds_on_change=backup_worlds_on_change,
-            backup_on_restart=backup_on_restart,
-            exclude_regenerable_backup_folders=exclude_regenerable_backup_folders,
+            backup_mods_on_change=backup_mods_on_change,
+            backup_config_on_change=backup_config_on_change,
+            backup_datapacks_on_change=backup_datapacks_on_change,
+            backup_server_settings_on_change=backup_server_settings_on_change,
             created_at=existing.created_at
         )
         
@@ -203,10 +236,114 @@ def list_profile_backups(profile_id: str):
     return backups.list_backups(profile_id)
 
 
+@router.post("/{profile_id}/backups")
+async def create_profile_backup(profile_id: str, payload: BackupRequest):
+    profile = db.get_profile(profile_id)
+    state = db.get_runtime_state(profile_id)
+    if not profile or not state:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    if state.status in (ProfileStatus.STARTING, ProfileStatus.STOPPING):
+        raise HTTPException(status_code=409, detail="Wait for the server lifecycle operation to finish before backing up.")
+    selection = {
+        "worlds": payload.worlds,
+        "mods": payload.mods,
+        "config": payload.config,
+        "datapacks": payload.datapacks,
+        "server_settings": payload.server_settings,
+    }
+    if not any(selection.values()):
+        raise HTTPException(status_code=422, detail="Choose at least one item to include in this backup.")
+    tracked_process_alive = bool(
+        state.pid and state.pid_create_time
+        and process.is_process_alive(state.pid, state.pid_create_time)
+    )
+    was_running = state.status == ProfileStatus.RUNNING or tracked_process_alive
+    try:
+        active = backups.begin_backup(profile_id)
+    except backups.BackupInProgress as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    save_off_attempted = False
+    result = None
+    failure = None
+    worker = None
+    request_cancelled = False
+    try:
+        if was_running and selection["worlds"]:
+            save_off_attempted = True
+            save_off_response = await rcon.send_command(
+                "127.0.0.1", profile.rcon_port, profile.rcon_password, "save-off"
+            )
+            if not save_off_response.strip() or "unknown command" in save_off_response.lower():
+                raise backups.BackupError("Minecraft did not confirm save-off. Stop the server before backing up its world.")
+            response = await rcon.send_command(
+                "127.0.0.1", profile.rcon_port, profile.rcon_password, "save-all flush", timeout=30
+            )
+            response_text = response.lower()
+            if not response.strip() or any(word in response_text for word in ("unknown command", "failed", "error")):
+                raise backups.BackupError("Minecraft did not confirm save-all flush. Stop the server before backing up its world.")
+        worker = asyncio.create_task(asyncio.to_thread(
+            backups.create_manual_backup, profile, selection, payload.label, was_running, active["cancel"]
+        ))
+        result = await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        request_cancelled = True
+        active["cancel"].set()
+        if worker:
+            try:
+                await asyncio.shield(worker)
+            except BaseException:
+                pass
+    except Exception as exc:
+        failure = exc
+    finally:
+        if save_off_attempted:
+            try:
+                response = await rcon.send_command("127.0.0.1", profile.rcon_port, profile.rcon_password, "save-on")
+                if "unknown command" in response.lower():
+                    raise backups.BackupError("Minecraft did not restore automatic saving after the backup.")
+            except Exception as exc:
+                logger.exception("Could not restore autosaving after backup for %s", profile_id)
+                if failure is None:
+                    if result:
+                        failure = backups.BackupError(
+                            f"Backup {result['name']} was created ({result['size_bytes']} bytes), "
+                            f"but Minecraft autosaving could not be restored: {exc}"
+                        )
+                    else:
+                        failure = backups.BackupError(f"Minecraft autosaving could not be restored: {exc}")
+        backups.finish_backup(profile_id)
+
+    if request_cancelled:
+        raise asyncio.CancelledError
+
+    if failure:
+        if isinstance(failure, backups.BackupCancelled):
+            raise HTTPException(status_code=409, detail=str(failure)) from failure
+        if was_running and selection["worlds"] and isinstance(failure, (rcon.RCONError, OSError)):
+            raise HTTPException(status_code=409, detail="RCON is not reachable. Stop the server before backing up its world.") from failure
+        if isinstance(failure, backups.BackupError):
+            raise HTTPException(status_code=422, detail=str(failure)) from failure
+        logger.error("Manual backup failed for %s: %s", profile_id, failure)
+        raise HTTPException(status_code=500, detail="Could not create this backup.") from failure
+    return result
+
+
+@router.post("/{profile_id}/backups/cancel", status_code=202)
+def cancel_profile_backup(profile_id: str):
+    if not db.get_profile(profile_id):
+        raise HTTPException(status_code=404, detail="Profile not found")
+    if not backups.cancel_backup(profile_id):
+        raise HTTPException(status_code=409, detail="No backup is currently running for this profile.")
+    return {"status": "cancelling"}
+
+
 @router.delete("/{profile_id}/backups/{filename}", status_code=204)
 def delete_profile_backup(profile_id: str, filename: str):
     if not db.get_profile(profile_id):
         raise HTTPException(status_code=404, detail="Profile not found")
+    if backups.is_backup_running(profile_id):
+        raise HTTPException(status_code=409, detail="Cannot delete backups while a backup is running for this profile.")
     try:
         backups.delete_backup(profile_id, filename)
     except FileNotFoundError as exc:
@@ -214,6 +351,19 @@ def delete_profile_backup(profile_id: str, filename: str):
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return None
+
+
+@router.get("/{profile_id}/backups/{filename}/download")
+def download_profile_backup(profile_id: str, filename: str):
+    if not db.get_profile(profile_id):
+        raise HTTPException(status_code=404, detail="Profile not found")
+    try:
+        path = backups.resolve_backup(profile_id, filename)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Backup not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return FileResponse(path, media_type="application/gzip", filename=filename)
 
 @router.delete("/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_profile(profile_id: str, delete_files: bool = False):
@@ -226,6 +376,8 @@ async def delete_profile(profile_id: str, delete_files: bool = False):
     
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
+    if backups.is_backup_running(profile_id):
+        raise HTTPException(status_code=409, detail="Profile settings are locked while a backup is running.")
 
     # Never remove a profile directory until its tracked server process is gone.
     if state and state.status in [ProfileStatus.RUNNING, ProfileStatus.STARTING, ProfileStatus.STOPPING]:
@@ -241,12 +393,23 @@ async def delete_profile(profile_id: str, delete_files: bool = False):
         if state.pid and state.pid_create_time and process.is_process_alive(state.pid, state.pid_create_time):
             raise HTTPException(status_code=409, detail="Server process is still running; profile was not deleted.")
 
+    if backups.is_backup_running(profile_id):
+        raise HTTPException(status_code=409, detail="Cannot delete this profile while a backup is running.")
+
     # Remove files before deleting the DB row so a failed disk cleanup is retryable.
     if delete_files:
         profile_dir = PROFILES_DIR / profile_id
+        if profile_dir.is_symlink():
+            raise HTTPException(status_code=400, detail="Profile storage cannot be a symbolic link.")
+        try:
+            profile_dir.resolve().relative_to(PROFILES_DIR.resolve())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Profile storage must remain inside the data directory.") from exc
         if profile_dir.exists():
             logger.warning(f"Deleting all files at {profile_dir}")
             try:
+                if os.getenv("MCPANEL_BACKUPS_DIR"):
+                    await asyncio.to_thread(backups.delete_backup_storage, profile_id)
                 await asyncio.to_thread(shutil.rmtree, profile_dir)
             except OSError as e:
                 raise HTTPException(status_code=500, detail="Could not delete profile files; profile was kept.") from e
@@ -263,7 +426,10 @@ def get_profile_list_partial(request: Request):
     profile_data = []
     for p in all_profiles:
         state = db.get_runtime_state(p.id)
-        profile_data.append({"profile": p, "state": state, "backups": backups.list_backups(p.id)})
+        profile_data.append({
+            "profile": p, "state": state, "backups": backups.list_backups(p.id),
+            "backup_state": backups.backup_state(p.id),
+        })
         
     return templates.TemplateResponse(
         request=request, 
@@ -304,7 +470,10 @@ def get_profile_settings(profile_id: str):
     profile = db.get_profile(profile_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
+    if backups.is_backup_running(profile_id):
+        raise HTTPException(status_code=409, detail="Cannot delete this profile while a backup is running.")
     settings = profile.model_dump(mode="json", exclude={"rcon_password"})
+    settings["server_replacement_pending"] = _replacement_pending(profile)
     settings["modpack_warnings"] = modpacks.loader_warnings(
         modpacks.get_pack(profile.modpack_name), profile.build.value
     )

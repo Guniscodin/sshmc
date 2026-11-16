@@ -60,12 +60,12 @@ SSHMC is a local web panel for creating and managing Minecraft server profiles. 
 
 - Changing a profile's build, Minecraft version, or loader version marks its current server installation as incompatible. Stop the server before changing these settings.
 - Saving such a change disconnects the old Git repository and clears that profile's configured direct mod links and download cache. Add the repository and links compatible with the new version afterward.
-- On the next Start, SSHMC backs up the `mods/`, `config/`, and `datapacks/` folders before replacing incompatible server files.
-- The edit form includes **Back up world folders before replacing this server**. If checked, the backup also includes `world/`, `world_nether/`, and `world_the_end/`. If unchecked, those world folders are removed during the replacement.
-- Backups are compressed archives saved under the profile's `backups/` directory. A backup error or insufficient free space is reported as a warning and does not block startup.
-- Each profile can create a smart backup on Restart (on by default). The newest five are retained by default, with a 10 GiB per-profile size cap; the newest backup is always kept even if it alone exceeds the cap. A pre-wipe backup is still attempted before an incompatible server replacement.
-- SSHMC estimates the backup's uncompressed input size before writing. If the backup filesystem has less than that estimate plus 1 GiB free, it skips the backup, reports a warning, and continues startup.
-- The profile editor can exclude regenerable cache/, crash-reports/, and logs/ folders from backups (enabled by default). The dashboard lists each backup's name, date, and size, with individual delete controls.
+- Start and Restart never create or prune backups automatically. Choose **Backup** on a profile to make an archive, or select items in **Before replacing the server** when changing its build, Minecraft version, or loader version.
+- Version-change choices are saved with the pending profile change. World folders are selected by default; mods, config, datapacks, and server settings files are unchecked by default. Unselected world folders are deleted during replacement. If a requested archive fails or free space is insufficient, replacement stops before changing the server files. Selecting nothing skips the archive.
+- A manual backup lets you choose world folders, mods, config, datapacks, and server settings (`server.properties`, ops, whitelist, ban lists, and user cache files). It also accepts an optional label. The archive contains a manifest with the selected items, profile version, timestamp, label, and whether the server was running.
+- Before archiving a running world, SSHMC sends RCON `save-off`, then `save-all flush` and waits for the server's response. It writes the archive while saving is paused and sends `save-on` in a `finally` step. If RCON cannot be reached, stop the server before backing up its world. Non-world selections can be archived while it runs.
+- Archives are streamed to a temporary file and only published when complete. SSHMC requires the estimated input size plus 1 GiB of free space. A running backup shows its elapsed time and blocks Start, Restart, Stop, and profile deletion for that profile; it can be cancelled from the dialog.
+- The dashboard lists each archive's name, date, size, manifest contents, download and delete controls. Backups are never automatically pruned. If a profile's backups exceed the configurable 10 GiB warning threshold, the panel warns without deleting anything.
 
 ### Console and logs
 
@@ -136,12 +136,12 @@ By default, persistent data is stored in the project's `data/` directory:
 - `profiles/<profile-id>/downloaded_mods/` — cached direct-link downloads
 - `profiles/<profile-id>/logs/latest.log` and .1 through .5 — Minecraft server output and rotated files shown in the live console
 - `profiles/<profile-id>/server/logs/` — Minecraft's own server logs; old compressed files are pruned on Start
-- `profiles/<profile-id>/backups/` — compressed smart backups, pruned by count and total size
+- `profiles/<profile-id>/backups/` — manually created compressed backups (unless `MCPANEL_BACKUPS_DIR` is configured)
 - `logs/panel.log` — rotating SSHMC application log
 - `modpacks/<pack-name>/` — imported reusable packs, independent of profile directories
 - `uploads/` — temporary ZIP uploads and streamed file/folder upload sessions
 
-Set `MCPANEL_DATA_DIR` before launching SSHMC to store the database, authentication file, profile data, logs, and backups elsewhere. Back up this directory if you want to preserve profile data and login configuration.
+Set `MCPANEL_DATA_DIR` before launching SSHMC to store the database, authentication file, profile data, and logs elsewhere. Back up this directory if you want to preserve profile data and login configuration. Set `MCPANEL_BACKUPS_DIR` to place backups on a separate mounted volume; SSHMC stores each profile under `<MCPANEL_BACKUPS_DIR>/<profile-id>/`. Changing this setting does not move existing archives.
 
 Upload and storage limits can be adjusted with environment variables. Byte values are integer bytes:
 
@@ -153,8 +153,8 @@ Upload and storage limits can be adjusted with environment variables. Byte value
 - `MCPANEL_SERVER_ROTATED_LOG_KEEP` — compressed server logs to retain (default: 10).
 - `MCPANEL_CRASH_REPORT_RETENTION_DAYS` and `MCPANEL_CRASH_REPORT_KEEP` — crash report age and newest reports retained (defaults: 14 days and 3).
 - `MCPANEL_PANEL_LOG_MAX_BYTES` and `MCPANEL_PANEL_LOG_BACKUP_COUNT` — panel file log rotation (defaults: 5 MiB and 3 files).
-- `MCPANEL_BACKUP_RETENTION_COUNT` and `MCPANEL_BACKUP_MAX_BYTES` — per-profile backup count and size cap (defaults: 5 and 10 GiB).
-- `MCPANEL_BACKUP_MIN_FREE_BYTES` — free space kept in addition to estimated backup input size (default: 1 GiB).
+- `MCPANEL_BACKUP_WARNING_BYTES` — per-profile backup size warning threshold (default: 10 GiB); warns only and never deletes archives.
+- `MCPANEL_BACKUP_MIN_FREE_BYTES` — minimum free space kept in addition to the estimated selected input size (default: 1 GiB).
 
 Upload sessions older than 24 hours are cleaned hourly and at panel startup. ZIP imports remain available alongside streamed JAR and folder uploads.
 

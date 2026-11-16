@@ -11,6 +11,7 @@
             <span class="status-dot"></span> {{ item.state.status.value }}
         </div>
     </div>
+    {% if item.backup_state %}<div class="backup-running" role="status"><i class="fa-solid fa-spinner fa-spin"></i> Backing up… {{ item.backup_state.elapsed_seconds }}s</div>{% endif %}
     
     <div style="background: var(--bg); padding: 0.8rem; border-radius: 8px; font-size: 0.85rem; margin-bottom: 1.5rem; border: 1px solid var(--border);">
         <div style="display: flex; justify-content: space-between; margin-bottom: 0.4rem;">
@@ -48,11 +49,13 @@
     {% endif %}
 
     <details class="profile-backups">
-        <summary>Backups · {{ item.backups.backups | length }} · {{ (item.backups.total_bytes / 1024 / 1024) | round(1) }} MiB total</summary>
+        <summary>Backups · {{ item.backups.backups | length }} · {{ (item.backups.total_bytes / 1024 / 1024) | round(1) }} MiB total{% if item.backups.over_limit %} · ⚠ Above warning threshold{% endif %}</summary>
+        {% if item.backups.over_limit %}<p class="backup-storage-warning">Backups exceed the configured {{ (item.backups.warning_bytes / 1024 / 1024 / 1024) | round(1) }} GiB warning threshold. Nothing was deleted.</p>{% endif %}
+        {% if item.backup_state %}<p class="backup-running" role="status"><i class="fa-solid fa-spinner fa-spin"></i> Backing up… {{ item.backup_state.elapsed_seconds }}s</p>{% endif %}
         {% for backup in item.backups.backups %}
         <div class="profile-backup-row">
-            <div><strong>{{ backup.name }}</strong><span>{{ backup.modified_at[:19].replace('T', ' ') }} UTC · {{ (backup.size_bytes / 1024 / 1024) | round(1) }} MiB</span></div>
-            <button type="button" class="icon-btn danger" @click="deleteBackup({{ item.profile.id | tojson }}, {{ backup.name | tojson }})" aria-label="Delete backup {{ backup.name }}" title="Delete backup"><i class="fa-solid fa-trash"></i></button>
+            <div><strong>{{ backup.name }}</strong><span>{{ backup.modified_at[:19].replace('T', ' ') }} UTC · {{ (backup.size_bytes / 1024 / 1024) | round(1) }} MiB</span><span>{% if backup.manifest %}Includes: {{ backup.manifest.included | join(', ') }}{% else %}Contents: legacy archive{% endif %}</span></div>
+            <div class="profile-backup-actions"><a class="quiet-button" href="/api/profiles/{{ item.profile.id }}/backups/{{ backup.name }}/download">Download</a><button type="button" class="icon-btn danger" @click="deleteBackup({{ item.profile.id | tojson }}, {{ backup.name | tojson }})" aria-label="Delete backup {{ backup.name }}" title="Delete backup" {% if item.backup_state %}disabled{% endif %}><i class="fa-solid fa-trash"></i></button></div>
         </div>
         {% else %}
         <p class="form-hint">No backups yet.</p>
@@ -61,15 +64,18 @@
     
     <div style="display: flex; gap: 8px; justify-content: space-between;">
         <div style="display: flex; gap: 8px;">
+            <button type="button" class="quiet-button" @click="openBackupModal({{ item.profile.id | tojson }}, {{ item.profile.name | tojson }})" {% if item.backup_state %}disabled{% endif %}>
+                <i class="fa-solid fa-box-archive"></i> {% if item.backup_state %}Backing up…{% else %}Backup{% endif %}
+            </button>
             {% if item.state.status.value == 'stopped' or item.state.status.value == 'crashed' %}
-                <button hx-post="/api/lifecycle/{{ item.profile.id }}/start" hx-swap="none" hx-disabled-elt="this" @click="warnIfInsufficientRam({{ item.profile.ram_mb }})" style="background: var(--success);">
+                <button hx-post="/api/lifecycle/{{ item.profile.id }}/start" hx-swap="none" hx-disabled-elt="this" @click="warnIfInsufficientRam({{ item.profile.ram_mb }})" style="background: var(--success);" {% if item.backup_state %}disabled title="Wait for the backup to finish"{% endif %}>
                     <i class="fa-solid fa-play"></i> Start
                 </button>
             {% elif item.state.status.value == 'running' %}
-                <button hx-post="/api/lifecycle/{{ item.profile.id }}/stop" hx-swap="none" hx-disabled-elt="this" class="danger">
+                <button hx-post="/api/lifecycle/{{ item.profile.id }}/stop" hx-swap="none" hx-disabled-elt="this" class="danger" {% if item.backup_state %}disabled title="Wait for the backup to finish"{% endif %}>
                     <i class="fa-solid fa-stop"></i> Stop
                 </button>
-                <button hx-post="/api/lifecycle/{{ item.profile.id }}/restart" hx-swap="none" hx-disabled-elt="this" @click="warnIfInsufficientRam({{ item.profile.ram_mb }})" class="icon-btn" title="Restart and sync" aria-label="Restart and sync server">
+                <button hx-post="/api/lifecycle/{{ item.profile.id }}/restart" hx-swap="none" hx-disabled-elt="this" @click="warnIfInsufficientRam({{ item.profile.ram_mb }})" class="icon-btn" title="Restart and sync server" aria-label="Restart and sync server" {% if item.backup_state %}disabled{% endif %}>
                     <i class="fa-solid fa-rotate"></i>
                 </button>
             {% elif item.state.status.value == 'starting' %}
@@ -93,11 +99,11 @@
         
         <div style="display: flex; gap: 8px;">
             <!-- The Edit Button passes the profile data into the Alpine function -->
-            <button class="icon-btn" style="background: var(--border);" @click='openEditModal({{ item.profile.id | tojson }})' title="Edit Profile" aria-label="Edit profile" {% if item.state.status.value in ['starting', 'stopping'] %}disabled{% endif %}>
+            <button class="icon-btn" style="background: var(--border);" @click='openEditModal({{ item.profile.id | tojson }})' title="Edit Profile" aria-label="Edit profile" {% if item.state.status.value in ['starting', 'stopping'] or item.backup_state %}disabled{% endif %}>
                 <i class="fa-solid fa-pen"></i>
             </button>
             
-            <button class="danger icon-btn" @click='openDeleteModal("{{ item.profile.id }}", {{ item.profile.name | tojson }})' title="Delete Profile" aria-label="Delete profile" {% if item.state.status.value in ['starting', 'stopping'] %}disabled{% endif %}>
+            <button class="danger icon-btn" @click='openDeleteModal("{{ item.profile.id }}", {{ item.profile.name | tojson }})' title="Delete Profile" aria-label="Delete profile" {% if item.state.status.value in ['starting', 'stopping'] or item.backup_state %}disabled{% endif %}>
                 <i class="fa-solid fa-trash"></i>
             </button>
         </div>

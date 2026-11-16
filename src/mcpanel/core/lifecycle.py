@@ -59,7 +59,6 @@ async def restart_profile(
     current_state: RuntimeState,
     force_wipe: bool = False,
     skip_mod_download_indexes: set[int] | None = None,
-    create_restart_backup: bool = False,
 ) -> RuntimeState:
     """The main restart pipeline."""
     server_dir = PROFILES_DIR / profile.id / "server"
@@ -72,25 +71,40 @@ async def restart_profile(
     if current_state.status == ProfileStatus.RUNNING:
         current_state = await runtime.stop_server(profile, current_state)
 
-    # 2. Smart Wipe Check. Mods/config/datapacks are always backed up; worlds
-    # join the archive only when the user opted in on the profile.
-    should_wipe = force_wipe or _needs_wipe(profile, server_dir)
-    if should_wipe or (create_restart_backup and profile.backup_on_restart):
+    # 2. Back up only the categories explicitly selected for this pending replacement.
+    version_change_pending = _needs_wipe(profile, server_dir)
+    should_wipe = force_wipe or version_change_pending
+    if version_change_pending:
+        requested_backup = any((
+            profile.backup_worlds_on_change,
+            profile.backup_mods_on_change,
+            profile.backup_config_on_change,
+            profile.backup_datapacks_on_change,
+            profile.backup_server_settings_on_change,
+        ))
         try:
-            _, backup_warning = await asyncio.to_thread(
-                backups.create_backup,
-                profile,
-                bool(should_wipe and profile.backup_worlds_on_change),
-                profile.exclude_regenerable_backup_folders,
-            )
+            if requested_backup:
+                active_backup = backups.begin_backup(profile.id)
+                try:
+                    await asyncio.to_thread(backups.create_change_backup, profile, active_backup["cancel"])
+                finally:
+                    backups.finish_backup(profile.id)
+        except backups.BackupError as exc:
+            raise LifecycleError(f"Replacement aborted because the selected backup could not be created: {exc}") from exc
         except Exception as exc:
             logger.exception("Unexpected backup error for %s", profile.name)
-            backup_warning = f"Backup could not be created ({exc}). Startup will continue."
-        if backup_warning:
-            logger.warning("Backup warning for %s: %s", profile.name, backup_warning)
-            runtime.record_startup_warning(profile, backup_warning)
+            if requested_backup:
+                raise LifecycleError(f"Replacement aborted because the selected backup failed: {exc}") from exc
     if should_wipe:
         _wipe_server_directory(profile)
+    if version_change_pending:
+        profile.backup_worlds_on_change = True
+        profile.backup_mods_on_change = False
+        profile.backup_config_on_change = False
+        profile.backup_datapacks_on_change = False
+        profile.backup_server_settings_on_change = False
+        from mcpanel import db
+        db.update_profile(profile)
 
     # 4. Sync Git
     if profile.git_url:

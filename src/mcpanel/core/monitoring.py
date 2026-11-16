@@ -12,6 +12,7 @@ import psutil
 from mcpanel import db
 from mcpanel.config import DATA_DIR, PROFILES_DIR
 from mcpanel.models import ProfileStatus
+from mcpanel.core import backups
 
 logger = logging.getLogger(__name__)
 
@@ -291,7 +292,7 @@ def _scan_profile_sizes() -> tuple[dict[str, dict], str]:
             "server_bytes": _path_size(server_dir),
             "world_bytes": sum(world_folders.values()),
             "world_folders": world_folders,
-            "backups_bytes": _path_size(profile_dir / "backups"),
+            "backups_bytes": _path_size(backups.backup_directory(profile.id)),
         }
     return sizes, _timestamp()
 

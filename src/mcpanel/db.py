@@ -175,10 +175,10 @@ def create_profile(profile: Profile) -> None:
         cursor.execute("""
             INSERT INTO profiles (
                 id, name, build, mc_version, loader_version, git_url, modpack_name, mod_downloads, java_path, 
-                ram_mb, port, rcon_port, rcon_password, backup_worlds_on_change, backup_on_restart,
-                exclude_regenerable_backup_folders, backup_mods_on_change, backup_config_on_change,
+                ram_mb, port, rcon_port, rcon_password, backup_worlds_on_change,
+                backup_mods_on_change, backup_config_on_change,
                 backup_datapacks_on_change, backup_server_settings_on_change, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             profile.id, 
             profile.name, 
@@ -194,8 +194,6 @@ def create_profile(profile: Profile) -> None:
             profile.rcon_port, 
             profile.rcon_password,
             int(profile.backup_worlds_on_change),
-            1,
-            1,
             int(profile.backup_mods_on_change),
             int(profile.backup_config_on_change),
             int(profile.backup_datapacks_on_change),

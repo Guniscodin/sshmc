@@ -251,6 +251,29 @@
         </div>
     </div>
 
+    <div x-show="backupDialogOpen" class="console-modal" x-cloak @keydown.escape.window="if (!backupBusy) backupDialogOpen = false">
+        <div class="decision-modal" role="dialog" aria-modal="true" aria-labelledby="backup-dialog-title">
+            <h3 id="backup-dialog-title" style="margin-top:0"><i class="fa-solid fa-box-archive"></i> Back up <span x-text="backupProfileName"></span></h3>
+            <p>Choose what to include. Running worlds are flushed through RCON before archiving.</p>
+            <div class="backup-choice-list">
+                <label><input type="checkbox" x-model="backupSelection.worlds"> World folders</label>
+                <label><input type="checkbox" x-model="backupSelection.mods"> Mods</label>
+                <label><input type="checkbox" x-model="backupSelection.config"> Config</label>
+                <label><input type="checkbox" x-model="backupSelection.datapacks"> Datapacks</label>
+                <label><input type="checkbox" x-model="backupSelection.server_settings"> Server settings files</label>
+            </div>
+            <label class="backup-label-field">Optional label<input type="text" maxlength="40" x-model="backupLabel" placeholder="Before update"></label>
+            <p class="form-hint" x-show="backupBusy">Backing up… <span x-text="backupElapsed"></span>s. Lifecycle actions are locked until this finishes.</p>
+            <div class="backup-dialog-actions">
+                <button type="button" class="quiet-button" @click="cancelActiveBackup()" x-show="backupBusy">Cancel backup</button>
+                <button type="button" class="quiet-button" @click="backupDialogOpen = false" x-show="!backupBusy">Close</button>
+                <button type="button" class="success" @click="createManualBackup()" :disabled="backupBusy || !Object.values(backupSelection).some(Boolean)">
+                    <span x-show="!backupBusy">Start backup</span><span x-show="backupBusy"><i class="fa-solid fa-spinner fa-spin"></i> Backing up…</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- EDIT MODAL -->
     <div x-show="editModalOpen" class="console-modal" x-cloak @keydown.escape.window="editModalOpen = false">
         <div id="edit-modal-container" role="dialog" aria-modal="true" aria-labelledby="edit-title" style="background: var(--surface); width: min(600px, 94vw); max-height: 92vh; overflow-y: auto; border-radius: var(--radius); border: 1px solid var(--border); padding: 2rem;" x-data="editApp()">
@@ -290,16 +313,16 @@
                 </div>
 
                 <div x-show="needsReset()" class="world-backup-option">
-                    <label><input type="checkbox" x-model="profile.backup_worlds_on_change"> Back up world folders before replacing this server</label>
-                    <p>On the next Start, unchecked worlds are removed. Mods, config, and datapacks are backed up either way. The connected repository is disconnected so you can attach a version-compatible one.</p>
+                    <strong>Before replacing the server</strong>
+                    <label><input type="checkbox" x-model="profile.backup_worlds_on_change"> Back up world folders (world, world_nether, world_the_end)</label>
+                    <p class="backup-world-warning">If unchecked, these world folders are deleted when the server is replaced.</p>
+                    <label><input type="checkbox" x-model="profile.backup_mods_on_change"> Back up mods/</label>
+                    <label><input type="checkbox" x-model="profile.backup_config_on_change"> Back up config/</label>
+                    <label><input type="checkbox" x-model="profile.backup_datapacks_on_change"> Back up datapacks/</label>
+                    <label><input type="checkbox" x-model="profile.backup_server_settings_on_change"> Back up server settings files</label>
+                    <p>Selected items are archived before replacement on the next Start. If that backup cannot be created, the replacement is aborted and the existing server files are kept. You can select nothing to replace without a backup.</p>
                     <p>Changing server build or version also clears configured direct mod links.</p>
                     <p x-show="profile.modpack_name">The selected mod pack stays linked, but its contents may not match the new build or Minecraft version. Review compatibility warnings after saving.</p>
-                </div>
-
-                <div class="world-backup-option">
-                    <label><input type="checkbox" x-model="profile.backup_on_restart"> Create a smart backup on Restart</label>
-                    <p>Backups keep the newest configured set and stay under the per-profile size cap when possible. A required pre-wipe backup is still attempted when replacing an incompatible install.</p>
-                    <label><input type="checkbox" x-model="profile.exclude_regenerable_backup_folders"> Exclude cache, crash-reports, and logs folders</label>
                 </div>
 
                 <div class="form-group">
@@ -953,8 +976,17 @@
                 isClearingCache: false,
                 loaderError: '', loaderRequest: 0,
                 originalBuild: '', originalMcVersion: '', originalLoaderVersion: '', originalModpackName: '',
+                pendingReplacement: false,
                 setProfile(profile) {
                     this.profile = { ...profile };
+                    this.pendingReplacement = !!profile.server_replacement_pending;
+                    if (!this.pendingReplacement) {
+                        this.profile.backup_worlds_on_change = true;
+                        this.profile.backup_mods_on_change = false;
+                        this.profile.backup_config_on_change = false;
+                        this.profile.backup_datapacks_on_change = false;
+                        this.profile.backup_server_settings_on_change = false;
+                    }
                     this.profile.modpack_name = profile.modpack_name || '';
                     this.profile.mod_downloads = (profile.mod_downloads || []).map(item => ({ ...item, filename: item.filename || '', sha256: item.sha256 || '', skip_on_start: !!item.skip_on_start }));
                     if (!this.profile.mod_downloads.length) this.profile.mod_downloads = [{ url: '', filename: '', sha256: '', skip_on_start: false }];
@@ -966,7 +998,7 @@
                     this.fetchLoaders(true);
                 },
                 needsReset() {
-                    return this.profile.build !== this.originalBuild || this.profile.mc_version !== this.originalMcVersion || this.profile.loader_version !== this.originalLoaderVersion;
+                    return this.pendingReplacement || this.profile.build !== this.originalBuild || this.profile.mc_version !== this.originalMcVersion || this.profile.loader_version !== this.originalLoaderVersion;
                 },
                 packWarnings() {
                     const pack = this.packs.find(item => item.name === this.profile.modpack_name);
@@ -1021,7 +1053,7 @@
                     this.isSaving = true;
                     if (this.needsReset()) this.profile.modpack_name = this.originalModpackName;
                     const formData = new FormData();
-                    const fields = ['name', 'build', 'mc_version', 'loader_version', 'git_url', 'modpack_name', 'java_path', 'ram_mb', 'port', 'backup_worlds_on_change', 'backup_on_restart', 'exclude_regenerable_backup_folders'];
+                    const fields = ['name', 'build', 'mc_version', 'loader_version', 'git_url', 'modpack_name', 'java_path', 'ram_mb', 'port', 'backup_worlds_on_change', 'backup_mods_on_change', 'backup_config_on_change', 'backup_datapacks_on_change', 'backup_server_settings_on_change'];
                     for (const key of fields) {
                         const value = this.profile[key];
                         formData.append(key, typeof value === 'boolean' ? String(value) : (value ?? ''));
@@ -1049,6 +1081,7 @@
                 modDownloadPromptOpen: false, modDownloadFailure: {}, modDownloadAction: '', skippedModIndexes: [], modDownloadWorkflow: false, isResolvingModFailure: false,
                 deleteModalOpen: false, deleteId: null, deleteName: '', deleteFiles: false, isDeleting: false,
                 editModalOpen: false, monitoringAvailableBytes: null,
+                backupDialogOpen: false, backupProfileId: '', backupProfileName: '', backupSelection: { worlds: true, mods: false, config: false, datapacks: false, server_settings: true }, backupLabel: '', backupBusy: false, backupElapsed: 0, backupTimer: null,
 
                 init() {
                     // Listen for the custom close event fired by the edit modal
@@ -1066,6 +1099,50 @@
                         htmx.trigger('#profile-list', 'refresh');
                         showToast(`Deleted backup ${filename}.`);
                     } catch (error) { showToast(error.message || 'Could not delete backup.'); }
+                },
+
+                openBackupModal(profileId, profileName) {
+                    this.backupProfileId = profileId;
+                    this.backupProfileName = profileName;
+                    this.backupSelection = { worlds: true, mods: false, config: false, datapacks: false, server_settings: true };
+                    this.backupLabel = '';
+                    this.backupElapsed = 0;
+                    this.backupDialogOpen = true;
+                },
+                async createManualBackup() {
+                    if (this.backupBusy) return;
+                    this.backupBusy = true;
+                    this.backupElapsed = 0;
+                    this.backupTimer = window.setInterval(() => { this.backupElapsed++; }, 1000);
+                    try {
+                        const response = await fetch(`/api/profiles/${encodeURIComponent(this.backupProfileId)}/backups`, {
+                            method: 'POST', headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ ...this.backupSelection, label: this.backupLabel.slice(0, 40) })
+                        });
+                        if (response.status === 401) { window.location.assign('/login'); return; }
+                        const payload = await response.json().catch(() => ({}));
+                        if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : `Backup failed (${response.status}).`);
+                        const mib = (payload.size_bytes / 1024 / 1024).toFixed(1);
+                        showToast(`Backup created: ${payload.name} (${mib} MiB).`);
+                        this.backupDialogOpen = false;
+                        htmx.trigger('#profile-list', 'refresh');
+                    } catch (error) {
+                        showToast(error.message || 'Could not create this backup.');
+                    } finally {
+                        this.backupBusy = false;
+                        if (this.backupTimer) window.clearInterval(this.backupTimer);
+                        this.backupTimer = null;
+                        htmx.trigger('#profile-list', 'refresh');
+                    }
+                },
+                async cancelActiveBackup() {
+                    if (!this.backupBusy) return;
+                    try {
+                        const response = await fetch(`/api/profiles/${encodeURIComponent(this.backupProfileId)}/backups/cancel`, { method: 'POST' });
+                        if (response.status === 401) { window.location.assign('/login'); return; }
+                        if (!response.ok) throw new Error(await responseMessage(response, 'Could not cancel the backup.'));
+                        showToast('Backup cancellation requested.');
+                    } catch (error) { showToast(error.message || 'Could not cancel the backup.'); }
                 },
 
                 warnIfInsufficientRam(ramMb) {
