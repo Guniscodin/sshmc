@@ -13,6 +13,7 @@ UPLOADS_DIR = DATA_DIR / "uploads"
 MODPACKS_DIR = DATA_DIR / "modpacks"
 DB_PATH = DATA_DIR / "panel.db"
 LOGS_DIR = DATA_DIR / "logs"
+PID_FILE = DATA_DIR / "sshmc.pid"
 _BACKUPS_DIR_OVERRIDE = os.getenv("MCPANEL_BACKUPS_DIR")
 BACKUPS_ROOT = Path(_BACKUPS_DIR_OVERRIDE).expanduser().resolve() if _BACKUPS_DIR_OVERRIDE else PROFILES_DIR.resolve()
 

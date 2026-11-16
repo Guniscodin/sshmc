@@ -1,7 +1,9 @@
 import logging
 import asyncio
+import os
+import signal
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, Form
+from fastapi import BackgroundTasks, FastAPI, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -14,6 +16,7 @@ from mcpanel.core import process, runtime, modpacks, monitoring, backups
 from mcpanel.config import (
     DATA_DIR,
     LOGS_DIR,
+    PID_FILE,
     PANEL_LOG_BACKUP_COUNT,
     PANEL_LOG_MAX_BYTES,
 )
@@ -88,6 +91,20 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
         logger.info("Shutting down SSHMC Panel...")
+        _remove_cli_pid_file()
+
+
+def _remove_cli_pid_file() -> None:
+    try:
+        if not PID_FILE.is_symlink() and PID_FILE.read_text(encoding="ascii").strip() == str(os.getpid()):
+            PID_FILE.unlink(missing_ok=True)
+    except (OSError, UnicodeDecodeError):
+        logger.warning("Could not clean the SSHMC CLI PID file at %s", PID_FILE)
+
+
+async def _signal_panel_shutdown() -> None:
+    await asyncio.sleep(0.25)
+    os.kill(os.getpid(), signal.SIGTERM)
 
 async def _monitor_servers() -> None:
     """Keep persisted RUNNING states aligned with the tracked process."""
@@ -165,6 +182,13 @@ async def logout():
     response = RedirectResponse("/login", status_code=303)
     response.delete_cookie(SESSION_COOKIE, path="/")
     return response
+
+
+@app.post("/api/panel/shutdown")
+async def shutdown_panel(background_tasks: BackgroundTasks):
+    """Shut down only the panel process; detached Minecraft servers keep running."""
+    background_tasks.add_task(_signal_panel_shutdown)
+    return {"status": "shutting_down", "minecraft_servers": "left_running"}
 
 # Mount static files (CSS/JS)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "web" / "static")), name="static")

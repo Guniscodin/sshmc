@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 _startup_tasks: dict[str, asyncio.Task] = {}
 _startup_events: list[dict[str, str]] = []
+_panel_shutting_down = False
 _DEPENDENCY_FAILURE_MARKERS = (
     "Mod resolution failed",
     "Some of your mods are incompatible",
@@ -47,7 +48,9 @@ async def _terminate_starting_process(pid: int, create_time: float) -> bool:
     return exited
 
 async def shutdown_starting_servers() -> None:
-    """Stop startup processes before the panel exits, preventing Ctrl+C hangs."""
+    """Stop startup watchers without stopping the detached Minecraft processes."""
+    global _panel_shutting_down
+    _panel_shutting_down = True
     tasks = list(_startup_tasks.values())
     for task in tasks:
         task.cancel()
@@ -218,14 +221,13 @@ async def _watch_startup(profile: Profile, state: RuntimeState, log_path: Path, 
         _record_startup_event(profile, "Minecraft did not become ready within five minutes; startup was stopped. Check the server console.")
         logger.error("Minecraft readiness timed out for %s: %s", profile.name, recent_output[-1500:])
     except asyncio.CancelledError:
-        # Manual cancellation and panel shutdown both stop the complete Java
-        # process group. Server/world files are deliberately left untouched.
-        stopped = await asyncio.shield(_terminate_starting_process(pid, create_time))
-        state.status = ProfileStatus.STOPPED if stopped else ProfileStatus.CRASHED
-        if stopped:
-            state.pid = None
-            state.pid_create_time = None
-        db.update_runtime_state(state)
+        if not _panel_shutting_down:
+            stopped = await asyncio.shield(_terminate_starting_process(pid, create_time))
+            state.status = ProfileStatus.STOPPED if stopped else ProfileStatus.CRASHED
+            if stopped:
+                state.pid = None
+                state.pid_create_time = None
+            db.update_runtime_state(state)
         raise
 
 async def cancel_startup(profile_id: str) -> RuntimeState | None:

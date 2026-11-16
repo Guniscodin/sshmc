@@ -110,20 +110,21 @@ Monitoring API endpoints, protected by the panel login session:
 
 ## Install and run
 
-From the project directory:
+From the project directory, install the environment once and use the small launcher:
 
 ```sh
 python -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
-uvicorn mcpanel.main:app --app-dir src --host 127.0.0.1 --port 8000
+./sshmc help
+./sshmc start
 ```
 
-Open <http://127.0.0.1:8000> in a browser. The default bind address makes the panel available only from the local machine. The default Uvicorn setup uses one worker; avoid `--reload` or multiple workers for normal use because each process may prompt for the panel password separately.
+`./sshmc start` runs the panel in the foreground so it can prompt for the panel password. Open <http://127.0.0.1:8000> in a browser. Press Ctrl+C, use `./sshmc stop` from another terminal, or use **Shut down panel** in the GUI. These only stop SSHMC; Minecraft server processes keep running. The launcher uses one Uvicorn worker and binds to `127.0.0.1` by default. Avoid `--reload` or multiple workers for normal use because each process may prompt for the panel password separately. Set `MCPANEL_HOST` or `MCPANEL_PORT` to change the launch bind address or port.
 
-For access from another device, use an SSH tunnel or put the panel behind HTTPS with suitable access controls. Do not send the login password over an untrusted plain-HTTP connection. If you change the bind address to expose SSHMC on a network, protect that network endpoint before doing so.
+To reach a panel on a remote server, run `./sshmc tunnel SSH_HOST` from the computer with your browser, then open <http://127.0.0.1:8000>. For example, with the SSH alias `n8n-a1`, the tunnel command is `./sshmc tunnel n8n-a1`. Start SSHMC on the server in another terminal with `ssh -t n8n-a1 'cd /home/ubuntu/sshmc && ./sshmc start'`. To stop the remote panel from another terminal, run `ssh n8n-a1 'cd /home/ubuntu/sshmc && ./sshmc stop'`. The tunnel command accepts optional local and panel ports, for example `./sshmc tunnel n8n-a1 8010 8000`.
 
-Press Ctrl+C to stop the panel. Startup processes are cleaned up during panel shutdown; already-running Minecraft servers are detached, so stop those from the dashboard first if you want to stop them too.
+The panel shutdown button and `./sshmc stop` signal only the panel process. They do not stop Minecraft profiles, including a server still in its startup phase. Downloading updates is safest after the panel has shut down. The CLI stop command manages panels started with `./sshmc start`; for a panel started directly with Uvicorn, stop it with Ctrl+C or use the GUI shutdown button.
 
 ## Data locations
 

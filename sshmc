@@ -1,0 +1,146 @@
+#!/bin/sh
+set -eu
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+DATA_DIR=${MCPANEL_DATA_DIR:-"$ROOT/data"}
+case "$DATA_DIR" in
+    /*) ;;
+    *) DATA_DIR="$ROOT/$DATA_DIR" ;;
+esac
+PID_FILE="$DATA_DIR/sshmc.pid"
+
+usage() {
+    cat <<'EOF'
+SSHMC panel launcher
+
+Usage:
+  ./sshmc start
+      Start the panel in this terminal. The first run asks you to set a password.
+
+  ./sshmc stop
+      Gracefully stop a panel started with ./sshmc start. Minecraft servers keep running.
+
+  ./sshmc tunnel SSH_HOST [LOCAL_PORT] [PANEL_PORT]
+      Open an SSH tunnel to a panel already running on SSH_HOST.
+      Defaults: local port 8000, panel port 8000.
+
+  ./sshmc help
+      Show this guide.
+
+Examples:
+  ./sshmc start
+  ./sshmc tunnel n8n-a1
+  ./sshmc tunnel n8n-a1 8010 8000
+  # In another terminal, open http://127.0.0.1:8000 (or :8010 for the last example).
+
+Run start/stop on the machine where SSHMC is installed. Run tunnel on the
+machine whose browser will open the panel. To start the remote panel over SSH:
+  ssh -t n8n-a1 'cd /home/ubuntu/sshmc && ./sshmc start'
+
+The launcher uses .venv/bin/uvicorn, MCPANEL_DATA_DIR, MCPANEL_HOST, and
+MCPANEL_PORT. The default host is 127.0.0.1 and the default port is 8000.
+EOF
+}
+
+valid_port() {
+    case "$1" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+
+panel_command() {
+    ps -ww -p "$1" -o command= 2>/dev/null || true
+}
+
+is_our_panel() {
+    command_line=$(panel_command "$1")
+    case "$command_line" in
+        *"$ROOT/src"*"mcpanel.main:app"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+start_panel() {
+    uvicorn="$ROOT/.venv/bin/uvicorn"
+    if [ ! -x "$uvicorn" ]; then
+        echo "SSHMC virtual environment not found. Create it and install requirements first." >&2
+        echo "  python3 -m venv .venv && .venv/bin/pip install -r requirements.txt" >&2
+        exit 1
+    fi
+    cd "$ROOT"
+    mkdir -p "$DATA_DIR"
+    if [ -f "$PID_FILE" ]; then
+        old_pid=$(cat "$PID_FILE" 2>/dev/null || true)
+        case "$old_pid" in ''|*[!0-9]*) old_pid='' ;; esac
+        if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+            if is_our_panel "$old_pid"; then
+                echo "SSHMC panel is already running (PID $old_pid). Use ./sshmc stop first." >&2
+                exit 1
+            fi
+            echo "PID file points to another process; refusing to overwrite it: $PID_FILE" >&2
+            exit 1
+        fi
+        rm -f "$PID_FILE"
+    fi
+    umask 077
+    printf '%s\n' "$$" > "$PID_FILE"
+    echo "Starting SSHMC on ${MCPANEL_HOST:-127.0.0.1}:${MCPANEL_PORT:-8000}. Press Ctrl+C to stop the panel."
+    exec "$uvicorn" mcpanel.main:app --app-dir "$ROOT/src" \
+        --host "${MCPANEL_HOST:-127.0.0.1}" --port "${MCPANEL_PORT:-8000}"
+}
+
+stop_panel() {
+    if [ ! -f "$PID_FILE" ]; then
+        echo "No CLI-managed SSHMC process was found. If it was started manually, stop it with Ctrl+C or use the GUI shutdown button." >&2
+        exit 1
+    fi
+    pid=$(cat "$PID_FILE" 2>/dev/null || true)
+    case "$pid" in ''|*[!0-9]*) echo "Invalid SSHMC PID file: $PID_FILE" >&2; exit 1 ;; esac
+    if ! kill -0 "$pid" 2>/dev/null; then
+        rm -f "$PID_FILE"
+        echo "Removed a stale SSHMC PID file; no panel process was running."
+        return
+    fi
+    if ! is_our_panel "$pid"; then
+        echo "PID $pid is not the SSHMC process for $ROOT; refusing to signal it." >&2
+        exit 1
+    fi
+    kill -TERM "$pid"
+    echo "Shutdown requested for SSHMC PID $pid. Minecraft servers are left running."
+    attempt=0
+    while kill -0 "$pid" 2>/dev/null && [ "$attempt" -lt 20 ]; do
+        sleep 1
+        attempt=$((attempt + 1))
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+        echo "The panel has not exited yet; check its terminal/logs. No Minecraft process was signalled." >&2
+        exit 1
+    fi
+    rm -f "$PID_FILE"
+    echo "SSHMC panel stopped."
+}
+
+tunnel_panel() {
+    if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then
+        echo "Usage: ./sshmc tunnel SSH_HOST [LOCAL_PORT] [PANEL_PORT]" >&2
+        exit 2
+    fi
+    ssh_host=$1
+    local_port=${2:-8000}
+    panel_port=${3:-8000}
+    if ! valid_port "$local_port" || ! valid_port "$panel_port"; then
+        echo "Ports must be numbers from 1 to 65535." >&2
+        exit 2
+    fi
+    echo "Forwarding 127.0.0.1:$local_port to $ssh_host:127.0.0.1:$panel_port. Press Ctrl+C to close the tunnel."
+    exec ssh -N -T -L "$local_port:127.0.0.1:$panel_port" "$ssh_host"
+}
+
+case "${1:-help}" in
+    start) shift; [ "$#" -eq 0 ] || { echo "Usage: ./sshmc start" >&2; exit 2; }; start_panel ;;
+    stop) shift; [ "$#" -eq 0 ] || { echo "Usage: ./sshmc stop" >&2; exit 2; }; stop_panel ;;
+    tunnel) shift; tunnel_panel "$@" ;;
+    help|-h|--help) usage ;;
+    *) echo "Unknown command: $1" >&2; usage >&2; exit 2 ;;
+esac

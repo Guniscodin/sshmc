@@ -145,7 +145,12 @@
 
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
                 <h2 style="margin: 0;">Your Instances</h2>
-                <form method="post" action="/logout"><button type="submit" class="quiet-button">Log out</button></form>
+                <div class="dashboard-session-actions">
+                    <button type="button" class="danger" @click="shutdownPanel()" :disabled="shutdownPending">
+                        <i class="fa-solid fa-power-off"></i><span x-text="shutdownPending ? 'Shutting down…' : 'Shut down panel'"></span>
+                    </button>
+                    <form method="post" action="/logout"><button type="submit" class="quiet-button">Log out</button></form>
+                </div>
             </div>
             
             <div id="profile-list" class="profile-grid" hx-get="/api/profiles/partials/list" hx-trigger="every 3s, refresh" hx-swap="innerHTML">
@@ -1090,6 +1095,7 @@
                 modDownloadPromptOpen: false, modDownloadFailure: {}, modDownloadAction: '', skippedModIndexes: [], modDownloadWorkflow: false, isResolvingModFailure: false,
                 deleteModalOpen: false, deleteId: null, deleteName: '', deleteFiles: false, isDeleting: false,
                 editModalOpen: false, monitoringAvailableBytes: null,
+                shutdownPending: false,
                 backupDialogOpen: false, backupProfileId: '', backupProfileName: '', backupSelection: { worlds: true, mods: false, config: false, datapacks: false, server_settings: true }, backupLabel: '', backupBusy: false, backupElapsed: 0, backupTimer: null,
 
                 init() {
@@ -1108,6 +1114,21 @@
                         htmx.trigger('#profile-list', 'refresh');
                         showToast(`Deleted backup ${filename}.`);
                     } catch (error) { showToast(error.message || 'Could not delete backup.'); }
+                },
+
+                async shutdownPanel() {
+                    if (!window.confirm('Shut down the SSHMC panel? Running Minecraft servers will keep running.')) return;
+                    this.shutdownPending = true;
+                    try {
+                        const response = await fetch('/api/panel/shutdown', { method: 'POST' });
+                        if (response.status === 401) { window.location.assign('/login'); return; }
+                        const payload = await response.json().catch(() => ({}));
+                        if (!response.ok) throw new Error(typeof payload.detail === 'string' ? payload.detail : `Shutdown failed (${response.status}).`);
+                        showToast('SSHMC is shutting down. Minecraft servers will keep running.');
+                    } catch (error) {
+                        this.shutdownPending = false;
+                        showToast(error.message || 'Could not shut down SSHMC.');
+                    }
                 },
 
                 openBackupModal(profileId, profileName) {
