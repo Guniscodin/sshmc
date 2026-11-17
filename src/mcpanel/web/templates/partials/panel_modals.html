@@ -238,6 +238,26 @@
                     <input id="edit-git" type="text" x-model="profile.git_url" placeholder="https://github.com/user/repo.git">
                 </div>
 
+                <div class="form-group">
+                    <label for="edit-modpack">Mod Pack (Optional)</label>
+                    <select id="edit-modpack" x-model="profile.modpack_name" :disabled="pendingReplacement">
+                        <option value="">No mod pack</option>
+                        <template x-for="pack in packs" :key="pack.name">
+                            <option :value="pack.name"
+                                    x-text="pack.name + (pack.target_loader && pack.target_loader !== 'unknown' ? ' — ' + pack.target_loader : '')"></option>
+                        </template>
+                    </select>
+                    <div x-show="pendingReplacement" class="form-hint">
+                        A server version change is pending. The pack link stays attached and is reviewed on the next Start.
+                    </div>
+                    <div x-show="!pendingReplacement && packs.length === 0" class="form-hint">
+                        No mod packs in the library yet. Upload one in the Mod Pack Library section.
+                    </div>
+                    <template x-for="(warning, index) in packWarnings()" :key="'pack-warning-' + index">
+                        <div class="form-hint text-warning" x-text="warning"></div>
+                    </template>
+                </div>
+
                 <div class="modal-footer">
                     <button type="button" class="btn btn-ghost" @click="$dispatch('close-edit')">Cancel</button>
                     <button type="submit" class="btn btn-success" :disabled="isSaving || isLoading || loaderPending || !profile.loader_version || (profile.build !== 'vanilla' && (!loaders.length || !!loaderError))">
