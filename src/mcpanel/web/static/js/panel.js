@@ -307,7 +307,7 @@ function panelApp() {
         async openEditModal(profileId) {
             try {
                 const [response, packsResponse] = await Promise.all([
-                    fetch(`/api/profiles/${encodeURIComponent(profileId)}`),
+                    fetch(`/api/profiles/${encodeURIComponent(profileId)}/settings`),
                     fetch('/api/modpacks')
                 ]);
                 if (response.status === 401) { window.location.assign('/login'); return; }
