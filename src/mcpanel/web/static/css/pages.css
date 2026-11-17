@@ -1072,6 +1072,22 @@
     gap: var(--space-3);
 }
 
+.warning-dismiss {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    padding: var(--space-1) var(--space-2);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: var(--font-xs);
+    transition: color var(--transition-fast), background-color var(--transition-fast);
+}
+
+.warning-dismiss:hover {
+    color: var(--text-primary);
+    background-color: var(--surface-hover);
+}
+
 @media (max-width: 800px) {
     .modpack-library { padding: var(--space-3); }
     .modpack-import-fields { grid-template-columns: minmax(0, 1fr); }

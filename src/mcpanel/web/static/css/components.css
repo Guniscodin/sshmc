@@ -189,6 +189,12 @@
     gap: var(--space-3);
 }
 
+@media (max-width: 640px) {
+    .grid-2 {
+        grid-template-columns: 1fr;
+    }
+}
+
 /* Text Utilities */
 .text-primary-color { color: var(--primary); }
 .text-muted { color: var(--text-muted); }
@@ -313,7 +319,6 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: var(--font-xs);
 }
 
 .console-toolbar-title {
@@ -363,12 +368,32 @@
     margin-bottom: var(--space-4);
 }
 
+/* Inside containers that already provide spacing, drop the extra margin so
+   vertical rhythm comes only from the container gap. */
+.stack > .form-group,
+.stack-sm > .form-group,
+.stack-md > .form-group,
+.grid-1 > .form-group,
+.grid-2 > .form-group {
+    margin-bottom: 0;
+}
+
 .form-group label, label {
     font-size: var(--font-xs);
     font-weight: var(--fw-semibold);
     color: var(--text-secondary);
     text-transform: uppercase;
     letter-spacing: 0.5px;
+}
+
+/* Checkbox rows read as normal text, not tiny section headers. Same
+   specificity as the label rule above, but declared after it so it wins. */
+label.checkbox-item {
+    font-size: var(--font-sm);
+    font-weight: var(--fw-medium);
+    color: var(--text-secondary);
+    text-transform: none;
+    letter-spacing: normal;
 }
 
 input[type="text"],
@@ -911,7 +936,6 @@ input:disabled, select:disabled, textarea:disabled {
 .empty-state i {
     font-size: 2.5rem;
     color: var(--border-hover);
-    margin-bottom: var(--space-2);
 }
 
 .empty-state h3, .empty-state h2 {

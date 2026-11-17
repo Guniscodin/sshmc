@@ -56,7 +56,7 @@
 
         <div x-show="loading" class="form-hint"><i class="fa-solid fa-spinner fa-spin"></i> Loading server settings…</div>
 
-        <div class="grid-2 settings-grid" x-show="!loading && fields.length">
+        <div class="grid-2" x-show="!loading && fields.length">
             <template x-for="field in fields" :key="field.key">
                 <div class="form-group">
                     <template x-if="field.type === 'bool'">

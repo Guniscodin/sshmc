@@ -648,9 +648,9 @@ def get_dashboard_stats(request: Request):
     ram = sum(p.ram_mb for p, s in zip(profiles, states) if s and s.status == ProfileStatus.RUNNING)
     
     html = f"""
-    <div class="stat-card"><span class="stat-label">Total Servers</span><span class="stat-value" style="color: white;">{total}</span></div>
-    <div class="stat-card"><span class="stat-label">Running</span><span class="stat-value" style="color: var(--success);">{running}</span></div>
-    <div class="stat-card"><span class="stat-label">Allocated RAM</span><span class="stat-value" style="color: var(--primary);">{ram} MB</span></div>
+    <div class="stat-card"><span class="stat-label">Total Servers</span><span class="stat-value">{total}</span></div>
+    <div class="stat-card"><span class="stat-label">Running</span><span class="stat-value text-success">{running}</span></div>
+    <div class="stat-card"><span class="stat-label">Allocated RAM</span><span class="stat-value text-primary-color">{ram} MB</span></div>
     """
     return HTMLResponse(content=html)
 

@@ -88,7 +88,7 @@
                             <a class="btn btn-ghost btn-icon btn-sm" href="/api/profiles/{{ item.profile.id }}/backups/{{ backup.name }}/download" title="Download backup">
                                 <i class="fa-solid fa-download"></i>
                             </a>
-                            <button type="button" class="btn btn-danger btn-icon btn-sm" @click="deleteBackup({{ item.profile.id | tojson }}, {{ backup.name | tojson }})" aria-label="Delete backup {{ backup.name }}" title="Delete backup" {% if item.backup_state %}disabled{% endif %}>
+                            <button type="button" class="btn btn-danger btn-icon btn-sm" @click='deleteBackup({{ item.profile.id | tojson }}, {{ backup.name | tojson }})' aria-label="Delete backup {{ backup.name }}" title="Delete backup" {% if item.backup_state %}disabled{% endif %}>
                                 <i class="fa-solid fa-trash"></i>
                             </button>
                         </div>
@@ -137,7 +137,7 @@
         </div>
 
         <div class="profile-secondary-actions">
-            <button type="button" class="btn btn-ghost btn-sm" @click="openBackupModal({{ item.profile.id | tojson }}, {{ item.profile.name | tojson }})" {% if item.backup_state %}disabled{% endif %} title="Create backup">
+            <button type="button" class="btn btn-ghost btn-sm" @click='openBackupModal({{ item.profile.id | tojson }}, {{ item.profile.name | tojson }})' {% if item.backup_state %}disabled{% endif %} title="Create backup">
                 <i class="fa-solid fa-box-archive"></i> Backup
             </button>
 
