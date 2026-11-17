@@ -289,9 +289,9 @@ async def serve_dashboard(request: Request):
         state = db.get_runtime_state(p.id)
         profile_data.append({
             "profile": p, "state": state, "backups": backups.list_backups(p.id),
-            "backup_state": backups.backup_state(p.id),
+            "backup_state": backups.backup_state(p.id), "has_icon": profiles._profile_has_icon(p.id),
         })
-        
+
     # FIX: Pass request as the first argument (or explicitly as a kwarg)
     return templates.TemplateResponse(
         request=request,

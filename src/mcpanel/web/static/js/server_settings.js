@@ -14,6 +14,19 @@ window.serverSettingsApp = function serverSettingsApp() {
         dirty: false,
         settingsToken: 0,
 
+        // Server identity (icon + description)
+        description: '',
+        hasIcon: false,
+        identityDirty: false,
+        savingIdentity: false,
+        pendingIconFile: null,
+        pendingIconUrl: null,
+        iconVersion: 0,
+
+        get iconUrl() {
+            return `/api/profiles/${encodeURIComponent(this.profileId)}/icon?v=${this.iconVersion}`;
+        },
+
         init() {
             this.refreshProfiles();
             window.addEventListener('sshmc-settings-enter', () => this.refreshProfiles());
@@ -58,6 +71,11 @@ window.serverSettingsApp = function serverSettingsApp() {
         async selectProfile() {
             if (!this.profileId) { this.profile = null; this.fields = []; return; }
             this.syncSelectedProfile();
+            // Reset identity state from the previous profile so the icon
+            // preview can't fetch the new profile's icon before settings load.
+            this.hasIcon = false;
+            this.identityDirty = false;
+            this.clearPendingIcon();
             await this.loadSettings();
         },
 
@@ -89,6 +107,10 @@ window.serverSettingsApp = function serverSettingsApp() {
             this.serverInstalled = !!data.server_installed;
             this.serverRunning = !!data.server_running;
             this.managedKeys = data.managed_keys || [];
+            this.description = data.description || '';
+            this.hasIcon = !!data.has_icon;
+            this.identityDirty = false;
+            this.clearPendingIcon();
             this.fields = (data.fields || []).map(field => {
                 let value = field.value;
                 if (field.type === 'bool') value = String(value).toLowerCase() === 'true';
@@ -96,6 +118,117 @@ window.serverSettingsApp = function serverSettingsApp() {
                 else value = String(value ?? '');
                 return { ...field, value };
             });
+        },
+
+        clearPendingIcon() {
+            if (this.pendingIconUrl) { URL.revokeObjectURL(this.pendingIconUrl); this.pendingIconUrl = null; }
+            this.pendingIconFile = null;
+            const input = document.getElementById('server-icon-input');
+            if (input) input.value = '';
+        },
+
+        onIconChosen(event) {
+            const file = event.target.files && event.target.files[0];
+            if (!file) { this.clearPendingIcon(); return; }
+            if (file.type !== 'image/png') {
+                showToast('The server icon must be a PNG image.', 'error');
+                this.clearPendingIcon();
+                return;
+            }
+            if (file.size > 256 * 1024) {
+                showToast('The server icon must be smaller than 256 KB.', 'error');
+                this.clearPendingIcon();
+                return;
+            }
+            this.pendingIconFile = file;
+            if (this.pendingIconUrl) URL.revokeObjectURL(this.pendingIconUrl);
+            this.pendingIconUrl = URL.createObjectURL(file);
+        },
+
+        async uploadIcon() {
+            if (!this.pendingIconFile || this.savingIdentity || !this.profileId) return;
+            this.savingIdentity = true;
+            try {
+                const formData = new FormData();
+                formData.append('icon', this.pendingIconFile);
+                const response = await fetch(`/api/profiles/${encodeURIComponent(this.profileId)}/icon`, {
+                    method: 'POST',
+                    body: formData,
+                });
+                if (response.status === 401) { window.location.assign('/login'); return; }
+                const data = await this.readJson(response, 'Could not upload the server icon.');
+                if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Could not upload the server icon.');
+                this.hasIcon = true;
+                this.iconVersion++;
+                this.clearPendingIcon();
+                showToast('Server icon saved. It applies the next time the server starts.', 'success');
+                this.refreshProfileCards();
+            } catch (error) {
+                showToast(error.message || 'Could not upload the server icon.', 'error');
+            } finally {
+                this.savingIdentity = false;
+            }
+        },
+
+        async removeIcon() {
+            if (this.savingIdentity || !this.profileId) return;
+            this.savingIdentity = true;
+            try {
+                const response = await fetch(`/api/profiles/${encodeURIComponent(this.profileId)}/icon`, { method: 'DELETE' });
+                if (response.status === 401) { window.location.assign('/login'); return; }
+                if (!response.ok && response.status !== 404) {
+                    const data = await this.readJson(response, 'Could not remove the server icon.');
+                    throw new Error(typeof data.detail === 'string' ? data.detail : 'Could not remove the server icon.');
+                }
+                this.hasIcon = false;
+                this.iconVersion++;
+                showToast('Server icon removed.', 'success');
+                this.refreshProfileCards();
+            } catch (error) {
+                showToast(error.message || 'Could not remove the server icon.', 'error');
+            } finally {
+                this.savingIdentity = false;
+            }
+        },
+
+        async saveDescription() {
+            if (this.savingIdentity || !this.profileId) return;
+            this.savingIdentity = true;
+            try {
+                const response = await fetch(`/api/profiles/${encodeURIComponent(this.profileId)}/server-identity`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ description: this.description }),
+                });
+                if (response.status === 401) { window.location.assign('/login'); return; }
+                const data = await this.readJson(response, 'Could not save the description.');
+                if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Could not save the description.');
+                this.description = data.description || '';
+                this.identityDirty = false;
+                this.syncSelectedProfile();
+                if (this.profile) this.profile.description = this.description;
+                showToast(
+                    data.applies_after_restart
+                        ? 'Description saved. The server MOTD updates on the next restart.'
+                        : 'Description saved. It is used as the server MOTD from the next Start or Restart on.',
+                    'success'
+                );
+                this.refreshProfileCards();
+            } catch (error) {
+                showToast(error.message || 'Could not save the description.', 'error');
+            } finally {
+                this.savingIdentity = false;
+            }
+        },
+
+        discardDescription() {
+            this.loadSettings();
+        },
+
+        refreshProfileCards() {
+            if (window.htmx) {
+                window.htmx.trigger('#profile-list', 'refresh');
+            }
         },
 
         async saveSettings() {

@@ -57,6 +57,7 @@ def init_db() -> None:
                 loader_version TEXT NOT NULL,
                 git_url TEXT,
                 modpack_name TEXT,
+                description TEXT NOT NULL DEFAULT '',
                 mod_downloads TEXT NOT NULL DEFAULT '[]',
                 java_path TEXT NOT NULL,
                 ram_mb INTEGER NOT NULL,
@@ -96,6 +97,8 @@ def init_db() -> None:
             cursor.execute("ALTER TABLE profiles ADD COLUMN mod_downloads TEXT NOT NULL DEFAULT '[]'")
         if "modpack_name" not in profile_columns:
             cursor.execute("ALTER TABLE profiles ADD COLUMN modpack_name TEXT")
+        if "description" not in profile_columns:
+            cursor.execute("ALTER TABLE profiles ADD COLUMN description TEXT NOT NULL DEFAULT ''")
         if "backup_on_restart" not in profile_columns:
             cursor.execute("ALTER TABLE profiles ADD COLUMN backup_on_restart INTEGER NOT NULL DEFAULT 1")
         if "exclude_regenerable_backup_folders" not in profile_columns:
@@ -174,11 +177,11 @@ def create_profile(profile: Profile) -> None:
         
         cursor.execute("""
             INSERT INTO profiles (
-                id, name, build, mc_version, loader_version, git_url, modpack_name, mod_downloads, java_path, 
+                id, name, build, mc_version, loader_version, git_url, modpack_name, description, mod_downloads, java_path, 
                 ram_mb, port, rcon_port, rcon_password, backup_worlds_on_change,
                 backup_mods_on_change, backup_config_on_change,
                 backup_datapacks_on_change, backup_server_settings_on_change, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             profile.id, 
             profile.name, 
@@ -187,6 +190,7 @@ def create_profile(profile: Profile) -> None:
             profile.loader_version, 
             profile.git_url, 
             profile.modpack_name,
+            profile.description,
             json.dumps([item.model_dump(mode="json") for item in profile.mod_downloads]),
             profile.java_path, 
             profile.ram_mb,
@@ -286,7 +290,7 @@ def update_profile(profile: Profile) -> None:
         cursor.execute("""
             UPDATE profiles 
             SET name = ?, build = ?, mc_version = ?, loader_version = ?, 
-                git_url = ?, modpack_name = ?, mod_downloads = ?, java_path = ?, ram_mb = ?, port = ?,
+                git_url = ?, modpack_name = ?, description = ?, mod_downloads = ?, java_path = ?, ram_mb = ?, port = ?,
                 backup_worlds_on_change = ?, backup_mods_on_change = ?, backup_config_on_change = ?,
                 backup_datapacks_on_change = ?, backup_server_settings_on_change = ?
             WHERE id = ?
@@ -294,6 +298,7 @@ def update_profile(profile: Profile) -> None:
             profile.name, profile.build.value, profile.mc_version,
             profile.loader_version, profile.git_url,
             profile.modpack_name,
+            profile.description,
             json.dumps([item.model_dump(mode="json") for item in profile.mod_downloads]),
             profile.java_path,
             profile.ram_mb, profile.port, int(profile.backup_worlds_on_change), int(profile.backup_mods_on_change),

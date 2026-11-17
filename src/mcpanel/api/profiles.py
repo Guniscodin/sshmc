@@ -4,10 +4,11 @@ import logging
 import os
 import shutil
 import json
+import struct
 from typing import Optional
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, status, Form, Request
+from fastapi import APIRouter, HTTPException, status, Form, Request, File, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from fastapi.templating import Jinja2Templates
@@ -184,6 +185,38 @@ def _profile_server_running(state) -> bool:
     ))
 
 
+# Minecraft requires server-icon.png to be exactly 64x64 pixels.
+SERVER_ICON_SIZE = 64
+SERVER_ICON_MAX_BYTES = 256 * 1024
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def _profile_icon_paths(profile_id: str) -> tuple[Path, Path]:
+    """(stored source icon, live server icon) for a profile."""
+    return (
+        PROFILES_DIR / profile_id / "server_icon.png",
+        PROFILES_DIR / profile_id / "server" / "server-icon.png",
+    )
+
+
+def _profile_has_icon(profile_id: str) -> bool:
+    source, live = _profile_icon_paths(profile_id)
+    return (source.is_file() and not source.is_symlink()) or (live.is_file() and not live.is_symlink())
+
+
+def _validate_server_icon(data: bytes) -> None:
+    if len(data) < 24 or not data.startswith(PNG_SIGNATURE):
+        raise HTTPException(status_code=422, detail="The server icon must be a PNG image.")
+    if data[12:16] != b"IHDR":
+        raise HTTPException(status_code=422, detail="The server icon must be a valid PNG image.")
+    width, height = struct.unpack(">II", data[16:24])
+    if (width, height) != (SERVER_ICON_SIZE, SERVER_ICON_SIZE):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Minecraft server icons must be exactly {SERVER_ICON_SIZE}x{SERVER_ICON_SIZE} pixels.",
+        )
+
+
 def _replacement_pending(profile: Profile) -> bool:
     metadata = PROFILES_DIR / profile.id / "server" / "profile_meta.json"
     if not metadata.is_file():
@@ -210,6 +243,7 @@ def create_new_profile(
     mc_version: str = Form(...),
     loader_version: str = Form("latest"),
     git_url: Optional[str] = Form(None),
+    description: str = Form(""),
     mod_downloads: str = Form("[]"),
     java_path: str = Form("java"),
     ram_mb: int = Form(2048),
@@ -241,6 +275,7 @@ def create_new_profile(
             mc_version=mc_version,
             loader_version=loader_version,
             git_url=clean_git_url,
+            description=(description or "").strip(),
             mod_downloads=parsed_mod_downloads,
             java_path=java_path,
             ram_mb=ram_mb,
@@ -270,6 +305,7 @@ async def update_existing_profile(
     mc_version: str = Form(...),
     loader_version: str = Form("latest"),
     git_url: Optional[str] = Form(None),
+    description: str = Form(""),
     mod_downloads: str = Form("[]"),
     modpack_name: Optional[str] = Form(None),
     java_path: str = Form("java"),
@@ -346,6 +382,7 @@ async def update_existing_profile(
             mc_version=mc_version,
             loader_version=loader_version,
             git_url=effective_git_url,
+            description=(description or "").strip(),
             modpack_name=effective_pack,
             mod_downloads=effective_downloads,
             java_path=java_path,
@@ -628,7 +665,7 @@ def get_profile_list_partial(request: Request):
         state = db.get_runtime_state(p.id)
         profile_data.append({
             "profile": p, "state": state, "backups": backups.list_backups(p.id),
-            "backup_state": backups.backup_state(p.id),
+            "backup_state": backups.backup_state(p.id), "has_icon": _profile_has_icon(p.id),
         })
         
     return templates.TemplateResponse(
@@ -714,6 +751,8 @@ def get_profile_server_settings(profile_id: str):
     return {
         "profile_id": profile_id,
         "profile_name": profile.name,
+        "description": profile.description or "",
+        "has_icon": _profile_has_icon(profile_id),
         "server_installed": server_installed,
         "server_running": _profile_server_running(state),
         "managed_keys": sorted(MANAGED_SERVER_PROPERTIES),
@@ -759,6 +798,79 @@ async def update_profile_server_settings(profile_id: str, payload: ServerSetting
     state = db.get_runtime_state(profile_id)
     logger.info("API: Saved %d server settings for profile '%s'", len(updates), profile.name)
     return {"saved": True, "applies_after_restart": _profile_server_running(state)}
+
+
+class ServerIdentityUpdate(BaseModel):
+    description: str = Field(default="", max_length=100)
+
+
+@router.put("/{profile_id}/server-identity")
+def update_profile_server_identity(profile_id: str, payload: ServerIdentityUpdate):
+    """Saves the profile description shown on the card and used as the server MOTD."""
+    profile = db.get_profile(profile_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    if backups.is_backup_running(profile_id):
+        raise HTTPException(status_code=409, detail="Profile settings cannot be changed while a backup is running.")
+    profile.description = (payload.description or "").strip()
+    try:
+        db.update_profile(profile)
+    except db.DatabaseError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    logger.info("API: Updated description for profile '%s'", profile.name)
+    return {
+        "saved": True,
+        "description": profile.description,
+        "applies_after_restart": _profile_server_running(db.get_runtime_state(profile_id)),
+    }
+
+
+@router.get("/{profile_id}/icon")
+def get_profile_icon(profile_id: str):
+    """Serves the profile's 64x64 server icon for previews and cards."""
+    if not db.get_profile(profile_id):
+        raise HTTPException(status_code=404, detail="Profile not found")
+    source, live = _profile_icon_paths(profile_id)
+    for path in (live, source):
+        if path.is_file() and not path.is_symlink():
+            return FileResponse(path, media_type="image/png", headers={"Cache-Control": "no-cache"})
+    raise HTTPException(status_code=404, detail="This profile has no server icon.")
+
+
+@router.post("/{profile_id}/icon")
+async def upload_profile_icon(profile_id: str, icon: UploadFile = File(...)):
+    """Stores a 64x64 PNG as the profile's server icon."""
+    profile = db.get_profile(profile_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    if backups.is_backup_running(profile_id):
+        raise HTTPException(status_code=409, detail="Profile settings cannot be changed while a backup is running.")
+    data = await icon.read()
+    if len(data) > SERVER_ICON_MAX_BYTES:
+        raise HTTPException(status_code=422, detail="The server icon must be smaller than 256 KB.")
+    _validate_server_icon(data)
+    source, live = _profile_icon_paths(profile_id)
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(data)
+    if live.parent.is_dir() and not live.parent.is_symlink():
+        live.write_bytes(data)
+    logger.info("API: Updated server icon for profile '%s'", profile.name)
+    return {"saved": True}
+
+
+@router.delete("/{profile_id}/icon", status_code=status.HTTP_204_NO_CONTENT)
+def delete_profile_icon(profile_id: str):
+    if not db.get_profile(profile_id):
+        raise HTTPException(status_code=404, detail="Profile not found")
+    if backups.is_backup_running(profile_id):
+        raise HTTPException(status_code=409, detail="Profile settings cannot be changed while a backup is running.")
+    source, live = _profile_icon_paths(profile_id)
+    for path in (source, live):
+        if path.is_symlink():
+            raise HTTPException(status_code=400, detail="Profile storage cannot be a symbolic link.")
+        path.unlink(missing_ok=True)
+    logger.info("API: Removed server icon for profile '%s'", profile_id)
+    return None
 
 
 @router.post("/{profile_id}/mod-download-cache/clear", status_code=status.HTTP_204_NO_CONTENT)

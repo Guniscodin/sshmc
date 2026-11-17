@@ -1,8 +1,14 @@
 {% for item in data %}
 <div class="card profile-card {{ item.state.status.value }}" data-profile-id="{{ item.profile.id }}">
     <div class="profile-card-header">
+        {% if item.has_icon %}
+        <img class="profile-card-icon" src="/api/profiles/{{ item.profile.id }}/icon" alt="Server icon for {{ item.profile.name }}">
+        {% endif %}
         <div class="profile-card-title-group">
             <h3 class="profile-card-name">{{ item.profile.name }}</h3>
+            {% if item.profile.description %}
+            <p class="profile-card-description">{{ item.profile.description }}</p>
+            {% endif %}
             <div class="profile-card-tags">
                 <span class="tag-loader">{{ item.profile.build.value | upper }}</span>
                 <span class="tag-loader">{{ item.profile.mc_version }}</span>

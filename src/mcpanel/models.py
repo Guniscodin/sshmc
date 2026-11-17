@@ -70,6 +70,7 @@ class ProfileBase(BaseModel):
     loader_version: str = Field(default="latest") 
     git_url: Optional[str] = Field(default=None, description="Optional URL to mods/configs repo")
     modpack_name: Optional[str] = Field(default=None, description="Optional shared mod pack name")
+    description: str = Field(default="", max_length=100, description="Short server description shown on the card and used as the MOTD")
     mod_downloads: list[ModDownload] = Field(default_factory=list, max_length=200)
     backup_worlds_on_change: bool = Field(
         default=True,
@@ -95,6 +96,11 @@ class ProfileBase(BaseModel):
             raise ValueError("Newlines and null characters are not allowed.")
         return value
     
+    @field_validator("description")
+    @classmethod
+    def validate_description(cls, value: str) -> str:
+        return (value or "").strip()
+
     @field_validator("git_url")
     @classmethod
     def validate_git_url(cls, v: Optional[str]) -> Optional[str]:

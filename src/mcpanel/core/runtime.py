@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+import shutil
 import signal
 from datetime import datetime, timezone
 from pathlib import Path
@@ -85,17 +86,32 @@ def _generate_server_properties(profile: Profile, server_dir: Path) -> None:
     # (ports, RCON, MOTD) win so they are never overridden.
     properties.update(_load_saved_server_settings(profile.id))
 
+    description = (profile.description or "").strip()
+    motd_value = " ".join(description.split()) if description else f"SSHMC - {profile.name}"
+
     properties.update({
         "server-port": str(profile.port),
         "enable-rcon": "true",
         "rcon.port": str(profile.rcon_port),
         "rcon.password": profile.rcon_password,
-        "motd": f"SSHMC - {profile.name}"
+        "motd": motd_value
     })
 
     with open(props_path, "w") as f:
         for k, v in properties.items():
             f.write(f"{k}={v}\n")
+
+def _apply_server_icon(profile: Profile, server_dir: Path) -> None:
+    """Copies the profile's uploaded 64x64 icon into the server folder."""
+    icon_source = PROFILES_DIR / profile.id / "server_icon.png"
+    if not icon_source.is_file() or icon_source.is_symlink():
+        return
+    target = server_dir / "server-icon.png"
+    try:
+        shutil.copyfile(icon_source, target)
+        logger.info("Applied server icon from %s", icon_source.name)
+    except OSError as exc:
+        logger.warning("Could not apply the server icon: %s", exc)
 
 def _build_java_command(profile: Profile, server_dir: Path) -> list[str]:
     """Constructs the startup command. Handles modern Forge/NeoForge run.sh."""
@@ -138,6 +154,7 @@ async def start_server(profile: Profile) -> RuntimeState:
 
     # 2. Generate server.properties (Fixes port and RCON issues)
     _generate_server_properties(profile, server_dir)
+    _apply_server_icon(profile, server_dir)
 
     # 3. Spawn the process
     logger.info(f"Starting server for profile '{profile.name}'...")

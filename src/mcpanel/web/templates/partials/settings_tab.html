@@ -35,6 +35,49 @@
     </div>
 
     <div x-show="profileId && profile" class="stack-md">
+        <!-- SERVER IDENTITY: icon + description -->
+        <div class="card identity-card" x-show="!loading">
+            <h3 class="identity-heading"><i class="fa-solid fa-fingerprint text-primary-color"></i> Server Identity</h3>
+            <div class="identity-row">
+                <div class="identity-icon">
+                    <img x-show="hasIcon || pendingIconUrl" :src="pendingIconUrl || (hasIcon ? iconUrl : null)" alt="Server icon preview">
+                    <i class="fa-solid fa-image" x-show="!hasIcon"></i>
+                </div>
+                <div class="stack-sm flex-1">
+                    <div class="form-group mb-0">
+                        <label for="server-icon-input">Server Icon (64×64 PNG)</label>
+                        <input type="file" id="server-icon-input" accept="image/png" @change="onIconChosen($event)">
+                        <p class="form-hint" x-show="!pendingIconFile">Minecraft shows this icon in the multiplayer server list. Must be a 64×64 PNG, up to 256 KB.</p>
+                        <p class="form-hint" x-show="pendingIconFile">
+                            <span x-text="pendingIconFile ? pendingIconFile.name + ' ready to upload.' : ''"></span>
+                        </p>
+                    </div>
+                    <div class="flex gap-2">
+                        <button type="button" class="btn btn-secondary btn-sm" @click="uploadIcon()" :disabled="!pendingIconFile || savingIdentity">
+                            <i class="fa-solid fa-upload"></i> <span x-text="hasIcon ? 'Replace Icon' : 'Upload Icon'"></span>
+                        </button>
+                        <button type="button" class="btn btn-ghost btn-sm" x-show="hasIcon" @click="removeIcon()" :disabled="savingIdentity">
+                            <i class="fa-solid fa-trash"></i> Remove
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group mb-0">
+                <label for="server-description">Server Description</label>
+                <textarea id="server-description" rows="2" maxlength="100" x-model="description" @input="identityDirty = true"
+                          placeholder="A short description of this server…"></textarea>
+                <p class="form-hint">Shown on the profile card and used as the server MOTD. The MOTD updates on the next restart.</p>
+            </div>
+            <div class="flex gap-3">
+                <button type="button" class="btn btn-success" @click="saveDescription()" :disabled="savingIdentity">
+                    <span x-show="!savingIdentity"><i class="fa-solid fa-floppy-disk"></i> Save Description</span>
+                    <span x-show="savingIdentity"><i class="fa-solid fa-spinner fa-spin"></i> Saving…</span>
+                </button>
+                <button type="button" class="btn btn-ghost" @click="discardDescription()" :disabled="savingIdentity || !identityDirty">Discard</button>
+                <span class="form-hint self-center" x-show="identityDirty">Unsaved description.</span>
+            </div>
+        </div>
+
         <!-- Running warning: changes are not live until restart -->
         <div class="form-hint callout-box" x-show="serverRunning" role="status">
             <i class="fa-solid fa-rotate text-primary-color"></i>
