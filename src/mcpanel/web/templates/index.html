@@ -58,6 +58,10 @@
                         <i class="fa-solid fa-hard-drive"></i>
                         <span>Storage</span>
                     </button>
+                    <button type="button" class="sidebar-nav-item" :class="{ 'is-active': activeTab === 'settings' }" @click="setTab('settings')" title="Server Settings">
+                        <i class="fa-solid fa-sliders"></i>
+                        <span>Settings</span>
+                    </button>
                 </nav>
             </div>
             <div class="sidebar-footer">
@@ -272,6 +276,9 @@
 
             <!-- STORAGE TAB -->
             {% include "partials/storage_tab.html" %}
+
+            <!-- SERVER SETTINGS TAB -->
+            {% include "partials/settings_tab.html" %}
         </main>
     </div>
 
@@ -294,6 +301,7 @@
     <script src="{{ static_url('js/mods.js') }}"></script>
     <script src="{{ static_url('js/monitoring.js') }}"></script>
     <script src="{{ static_url('js/storage.js') }}"></script>
+    <script src="{{ static_url('js/server_settings.js') }}"></script>
     <script src="{{ static_url('js/panel.js') }}"></script>
     <script defer src="{{ static_url('vendor/alpine.min.js') }}"></script>
 </body>

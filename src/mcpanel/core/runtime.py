@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import re
 import signal
@@ -57,6 +58,15 @@ async def shutdown_starting_servers() -> None:
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
 
+def _load_saved_server_settings(profile_id: str) -> dict[str, str]:
+    """User-managed server.properties values saved from the server settings tab."""
+    path = PROFILES_DIR / profile_id / "server_settings.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+
 def _generate_server_properties(profile: Profile, server_dir: Path) -> None:
     """Generates or updates server.properties with our custom profile settings."""
     props_path = server_dir / "server.properties"
@@ -70,6 +80,10 @@ def _generate_server_properties(profile: Profile, server_dir: Path) -> None:
                 if line and not line.startswith("#") and "=" in line:
                     k, v = line.split("=", 1)
                     properties[k.strip()] = v.strip()
+
+    # Apply the user's saved server settings, then let the panel-managed keys
+    # (ports, RCON, MOTD) win so they are never overridden.
+    properties.update(_load_saved_server_settings(profile.id))
 
     properties.update({
         "server-port": str(profile.port),

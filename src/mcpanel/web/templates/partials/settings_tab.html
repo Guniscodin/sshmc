@@ -1,0 +1,103 @@
+<!-- SERVER SETTINGS TAB -->
+<section class="page-container" x-show="activeTab === 'settings'" x-data="serverSettingsApp()" x-init="init()" aria-labelledby="server-settings-title">
+    <div class="page-header">
+        <div class="page-header-info">
+            <span class="page-eyebrow">server.properties</span>
+            <h1 id="server-settings-title" class="page-title">Settings</h1>
+            <p class="page-subtitle">Pick a profile and tune its world and gameplay settings. Changes apply after the next restart.</p>
+        </div>
+        <div class="page-actions">
+            <div class="flex items-center gap-2">
+                <label for="server-settings-profile-select" class="m-0 text-xs">Profile:</label>
+                <select id="server-settings-profile-select" x-model="profileId" @change="selectProfile()" aria-label="Choose a profile">
+                    <option value="">Choose a profile</option>
+                    <template x-for="item in profiles" :key="item.id">
+                        <option :value="item.id" x-text="item.name"></option>
+                    </template>
+                </select>
+                <span class="badge badge-status badge-running" x-show="serverRunning">Running</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- No profile selected empty state -->
+    <div x-show="!profileId || !profile" class="empty-state mt-6">
+        <i class="fa-solid fa-sliders empty-state-hero-icon text-muted"></i>
+        <h3 class="mt-2">No profile selected</h3>
+        <p class="text-muted max-w-md line-height-base">
+            Choose a Minecraft profile from the dropdown above to edit its server.properties, such as online mode, difficulty, and world spawn behaviour.
+        </p>
+        <template x-if="profiles.length === 0">
+            <button type="button" class="btn btn-primary btn-sm mt-2" @click="openNewProfileModal()">
+                <i class="fa-solid fa-plus"></i> Create your first profile
+            </button>
+        </template>
+    </div>
+
+    <div x-show="profileId && profile" class="stack-md">
+        <!-- Running warning: changes are not live until restart -->
+        <div class="form-hint callout-box" x-show="serverRunning" role="status">
+            <i class="fa-solid fa-rotate text-primary-color"></i>
+            <span><strong><span x-text="profile ? profile.name : ''"></span> is currently running.</strong>
+            Saved changes are written to disk but the running server keeps its current settings until you stop and start it (or use Restart &amp; sync). SSHMC will not restart the server for you.</span>
+        </div>
+
+        <div class="form-hint callout-box" x-show="!serverRunning && serverInstalled" role="status">
+            <i class="fa-solid fa-circle-info text-primary-color"></i>
+            <span>Saved changes apply on the next Start or Restart of this profile.</span>
+        </div>
+
+        <div class="form-hint callout-box" x-show="!serverInstalled" role="status">
+            <i class="fa-solid fa-circle-info text-warning"></i>
+            <span>This profile has not been started yet, so server.properties does not exist. Settings saved here are applied when the server is first installed and started.</span>
+        </div>
+
+        <div class="form-error" x-show="error" x-text="error" role="alert"></div>
+
+        <div x-show="loading" class="form-hint"><i class="fa-solid fa-spinner fa-spin"></i> Loading server settings…</div>
+
+        <div class="grid-2 settings-grid" x-show="!loading && fields.length">
+            <template x-for="field in fields" :key="field.key">
+                <div class="form-group">
+                    <template x-if="field.type === 'bool'">
+                        <label class="checkbox-item" :for="'ss-' + field.key">
+                            <input type="checkbox" :id="'ss-' + field.key" x-model="field.value" @change="dirty = true">
+                            <span x-text="field.label"></span>
+                        </label>
+                    </template>
+                    <template x-if="field.type !== 'bool'">
+                        <label :for="'ss-' + field.key" x-text="field.label"></label>
+                    </template>
+
+                    <template x-if="field.type === 'choice'">
+                        <select :id="'ss-' + field.key" x-model="field.value" @change="dirty = true">
+                            <template x-for="option in field.options" :key="option">
+                                <option :value="option" x-text="option" :selected="option === field.value"></option>
+                            </template>
+                        </select>
+                    </template>
+
+                    <template x-if="field.type === 'int'">
+                        <input type="number" :id="'ss-' + field.key" x-model.number="field.value" :min="field.min" :max="field.max" @input="dirty = true">
+                    </template>
+
+                    <p class="form-hint" x-text="field.description"></p>
+                </div>
+            </template>
+        </div>
+
+        <div class="form-hint" x-show="!loading && fields.length">
+            <i class="fa-solid fa-lock text-muted"></i>
+            The game port, RCON settings, and the MOTD are managed by SSHMC — change them in the profile's Edit form.
+        </div>
+
+        <div class="flex gap-3" x-show="!loading && fields.length">
+            <button type="button" class="btn btn-success" @click="saveSettings()" :disabled="saving">
+                <span x-show="!saving"><i class="fa-solid fa-floppy-disk"></i> Save Settings</span>
+                <span x-show="saving"><i class="fa-solid fa-spinner fa-spin"></i> Saving…</span>
+            </button>
+            <button type="button" class="btn btn-ghost" @click="discardChanges()" :disabled="saving || !dirty">Discard Changes</button>
+            <span class="form-hint self-center" x-show="dirty">Unsaved changes.</span>
+        </div>
+    </div>
+</section>

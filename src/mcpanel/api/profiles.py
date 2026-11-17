@@ -45,6 +45,145 @@ def _parse_mod_downloads(raw: str) -> list[dict]:
     return parsed
 
 
+# Editable server.properties keys. The panel always manages the keys in
+# MANAGED_SERVER_PROPERTIES itself; they cannot be changed here.
+SERVER_SETTING_SPECS: dict[str, dict] = {
+    "online-mode": {
+        "type": "bool", "default": "true", "label": "Online Mode",
+        "description": "Verify players against Mojang's session servers. Turn off to allow offline-mode clients.",
+    },
+    "enforce-secure-profile": {
+        "type": "bool", "default": "true", "label": "Enforce Secure Profiles",
+        "description": "Require signed player chat and profiles. Keep off for offline-mode servers.",
+    },
+    "difficulty": {
+        "type": "choice", "default": "easy", "label": "Difficulty",
+        "options": ["peaceful", "easy", "normal", "hard"],
+        "description": "Server difficulty applied to loaded worlds.",
+    },
+    "gamemode": {
+        "type": "choice", "default": "survival", "label": "Default Game Mode",
+        "options": ["survival", "creative", "adventure", "spectator"],
+        "description": "Game mode for new players.",
+    },
+    "force-gamemode": {
+        "type": "bool", "default": "false", "label": "Force Game Mode",
+        "description": "Put joining players back into the default game mode.",
+    },
+    "hardcore": {
+        "type": "bool", "default": "false", "label": "Hardcore",
+        "description": "Spectator mode on death instead of respawn. Only affects new worlds.",
+    },
+    "pvp": {
+        "type": "bool", "default": "true", "label": "PvP",
+        "description": "Allow players to fight each other.",
+    },
+    "allow-flight": {
+        "type": "bool", "default": "false", "label": "Allow Flight",
+        "description": "Permit flying without false movement kicks (useful for some modded clients).",
+    },
+    "allow-nether": {
+        "type": "bool", "default": "true", "label": "Allow Nether",
+        "description": "Let players travel to the Nether.",
+    },
+    "enable-command-block": {
+        "type": "bool", "default": "false", "label": "Command Blocks",
+        "description": "Enable command blocks in loaded worlds.",
+    },
+    "spawn-monsters": {
+        "type": "bool", "default": "true", "label": "Spawn Monsters",
+        "description": "Spawn hostile mobs.",
+    },
+    "spawn-animals": {
+        "type": "bool", "default": "true", "label": "Spawn Animals",
+        "description": "Spawn passive animals.",
+    },
+    "spawn-npcs": {
+        "type": "bool", "default": "true", "label": "Spawn Villagers",
+        "description": "Spawn villagers (NPCs).",
+    },
+    "max-players": {
+        "type": "int", "default": "20", "min": 1, "max": 100000, "label": "Max Players",
+        "description": "Maximum number of players connected at the same time.",
+    },
+    "view-distance": {
+        "type": "int", "default": "10", "min": 3, "max": 32, "label": "View Distance",
+        "description": "Chunks sent to each player. Lower values reduce load.",
+    },
+    "simulation-distance": {
+        "type": "int", "default": "10", "min": 5, "max": 32, "label": "Simulation Distance",
+        "description": "Chunks that tick entities and blocks. Lower values reduce load.",
+    },
+    "spawn-protection": {
+        "type": "int", "default": "16", "min": 0, "max": 256, "label": "Spawn Protection Radius",
+        "description": "Blocks around world spawn only operators may edit. 0 disables protection.",
+    },
+    "op-permission-level": {
+        "type": "int", "default": "4", "min": 0, "max": 4, "label": "OP Permission Level",
+        "description": "Default permission level granted to operators.",
+    },
+}
+
+MANAGED_SERVER_PROPERTIES = {"server-port", "enable-rcon", "rcon.port", "rcon.password", "motd"}
+
+
+def _read_properties_file(path: Path) -> dict[str, str]:
+    properties: dict[str, str] = {}
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as props_file:
+            for line in props_file:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, value = line.split("=", 1)
+                    properties[key.strip()] = value.strip()
+    except OSError:
+        return {}
+    return properties
+
+
+def _saved_server_settings_path(profile_id: str) -> Path:
+    return PROFILES_DIR / profile_id / "server_settings.json"
+
+
+def _read_saved_server_settings(profile_id: str) -> dict[str, str]:
+    path = _saved_server_settings_path(profile_id)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+
+
+def _validate_server_setting(key: str, spec: dict, value: str) -> str:
+    text = (value or "").strip()
+    if not text:
+        raise HTTPException(status_code=422, detail=f"'{key}' cannot be empty.")
+    if spec["type"] == "bool":
+        if text.lower() not in ("true", "false"):
+            raise HTTPException(status_code=422, detail=f"'{key}' must be true or false.")
+        return text.lower()
+    if spec["type"] == "int":
+        try:
+            number = int(text)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"'{key}' must be a whole number.") from exc
+        if not (spec["min"] <= number <= spec["max"]):
+            raise HTTPException(
+                status_code=422,
+                detail=f"'{key}' must be between {spec['min']} and {spec['max']}.",
+            )
+        return str(number)
+    if text not in spec["options"]:
+        raise HTTPException(status_code=422, detail=f"'{key}' must be one of: {', '.join(spec['options'])}.")
+    return text
+
+
+def _profile_server_running(state) -> bool:
+    return bool(state and state.status in (
+        ProfileStatus.RUNNING, ProfileStatus.STARTING, ProfileStatus.STOPPING
+    ))
+
+
 def _replacement_pending(profile: Profile) -> bool:
     metadata = PROFILES_DIR / profile.id / "server" / "profile_meta.json"
     if not metadata.is_file():
@@ -539,6 +678,87 @@ def get_profile_settings(profile_id: str):
         modpacks.get_pack(profile.modpack_name), profile.build.value
     )
     return settings
+
+
+class ServerSettingsUpdate(BaseModel):
+    properties: dict[str, str]
+
+
+@router.get("/{profile_id}/server-settings")
+def get_profile_server_settings(profile_id: str):
+    """Editable server.properties values for the server settings tab."""
+    profile = db.get_profile(profile_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    props_path = PROFILES_DIR / profile_id / "server" / "server.properties"
+    server_installed = props_path.is_file() and not props_path.is_symlink()
+    if server_installed:
+        values = _read_properties_file(props_path)
+    else:
+        # The server has not been installed yet; show settings saved from a
+        # previous edit so they are not silently lost before the first Start.
+        values = _read_saved_server_settings(profile_id)
+    state = db.get_runtime_state(profile_id)
+    fields = []
+    for key, spec in SERVER_SETTING_SPECS.items():
+        fields.append({
+            "key": key,
+            "label": spec["label"],
+            "description": spec.get("description", ""),
+            "type": spec["type"],
+            "value": values.get(key, spec["default"]),
+            "options": spec.get("options"),
+            "min": spec.get("min"),
+            "max": spec.get("max"),
+        })
+    return {
+        "profile_id": profile_id,
+        "profile_name": profile.name,
+        "server_installed": server_installed,
+        "server_running": _profile_server_running(state),
+        "managed_keys": sorted(MANAGED_SERVER_PROPERTIES),
+        "fields": fields,
+    }
+
+
+@router.put("/{profile_id}/server-settings")
+async def update_profile_server_settings(profile_id: str, payload: ServerSettingsUpdate):
+    """Saves editable server.properties values. Applies on the next server start."""
+    profile = db.get_profile(profile_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    if backups.is_backup_running(profile_id):
+        raise HTTPException(status_code=409, detail="Server settings cannot be changed while a backup is running.")
+    if not isinstance(payload.properties, dict) or not payload.properties:
+        raise HTTPException(status_code=422, detail="Provide at least one server setting to save.")
+    updates: dict[str, str] = {}
+    for key, value in payload.properties.items():
+        spec = SERVER_SETTING_SPECS.get(key)
+        if spec is None:
+            raise HTTPException(status_code=422, detail=f"'{key}' is not an editable server setting.")
+        updates[key] = _validate_server_setting(key, spec, value)
+
+    # Persist the saved settings so they survive a wiped or not-yet-installed
+    # server folder; the panel re-applies them whenever it writes server.properties.
+    saved = _read_saved_server_settings(profile_id)
+    saved.update(updates)
+    settings_path = _saved_server_settings_path(profile_id)
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(json.dumps(saved, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    # Also merge into the existing server.properties so the file on disk matches
+    # what the panel will apply on the next start.
+    props_path = PROFILES_DIR / profile_id / "server" / "server.properties"
+    if props_path.is_file() and not props_path.is_symlink():
+        existing = _read_properties_file(props_path)
+        existing.update(updates)
+        with open(props_path, "w", encoding="utf-8") as props_file:
+            for prop_key, prop_value in existing.items():
+                props_file.write(f"{prop_key}={prop_value}\n")
+
+    state = db.get_runtime_state(profile_id)
+    logger.info("API: Saved %d server settings for profile '%s'", len(updates), profile.name)
+    return {"saved": True, "applies_after_restart": _profile_server_running(state)}
 
 
 @router.post("/{profile_id}/mod-download-cache/clear", status_code=status.HTTP_204_NO_CONTENT)
