@@ -47,6 +47,3 @@ DEFAULT_RCON_PORT = 25575
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 PROFILES_DIR.mkdir(parents=True, exist_ok=True)
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
-
-# 4. Git Sync Settings
-GIT_SYNC_FOLDERS = ["mods", "config", "datapacks"]

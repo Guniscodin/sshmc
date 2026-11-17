@@ -1,0 +1,235 @@
+<section class="page-container" x-show="activeTab === 'storage'" x-data="storageApp()" x-init="init()" aria-labelledby="storage-title">
+    <div class="page-header">
+        <div class="page-header-info">
+            <span class="page-eyebrow">Data & Cleanup</span>
+            <h1 id="storage-title" class="page-title">Storage</h1>
+            <p class="page-subtitle">Inspect storage distribution, monitor growth limits, and manage disk space.</p>
+        </div>
+        <div class="page-actions">
+            <button type="button" class="btn btn-secondary btn-sm" @click="refresh(true)" :disabled="busy">
+                <i class="fa-solid fa-rotate" :class="{ 'fa-spin': busy }"></i>
+                <span x-text="busy ? 'Scanning...' : 'Refresh scan'"></span>
+            </button>
+        </div>
+    </div>
+
+    <!-- Stacked Category Usage Bar -->
+    <div class="card p-4 px-6">
+        <div class="flex-between mb-2">
+            <strong class="text-sm">Storage Allocation</strong>
+            <span class="text-sm text-muted">
+                Total Managed: <strong class="text-primary-color" x-text="formatSize(stats.combined_total_bytes || stats.total_bytes)"></strong>
+            </span>
+        </div>
+
+        <div class="storage-stacked-bar">
+            <div class="storage-bar-segment bg-primary" :style="`width: ${categoryPercentages.profiles}%;`" :title="`Profiles: ${formatSize(stats.profiles_bytes)} (${categoryPercentages.profiles}%)`"></div>
+            <div class="storage-bar-segment bg-purple" :style="`width: ${categoryPercentages.packs}%;`" :title="`Mod packs: ${formatSize(stats.modpacks_bytes)} (${categoryPercentages.packs}%)`"></div>
+            <div class="storage-bar-segment bg-yellow" :style="`width: ${categoryPercentages.logs}%;`" :title="`Logs: ${formatSize(stats.panel_logs_bytes)} (${categoryPercentages.logs}%)`"></div>
+            <div class="storage-bar-segment bg-orange" :style="`width: ${categoryPercentages.uploads}%;`" :title="`Uploads: ${formatSize(stats.uploads_bytes)} (${categoryPercentages.uploads}%)`"></div>
+            <div class="storage-bar-segment bg-gray" :style="`width: ${categoryPercentages.other}%;`" :title="`Other: ${formatSize(stats.other_bytes)} (${categoryPercentages.other}%)`"></div>
+        </div>
+
+        <div class="storage-legend">
+            <div class="storage-legend-item">
+                <span class="storage-legend-dot bg-primary"></span>
+                <span>Profiles (<span x-text="formatSize(stats.profiles_bytes)"></span>)</span>
+            </div>
+            <div class="storage-legend-item">
+                <span class="storage-legend-dot bg-purple"></span>
+                <span>Mod Packs (<span x-text="formatSize(stats.modpacks_bytes)"></span>)</span>
+            </div>
+            <div class="storage-legend-item">
+                <span class="storage-legend-dot bg-yellow"></span>
+                <span>Logs (<span x-text="formatSize(stats.panel_logs_bytes)"></span>)</span>
+            </div>
+            <div class="storage-legend-item">
+                <span class="storage-legend-dot bg-orange"></span>
+                <span>Uploads (<span x-text="formatSize(stats.uploads_bytes)"></span>)</span>
+            </div>
+            <div class="storage-legend-item">
+                <span class="storage-legend-dot bg-gray"></span>
+                <span>Other (<span x-text="formatSize(stats.other_bytes)"></span>)</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Storage Paths info -->
+    <div class="storage-location m-0">
+        <span><i class="fa-solid fa-folder"></i> Data directory:</span>
+        <code x-text="stats.data_dir || 'Scanning…'"></code>
+        <span x-show="stats.external_backup_root">| External backups: <code x-text="stats.external_backup_root"></code></span>
+    </div>
+
+    <!-- Summary Metrics Grid -->
+    <div class="stats-grid">
+        <article class="stat-card">
+            <span class="stat-label">Server Profiles</span>
+            <span class="stat-value" x-text="formatSize(stats.profiles_bytes)"></span>
+            <span class="stat-sub" x-text="`${(stats.profiles || []).length} profiles on disk`"></span>
+        </article>
+        <article class="stat-card">
+            <span class="stat-label">Mod Packs</span>
+            <span class="stat-value" x-text="formatSize(stats.modpacks_bytes)"></span>
+            <span class="stat-sub" x-text="`${(stats.modpacks || []).length} packs stored`"></span>
+        </article>
+        <article class="stat-card">
+            <span class="stat-label">Panel Logs</span>
+            <span class="stat-value" x-text="formatSize(stats.panel_logs_bytes)"></span>
+            <span class="stat-sub" x-text="`${(stats.panel_logs || []).length} log files`"></span>
+        </article>
+        <article class="stat-card">
+            <span class="stat-label">Temp Uploads</span>
+            <span class="stat-value" x-text="formatSize(stats.uploads_bytes)"></span>
+            <span class="stat-sub">Staged pack uploads</span>
+        </article>
+        <article class="stat-card">
+            <span class="stat-label">Database</span>
+            <span class="stat-value" x-text="formatSize(stats.database_bytes)"></span>
+            <span class="stat-sub">SQLite state store</span>
+        </article>
+    </div>
+
+    <p class="form-hint text-right" role="status" x-text="stats.scanned_at ? `Scanned ${new Date(stats.scanned_at).toLocaleTimeString()}${stats.scanning ? ' · scan in progress' : ''}` : 'The first storage scan is running…'"></p>
+
+    <!-- Cleanup Cards Grid -->
+    <div class="storage-cleanup-grid">
+        <!-- Panel Logs Cleanup -->
+        <article class="card">
+            <div class="card-header">
+                <div>
+                    <h3 class="m-0 text-base"><i class="fa-solid fa-file-lines text-primary-color"></i> Panel Logs</h3>
+                    <p class="form-hint">Application logs and rotated backups.</p>
+                </div>
+                <strong class="text-base" x-text="formatSize(stats.panel_logs_bytes)"></strong>
+            </div>
+            <ul class="storage-file-list storage-log-list">
+                <template x-for="file in (stats.panel_logs || [])" :key="file.filename">
+                    <li>
+                        <code x-text="file.filename"></code>
+                        <span x-text="formatSize(file.size_bytes)"></span>
+                    </li>
+                </template>
+                <li x-show="!stats.panel_logs?.length" class="storage-muted">No panel log files.</li>
+            </ul>
+            <div class="flex justify-end mt-auto">
+                <button type="button" class="btn btn-danger btn-sm" @click="clearPanelLogs()" :disabled="busy || !stats.panel_logs_bytes">
+                    <i class="fa-solid fa-trash"></i> Clear Panel Logs
+                </button>
+            </div>
+        </article>
+
+        <!-- Temporary Uploads Cleanup -->
+        <article class="card">
+            <div class="card-header">
+                <div>
+                    <h3 class="m-0 text-base"><i class="fa-solid fa-cloud-arrow-up text-primary-color"></i> Staged Uploads</h3>
+                    <p class="form-hint">Expired sessions (<span x-text="Math.round((stats.policies?.upload_expiry_seconds || 86400) / 3600)"></span>h policy).</p>
+                </div>
+                <strong class="text-base" x-text="formatSize(stats.uploads_bytes)"></strong>
+            </div>
+            <p class="form-hint my-3">
+                Temporary files left behind from interrupted or cancelled modpack uploads.
+            </p>
+            <div class="flex justify-end mt-auto">
+                <button type="button" class="btn btn-secondary btn-sm" @click="cleanUploads()" :disabled="busy">
+                    <i class="fa-solid fa-broom"></i> Clean Expired Uploads
+                </button>
+            </div>
+        </article>
+    </div>
+
+    <!-- Profiles Storage Detail Section -->
+    <section class="card p-6" aria-labelledby="storage-profiles-title">
+        <div class="card-header">
+            <div>
+                <h2 id="storage-profiles-title" class="m-0 text-lg">Profile Storage Details</h2>
+                <p class="form-hint">Server folders include libraries, worlds, and logs. Worlds can be removed while the server is stopped.</p>
+            </div>
+        </div>
+
+        <div class="stack mt-4">
+            <template x-for="profile in (stats.profiles || [])" :key="profile.id">
+                <details class="storage-profile">
+                    <summary>
+                        <span>
+                            <strong x-text="profile.name"></strong>
+                            <span class="badge badge-status" :class="`badge-${profile.status.toLowerCase()}`" x-text="profile.status"></span>
+                        </span>
+                        <b x-text="formatSize(profile.total_bytes)"></b>
+                    </summary>
+
+                    <div class="storage-orphan" x-show="profile.orphaned">
+                        <p>These files remain on disk but have no profile in the database.</p>
+                        <button type="button" class="btn btn-danger btn-sm" @click="deleteOrphan(profile)" :disabled="busy">
+                            Delete unlinked files
+                        </button>
+                    </div>
+
+                    <div x-show="!profile.orphaned" class="storage-profile-body">
+                        <div class="storage-breakdown">
+                            <div><span>Server folder (includes worlds/logs)</span><b x-text="formatSize(profile.server_bytes)"></b></div>
+                            <div><span>Worlds</span><b x-text="formatSize(profile.world_bytes)"></b></div>
+                            <div><span>Server logs</span><b x-text="formatSize(profile.server_logs_bytes)"></b></div>
+                            <div><span>Crash reports</span><b x-text="formatSize(profile.crash_reports_bytes)"></b></div>
+                            <div><span>Backups</span><b x-text="formatSize(profile.backups_bytes)"></b></div>
+                            <div><span>Direct-link cache</span><b x-text="formatSize(profile.download_cache_bytes)"></b></div>
+                            <div><span>Modrinth JAR cache</span><b x-text="formatSize(profile.modrinth_cache_bytes)"></b></div>
+                            <div><span>Git repository</span><b x-text="formatSize(profile.repo_bytes)"></b></div>
+                        </div>
+
+                        <div class="storage-actions my-3">
+                            <button type="button" class="btn btn-ghost btn-sm" @click="clearProfileLogs(profile)" :disabled="busy || profileRunning(profile) || (!profile.server_logs_bytes && !profile.relay_logs_bytes && !profile.crash_reports_bytes)">
+                                Clear logs & crash reports
+                            </button>
+                            <button type="button" class="btn btn-ghost btn-sm" @click="clearDownloadCache(profile)" :disabled="busy || !profile.download_cache_bytes">
+                                Clear direct-link cache
+                            </button>
+                            <button type="button" class="btn btn-ghost btn-sm" @click="clearModrinthCache(profile)" :disabled="busy || (!profile.modrinth_cache_bytes && !profile.modrinth_manifest_bytes)">
+                                Clear Modrinth cache
+                            </button>
+                        </div>
+
+                        <div class="storage-world-list" x-show="worldEntries(profile).length">
+                            <template x-for="world in worldEntries(profile)" :key="world.name">
+                                <div x-show="world.size_bytes">
+                                    <span><code x-text="world.name"></code> · <b x-text="formatSize(world.size_bytes)"></b></span>
+                                    <button type="button" class="btn btn-danger btn-sm" @click="deleteWorld(profile, world)" :disabled="busy || profileRunning(profile)">
+                                        Delete world
+                                    </button>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+                </details>
+            </template>
+            <p class="empty-state" x-show="!stats.profiles?.length">No profiles configured yet.</p>
+        </div>
+    </section>
+
+    <!-- Reusable Mod Packs Section -->
+    <section class="card p-6" aria-labelledby="storage-packs-title">
+        <div class="card-header">
+            <div>
+                <h2 id="storage-packs-title" class="m-0 text-lg">Reusable Mod Packs</h2>
+                <p class="form-hint">Deleting a pack unlinks profiles using it; they update on their next start.</p>
+            </div>
+            <strong class="text-base" x-text="formatSize(stats.modpacks_bytes)"></strong>
+        </div>
+
+        <div class="storage-pack-list mt-4">
+            <template x-for="pack in (stats.modpacks || [])" :key="pack.name">
+                <div>
+                    <span>
+                        <strong x-text="pack.name"></strong>
+                        <small x-text="`${pack.jar_count} JARs · ${formatSize(pack.size_bytes)}`"></small>
+                    </span>
+                    <button type="button" class="btn btn-danger btn-sm" @click="deletePack(pack)" :disabled="busy">
+                        <i class="fa-solid fa-trash"></i> Delete Pack
+                    </button>
+                </div>
+            </template>
+            <p class="empty-state" x-show="!stats.modpacks?.length">No mod packs imported yet.</p>
+        </div>
+    </section>
+</section>

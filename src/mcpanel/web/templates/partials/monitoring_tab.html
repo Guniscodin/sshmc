@@ -1,0 +1,191 @@
+<section class="page-container" x-show="activeTab === 'monitoring'" x-data="monitoringApp()" x-init="init()" aria-labelledby="monitoring-title">
+    <div class="page-header">
+        <div class="page-header-info">
+            <span class="page-eyebrow">System Health & Telemetry</span>
+            <h1 id="monitoring-title" class="page-title">Monitoring</h1>
+            <p class="page-subtitle">Real-time host and Minecraft server resource usage with 10-minute historical trends.</p>
+        </div>
+        <div class="page-actions">
+            <span class="badge badge-running" x-show="stats.host">
+                <span class="badge-status-dot"></span> Live Telemetry
+            </span>
+            <button type="button" class="btn btn-secondary btn-sm" @click="refresh()" :disabled="busy">
+                <i class="fa-solid fa-rotate" :class="{ 'fa-spin': busy }"></i>
+                <span x-text="busy ? 'Refreshing...' : 'Refresh'"></span>
+            </button>
+        </div>
+    </div>
+
+    <!-- Host Overview Sparkline Cards -->
+    <div class="monitoring-grid">
+        <!-- Host CPU Card -->
+        <article class="monitor-card">
+            <div class="monitor-card-header">
+                <div>
+                    <h3>Host CPU</h3>
+                    <span class="form-hint" x-text="`${stats.host?.logical_cpu_count || 1} Logical Cores`"></span>
+                </div>
+                <div class="text-right">
+                    <span class="current-val" :class="colorThreshold(cpuCurrent)" x-text="`${cpuCurrent.toFixed(1)}%`"></span>
+                </div>
+            </div>
+
+            <!-- 10-min CPU Sparkline SVG -->
+            <div class="sparkline-wrapper" :title="`Current: ${cpuCurrent.toFixed(1)}% | Min: ${cpuMinMax.min}% | Max: ${cpuMinMax.max}%`">
+                <svg class="sparkline-svg" viewBox="0 0 300 54" preserveAspectRatio="none">
+                    <path class="sparkline-fill" :class="colorThreshold(cpuCurrent)" :d="cpuSparklineData().fill" />
+                    <path class="sparkline-path" :class="colorThreshold(cpuCurrent)" :d="cpuSparklineData().path" />
+                </svg>
+            </div>
+
+            <div class="sparkline-meta">
+                <span>10m ago</span>
+                <span>Min: <strong x-text="`${cpuMinMax.min}%`"></strong> · Max: <strong x-text="`${cpuMinMax.max}%`"></strong></span>
+                <span>Now</span>
+            </div>
+
+            <div class="monitor-load-row">
+                <span>Load Average:</span>
+                <strong class="text-secondary" x-text="(stats.host?.load_average || []).map(v => v.toFixed(2)).join(' · ') || '—'"></strong>
+            </div>
+        </article>
+
+        <!-- Host RAM Card -->
+        <article class="monitor-card">
+            <div class="monitor-card-header">
+                <div>
+                    <h3>Memory (RAM)</h3>
+                    <span class="form-hint" x-text="`${formatBytes(stats.host?.memory?.used_bytes)} used of ${formatBytes(stats.host?.memory?.total_bytes)}`"></span>
+                </div>
+                <div class="text-right">
+                    <span class="current-val" :class="colorThreshold(memoryCurrent)" x-text="`${memoryCurrent.toFixed(1)}%`"></span>
+                </div>
+            </div>
+
+            <!-- 10-min RAM Sparkline SVG -->
+            <div class="sparkline-wrapper" :title="`Current: ${memoryCurrent.toFixed(1)}% | Min: ${memoryMinMax.min}% | Max: ${memoryMinMax.max}%`">
+                <svg class="sparkline-svg" viewBox="0 0 300 54" preserveAspectRatio="none">
+                    <path class="sparkline-fill" :class="colorThreshold(memoryCurrent)" :d="memorySparklineData().fill" />
+                    <path class="sparkline-path" :class="colorThreshold(memoryCurrent)" :d="memorySparklineData().path" />
+                </svg>
+            </div>
+
+            <div class="sparkline-meta">
+                <span>10m ago</span>
+                <span>Min: <strong x-text="`${memoryMinMax.min}%`"></strong> · Max: <strong x-text="`${memoryMinMax.max}%`"></strong></span>
+                <span>Now</span>
+            </div>
+
+            <div class="monitor-load-row">
+                <span>Available Memory:</span>
+                <strong class="text-secondary" x-text="formatBytes(stats.host?.memory?.available_bytes)"></strong>
+            </div>
+        </article>
+
+        <!-- Host Storage & Disks Card -->
+        <article class="monitor-card">
+            <div class="monitor-card-header">
+                <div>
+                    <h3>Disk Filesystems</h3>
+                    <span class="form-hint">Mounted data partitions</span>
+                </div>
+            </div>
+
+            <div class="stack mt-2">
+                <template x-for="disk in (stats.disks || [])" :key="disk.mountpoint">
+                    <div class="stack-xs">
+                        <div class="flex-between text-xs">
+                            <code><strong x-text="disk.mountpoint"></strong></code>
+                            <span :class="colorThreshold(disk.percent)" class="font-semibold" x-text="`${disk.percent}% · ${formatBytes(disk.free_bytes)} free`"></span>
+                        </div>
+                        <div class="metric-bar-track">
+                            <div class="metric-bar-fill" :class="colorThreshold(disk.percent)" :style="`width: ${Math.min(100, disk.percent)}%;`"></div>
+                        </div>
+                        <div class="flex-between text-xs text-muted">
+                            <span x-text="`Used: ${formatBytes(disk.used_bytes)}`"></span>
+                            <span x-text="`Total: ${formatBytes(disk.total_bytes)}`"></span>
+                        </div>
+                    </div>
+                </template>
+                <p x-show="!stats.disks?.length" class="form-hint">No partitions detected.</p>
+            </div>
+        </article>
+    </div>
+
+    <!-- Collapsible Per-Core CPU Section -->
+    <details class="card p-4 px-6">
+        <summary class="flex-between pointer select-none">
+            <span class="font-semibold text-sm flex items-center gap-2">
+                <i class="fa-solid fa-microchip text-primary-color"></i>
+                Per-Core CPU Utilization (<span x-text="(stats.host?.cpu_per_core_percent || []).length"></span> Cores)
+            </span>
+            <i class="fa-solid fa-chevron-down text-muted"></i>
+        </summary>
+        
+        <div class="core-grid mt-4">
+            <template x-for="(pct, index) in (stats.host?.cpu_per_core_percent || [])" :key="index">
+                <div class="core-item">
+                    <span class="core-name" x-text="`Core ${index}`"></span>
+                    <div class="metric-bar-track">
+                        <div class="metric-bar-fill" :class="colorThreshold(pct)" :style="`width: ${Math.min(100, pct)}%;`"></div>
+                    </div>
+                    <span class="core-pct" :class="colorThreshold(pct)" x-text="`${pct.toFixed(0)}%`"></span>
+                </div>
+            </template>
+        </div>
+    </details>
+
+    <!-- Per-Server Resource Breakdown -->
+    <div class="card p-6">
+        <div class="card-header">
+            <div>
+                <h2 class="m-0 text-lg"><i class="fa-solid fa-server text-primary-color"></i> Running Server Telemetry</h2>
+                <p class="form-hint">Live CPU and memory consumed by active Minecraft processes.</p>
+            </div>
+            <span class="badge badge-status badge-running" x-text="`${(stats.servers || []).length} Running`"></span>
+        </div>
+
+        <div class="stack-md mt-4">
+            <template x-for="server in (stats.servers || [])" :key="server.profile_id">
+                <article class="monitor-server-card">
+                    <div class="flex-between flex-wrap gap-2">
+                        <strong class="text-base text-primary-color" x-text="server.name"></strong>
+                        <span class="badge badge-status badge-running"><span class="badge-status-dot"></span> PID <span x-text="server.pid"></span></span>
+                    </div>
+
+                    <div class="monitor-server-grid">
+                        <!-- Server CPU -->
+                        <div>
+                            <div class="flex-between text-xs mb-1">
+                                <span class="text-muted">CPU (Host Total):</span>
+                                <strong :class="colorThreshold(server.cpu_percent_machine || 0)" x-text="`${(server.cpu_percent_machine || 0).toFixed(1)}%`"></strong>
+                            </div>
+                            <div class="metric-bar-track">
+                                <div class="metric-bar-fill" :class="colorThreshold(server.cpu_percent_machine || 0)" :style="`width: ${Math.min(100, server.cpu_percent_machine || 0)}%;`"></div>
+                            </div>
+                            <span class="text-xs text-muted block mt-1" x-text="`${(server.cpu_percent_one_core || 0).toFixed(1)}% of one core`"></span>
+                        </div>
+
+                        <!-- Server RAM -->
+                        <div>
+                            <div class="flex-between text-xs mb-1">
+                                <span class="text-muted">Memory (RSS / Allocation):</span>
+                                <strong x-text="`${formatBytes(server.rss_bytes)} / ${formatBytes(server.ram_allocation_bytes)}`"></strong>
+                            </div>
+                            <div class="metric-bar-track">
+                                <div class="metric-bar-fill" :class="colorThreshold(server.ram_allocation_bytes ? (server.rss_bytes / server.ram_allocation_bytes * 100) : 0)" :style="`width: ${Math.min(100, server.ram_allocation_bytes ? (server.rss_bytes / server.ram_allocation_bytes * 100) : 0)}%;`"></div>
+                            </div>
+                            <span class="text-xs text-muted block mt-1" x-text="`${server.ram_allocation_bytes ? (server.rss_bytes / server.ram_allocation_bytes * 100).toFixed(1) : 0}% of allocated limit`"></span>
+                        </div>
+                    </div>
+                </article>
+            </template>
+
+            <div class="empty-state p-6" x-show="!stats.servers?.length">
+                <i class="fa-solid fa-server"></i>
+                <h3>No servers running</h3>
+                <p>Start a server profile from the Profiles tab to see real-time process telemetry.</p>
+            </div>
+        </div>
+    </div>
+</section>

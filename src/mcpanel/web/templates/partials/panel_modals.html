@@ -1,0 +1,340 @@
+    <!-- PREFLIGHT ERROR MODAL -->
+    <div x-show="preflightModalOpen" class="modal-backdrop" x-cloak @keydown.escape.window="closePreflightModal()" @click.self="closePreflightModal()">
+        <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="preflight-modal-title">
+            <div class="modal-header">
+                <h3 id="preflight-modal-title" class="text-danger flex-items-center">
+                    <i class="fa-solid fa-triangle-exclamation"></i> Mod Source Preflight Failed
+                </h3>
+                <button type="button" class="btn btn-ghost btn-icon" @click="closePreflightModal()" aria-label="Close preflight dialog">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+            <p class="text-sm text-secondary" x-text="preflightFailure?.message || 'Server startup was blocked because one or more mod files are incompatible or missing dependencies.'"></p>
+            
+            <div class="preflight-scroll-area">
+                <template x-for="[jar, issues] in Object.entries(preflightFailure?.issues_by_jar || {})" :key="jar">
+                    <div class="preflight-issue-card">
+                        <strong x-text="jar" class="text-xs break-all"></strong>
+                        <ul class="preflight-issue-list">
+                            <template x-for="(issue, idx) in issues" :key="idx">
+                                <li x-text="issue"></li>
+                            </template>
+                        </ul>
+                    </div>
+                </template>
+
+                <template x-if="!Object.keys(preflightFailure?.issues_by_jar || {}).length">
+                    <ul class="preflight-issue-list">
+                        <template x-for="(conflict, idx) in (preflightFailure?.conflicts || [])" :key="idx">
+                            <li x-text="conflict"></li>
+                        </template>
+                    </ul>
+                </template>
+
+                <template x-if="preflightFailure?.warnings?.length">
+                    <div class="preflight-warning-card">
+                        <strong class="text-warning text-xs"><i class="fa-solid fa-triangle-exclamation"></i> Warnings:</strong>
+                        <ul class="preflight-warning-list">
+                            <template x-for="(warning, idx) in preflightFailure.warnings" :key="idx">
+                                <li x-text="warning"></li>
+                            </template>
+                        </ul>
+                    </div>
+                </template>
+            </div>
+
+            <div class="modal-footer">
+                <button type="button" class="btn btn-ghost" @click="closePreflightModal()">Dismiss</button>
+                <button type="button" class="btn btn-primary" @click="goToModsForProfile(preflightFailure?.profile_id)">
+                    <i class="fa-solid fa-cubes"></i> Go to Mods
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- NEW PROFILE MODAL -->
+    <div x-show="newProfileModalOpen" class="modal-backdrop" x-cloak @keydown.escape.window="closeNewProfileModal()" @click.self="closeNewProfileModal()">
+        <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="new-profile-title" x-data="formApp()">
+            <div class="modal-header">
+                <h3 id="new-profile-title" class="flex-items-center">
+                    <i class="fa-solid fa-plus text-primary-color"></i> Create New Profile
+                </h3>
+                <button type="button" class="btn btn-ghost btn-icon" @click="closeNewProfileModal()" aria-label="Close new profile dialog">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+            
+            <form id="create-profile-form" hx-post="/api/profiles" hx-swap="none" hx-disabled-elt="find button[type=submit]" @submit="isSubmitting = true" @htmx:after-request="isSubmitting = false">
+                <div class="form-group">
+                    <label for="create-name">Profile Name</label>
+                    <input id="create-name" type="text" name="name" placeholder="e.g. Survival SMP" required maxlength="50" autofocus>
+                </div>
+                
+                <div class="grid-2">
+                    <div class="form-group">
+                        <label for="create-build">Mod Loader / Build</label>
+                        <select id="create-build" name="build" x-model="currentBuild" @change="fetchLoaders()">
+                            <option value="vanilla">Vanilla</option>
+                            <option value="fabric">Fabric</option>
+                            <option value="forge">Forge</option>
+                            <option value="neoforge">NeoForge</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="create-mc-version">Minecraft Version</label>
+                        <input id="create-mc-version" type="text" name="mc_version" placeholder="1.21.1" required maxlength="32"
+                               x-model="currentMcVersion" @input="loaderPending = true" @input.debounce.500ms="fetchLoaders()">
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="create-loader-version">Loader Version</label>
+                    <select id="create-loader-version" name="loader_version" x-model="selectedLoader" :disabled="isLoading || loaders.length === 0"
+                            x-html="loaders.map(v => `<option value='${v}'>${v}</option>`).join('')">
+                    </select>
+                    <div x-show="isLoading" class="form-hint"><i class="fa-solid fa-spinner fa-spin"></i> Fetching compatible versions...</div>
+                    <div x-show="loaderError" x-text="loaderError" role="status" class="form-error"></div>
+                </div>
+
+                <div class="grid-2">
+                    <div class="form-group">
+                        <label for="create-ram">RAM (MB)</label>
+                        <input id="create-ram" type="number" name="ram_mb" value="2048" min="512" max="65536" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="create-port">Server Port</label>
+                        <input id="create-port" type="number" name="port" value="25565" min="1024" max="65535" required>
+                    </div>
+                </div>
+
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-ghost" @click="closeNewProfileModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary" :disabled="isSubmitting || isLoading || loaderPending || !selectedLoader || (currentBuild !== 'vanilla' && (!loaders.length || !!loaderError))">
+                        <span x-show="!isSubmitting"><i class="fa-solid fa-plus"></i> Create Profile</span>
+                        <span x-show="isSubmitting"><i class="fa-solid fa-spinner fa-spin"></i> Creating...</span>
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- MOD DOWNLOAD PROMPT MODAL -->
+    <div x-show="modDownloadPromptOpen" class="modal-backdrop" x-cloak role="presentation">
+        <div role="dialog" aria-modal="true" aria-labelledby="mod-download-title" class="modal-dialog">
+            <div class="modal-header">
+                <h3 id="mod-download-title" class="text-warning flex-items-center">
+                    <i class="fa-solid fa-triangle-exclamation"></i> Mod Download Failed
+                </h3>
+            </div>
+            <p class="text-sm">SSHMC could not download <strong x-text="modDownloadFailure.filename"></strong>.</p>
+            <p class="form-error" x-text="modDownloadFailure.message"></p>
+            <p class="text-xs text-muted">
+                Continue startup without this linked download? If the missing mod changes terrain or world data, creating the world without it may make a later retry incompatible. Choosing Stop keeps repo and downloaded mods in place.
+            </p>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-ghost" @click="cancelModDownloadStartup()" :disabled="isResolvingModFailure">Stop Startup</button>
+                <button type="button" class="btn btn-success" @click="continueWithoutFailedMod()" :disabled="isResolvingModFailure">
+                    <span x-show="!isResolvingModFailure">Continue Without This Download</span>
+                    <span x-show="isResolvingModFailure"><i class="fa-solid fa-spinner fa-spin"></i> Continuing...</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- BACKUP MODAL -->
+    <div x-show="backupDialogOpen" class="modal-backdrop" x-cloak @keydown.escape.window="if (!backupBusy) backupDialogOpen = false" @click.self="if (!backupBusy) backupDialogOpen = false">
+        <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="backup-dialog-title">
+            <div class="modal-header">
+                <h3 id="backup-dialog-title" class="flex-items-center">
+                    <i class="fa-solid fa-box-archive text-primary-color"></i> Back Up <span x-text="backupProfileName"></span>
+                </h3>
+                <button type="button" class="btn btn-ghost btn-icon" @click="backupDialogOpen = false" aria-label="Close backup dialog" :disabled="backupBusy">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+            <p class="text-sm text-secondary">Choose what to include. Running worlds are safely flushed via RCON before archiving.</p>
+            <div class="backup-selection-grid">
+                <label class="checkbox-item"><input type="checkbox" x-model="backupSelection.worlds"> World folders</label>
+                <label class="checkbox-item"><input type="checkbox" x-model="backupSelection.mods"> Mods</label>
+                <label class="checkbox-item"><input type="checkbox" x-model="backupSelection.config"> Config</label>
+                <label class="checkbox-item"><input type="checkbox" x-model="backupSelection.datapacks"> Datapacks</label>
+                <label class="checkbox-item grid-full-width"><input type="checkbox" x-model="backupSelection.server_settings"> Server settings files</label>
+            </div>
+            <div class="form-group mb-0">
+                <label for="backup-label-input">Optional Label</label>
+                <input id="backup-label-input" type="text" maxlength="40" x-model="backupLabel" placeholder="e.g. Before 1.21 update">
+            </div>
+            <p class="form-hint text-warning" x-show="backupBusy">
+                <i class="fa-solid fa-spinner fa-spin"></i> Backing up… <span x-text="backupElapsed"></span>s. Lifecycle actions are paused until complete.
+            </p>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-ghost" @click="cancelActiveBackup()" x-show="backupBusy">Cancel Backup</button>
+                <button type="button" class="btn btn-ghost" @click="backupDialogOpen = false" x-show="!backupBusy">Close</button>
+                <button type="button" class="btn btn-success" @click="createManualBackup()" :disabled="backupBusy || !Object.values(backupSelection).some(Boolean)">
+                    <span x-show="!backupBusy"><i class="fa-solid fa-box-archive"></i> Start Backup</span>
+                    <span x-show="backupBusy"><i class="fa-solid fa-spinner fa-spin"></i> Backing up…</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- EDIT PROFILE MODAL -->
+    <div x-show="editModalOpen" class="modal-backdrop" x-cloak @keydown.escape.window="editModalOpen = false" @click.self="editModalOpen = false">
+        <div id="edit-modal-container" class="modal-dialog modal-wide" role="dialog" aria-modal="true" aria-labelledby="edit-title" x-data="editApp()" x-init="init()">
+            <div class="modal-header">
+                <h3 id="edit-title" class="flex-items-center">
+                    <i class="fa-solid fa-pen-to-square text-primary-color"></i> Edit Profile
+                </h3>
+                <button type="button" class="btn btn-ghost btn-icon" @click="$dispatch('close-edit')" aria-label="Close edit profile">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+            
+            <form class="edit-modal-form stack" @submit.prevent="saveEdit()">
+                <div class="form-group">
+                    <label for="edit-name">Profile Name</label>
+                    <input id="edit-name" type="text" x-model="profile.name" required maxlength="50">
+                </div>
+                
+                <div class="grid-2">
+                    <div class="form-group">
+                        <label for="edit-build">Build</label>
+                        <select id="edit-build" x-model="profile.build" @change="fetchLoaders()">
+                            <option value="vanilla">Vanilla</option>
+                            <option value="fabric">Fabric</option>
+                            <option value="forge">Forge</option>
+                            <option value="neoforge">NeoForge</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="edit-mc-version">Minecraft Version</label>
+                        <input id="edit-mc-version" type="text" x-model="profile.mc_version" required maxlength="32"
+                               @input="loaderPending = true" @input.debounce.500ms="fetchLoaders()">
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="edit-loader-version">Loader Version</label>
+                    <select id="edit-loader-version" x-model="profile.loader_version" :disabled="isLoading || loaders.length === 0"
+                            x-html="loaders.map(v => `<option value='${v}'>${v}</option>`).join('')">
+                    </select>
+                    <div x-show="isLoading" class="form-hint"><i class="fa-solid fa-spinner fa-spin"></i> Fetching compatible versions...</div>
+                    <div x-show="loaderError" x-text="loaderError" role="status" class="form-error"></div>
+                </div>
+
+                <div class="grid-2">
+                    <div class="form-group">
+                        <label for="edit-ram">RAM (MB)</label>
+                        <input id="edit-ram" type="number" x-model="profile.ram_mb" min="512" max="65536">
+                    </div>
+                    <div class="form-group">
+                        <label for="edit-port">Server Port</label>
+                        <input id="edit-port" type="number" x-model="profile.port" min="1024" max="65535">
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="edit-git">Git Repository URL (Optional)</label>
+                    <input id="edit-git" type="text" x-model="profile.git_url" placeholder="https://github.com/user/repo.git">
+                </div>
+
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-ghost" @click="$dispatch('close-edit')">Cancel</button>
+                    <button type="submit" class="btn btn-success" :disabled="isSaving || isLoading || loaderPending || !profile.loader_version || (profile.build !== 'vanilla' && (!loaders.length || !!loaderError))">
+                        <span x-show="!isSaving">Save Changes</span>
+                        <span x-show="isSaving"><i class="fa-solid fa-spinner fa-spin"></i> Saving...</span>
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- CONSOLE MODAL / FULL-HEIGHT PANEL -->
+    <div x-show="consoleOpen" class="modal-backdrop" x-cloak @keydown.escape.window="closeConsole()">
+        <div class="console-panel" :class="{ 'is-fullscreen': consoleFullscreen }" role="dialog" aria-modal="true" aria-labelledby="console-title" x-ref="consoleContainer">
+            <div class="console-toolbar">
+                <div class="console-toolbar-left">
+                    <h3 id="console-title" class="console-toolbar-title">
+                        <i class="fa-solid fa-terminal text-primary-color"></i>
+                        <span x-text="consoleProfileName || 'Server Console'"></span>
+                    </h3>
+                </div>
+                
+                <div class="console-toolbar-right">
+                    <input type="search" class="console-filter-input" placeholder="Search / filter logs…" x-model="consoleFilterText" aria-label="Filter console lines">
+                    
+                    <label class="toggle-label text-xs" title="Auto-scroll to bottom on new output">
+                        <span class="toggle-switch toggle-switch-compact">
+                            <input type="checkbox" x-model="autoScroll">
+                            <span class="toggle-slider"></span>
+                        </span>
+                        <span>Auto-scroll</span>
+                    </label>
+
+                    <select class="select-compact" :value="maxLogs" @change="setLogLimit($event.target.value)" aria-label="Visible lines limit">
+                        <option value="100">100 lines</option>
+                        <option value="500">500 lines</option>
+                        <option value="1000">1,000 lines</option>
+                        <option value="2000">2,000 lines</option>
+                        <option value="5000">5,000 lines</option>
+                    </select>
+
+                    <button type="button" class="btn btn-ghost btn-sm" @click="copyConsoleLogs()" title="Copy all logs to clipboard">
+                        <i class="fa-solid fa-copy"></i> Copy
+                    </button>
+
+                    <button type="button" class="btn btn-ghost btn-sm" @click="downloadConsoleLogs()" title="Download logs as text file">
+                        <i class="fa-solid fa-download"></i> Download
+                    </button>
+
+                    <button type="button" class="btn btn-ghost btn-icon" @click="toggleConsoleFullscreen()" :title="consoleFullscreen ? 'Exit fullscreen' : 'Fullscreen'">
+                        <i class="fa-solid" :class="consoleFullscreen ? 'fa-compress' : 'fa-expand'"></i>
+                    </button>
+
+                    <button type="button" class="btn btn-danger btn-icon" @click="closeConsole()" aria-label="Close console">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+            </div>
+
+            <div id="console-output" class="console-lines-container">
+                <template x-for="(log, idx) in filteredLogs()" :key="idx">
+                    <div class="console-line" :class="logLevelClass(log)" x-text="log"></div>
+                </template>
+                <div x-show="!logs.length" class="console-empty-state">
+                    Connecting to live output...
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- DELETE CONFIRMATION MODAL -->
+    <div x-show="deleteModalOpen" class="modal-backdrop" x-cloak @keydown.escape.window="deleteModalOpen = false" @click.self="deleteModalOpen = false">
+        <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-title">
+            <div class="modal-header">
+                <h3 id="delete-title" class="text-danger flex-items-center">
+                    <i class="fa-solid fa-triangle-exclamation"></i> Delete Profile
+                </h3>
+                <button type="button" class="btn btn-ghost btn-icon" @click="deleteModalOpen = false" aria-label="Cancel deletion">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+            <p class="text-sm">Are you sure you want to delete <strong x-text="deleteName"></strong>?</p>
+            <p class="form-hint">
+                A running server will be stopped first. If it cannot be stopped safely, deletion is blocked.
+            </p>
+            
+            <label class="delete-confirm-box">
+                <input type="checkbox" x-model="deleteFiles" class="w-auto">
+                <span class="text-xs text-secondary normal-case">Also delete world and server files permanently?</span>
+            </label>
+            
+            <div class="modal-footer">
+                <button type="button" class="btn btn-ghost" @click="deleteModalOpen = false">Cancel</button>
+                <button type="button" class="btn btn-danger" @click="confirmDelete()" :disabled="isDeleting">
+                    <span x-show="!isDeleting"><i class="fa-solid fa-trash"></i> Delete Profile</span>
+                    <span x-show="isDeleting"><i class="fa-solid fa-spinner fa-spin"></i> Deleting...</span>
+                </button>
+            </div>
+        </div>
+    </div>

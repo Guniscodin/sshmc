@@ -6,13 +6,15 @@ from pathlib import Path
 
 from mcpanel.models import Profile, RuntimeState, ProfileStatus
 from mcpanel.config import PROFILES_DIR
-from mcpanel.core import runtime, git_sync, loader, mod_downloads, modpacks, backups
+from mcpanel.core import runtime, git_sync, loader, mod_downloads, modpacks, backups, mod_sources
 
 logger = logging.getLogger(__name__)
 
 class LifecycleError(Exception):
     """Raised when a lifecycle operation (start/stop/restart) fails."""
-    pass
+    def __init__(self, message: str, preflight: mod_sources.SourcePreflightError | None = None):
+        super().__init__(message)
+        self.preflight = preflight
 
 def _needs_wipe(profile: Profile, server_dir: Path) -> bool:
     """Checks if the current server installation matches the profile settings."""
@@ -40,7 +42,7 @@ def _wipe_server_directory(profile: Profile) -> None:
     logger.warning(f"Wiping server directory for profile '{profile.name}' due to build changes.")
     
     # Clear old world/mod content and loader-specific caches before reinstalling.
-    for folder in ["world", "world_nether", "world_the_end", "mods", "config", "datapacks", "libraries", ".fabric", "versions"]:
+    for folder in ["world", "world_nether", "world_the_end", "libraries", ".fabric", "versions"]:
         target = server_dir / folder
         if target.exists():
             shutil.rmtree(target)
@@ -95,6 +97,25 @@ async def restart_profile(
             logger.exception("Unexpected backup error for %s", profile.name)
             if requested_backup:
                 raise LifecycleError(f"Replacement aborted because the selected backup failed: {exc}") from exc
+    # Resolve every mod/data source and complete preflight before changing the
+    # live source folders or intentionally replacing the existing world.
+    try:
+        result = await mod_sources.build_profile_sources(
+            profile, repo_dir, server_dir, skip_link_indexes=skip_mod_download_indexes
+        )
+        for warning in result["warnings"]:
+            runtime.record_startup_warning(profile, warning)
+    except mod_sources.SourcePreflightError as exc:
+        raise LifecycleError(str(exc), preflight=exc) from exc
+    except (git_sync.GitSyncError, modpacks.ModPackError) as exc:
+        raise LifecycleError(f"Could not resolve mod sources: {exc}") from exc
+    except mod_downloads.ModDownloadFailure:
+        current_state.status = ProfileStatus.STOPPED
+        raise
+    except Exception as exc:
+        logger.exception("Could not stage mod sources for %s", profile.name)
+        raise LifecycleError(f"Could not stage profile mod sources: {exc}") from exc
+
     if should_wipe:
         _wipe_server_directory(profile)
     if version_change_pending:
@@ -105,45 +126,6 @@ async def restart_profile(
         profile.backup_server_settings_on_change = False
         from mcpanel import db
         db.update_profile(profile)
-
-    # 4. Sync Git
-    if profile.git_url:
-        try:
-            await git_sync.sync_git_repository(profile.git_url, repo_dir, server_dir)
-        except git_sync.GitSyncError as e:
-            logger.error(f"Restart aborted: Git sync failed. {e}")
-            current_state.status = ProfileStatus.CRASHED
-            raise LifecycleError(f"Failed to sync repository: {e}") from e
-    else:
-        logger.info("No Git URL provided. Skipping repository sync.")
-
-    repo_mods_dir = repo_dir / "mods"
-    repo_managed_names = (
-        {path.name for path in repo_mods_dir.iterdir() if path.is_file()}
-        if profile.git_url and repo_mods_dir.is_dir()
-        else set()
-    )
-
-    try:
-        pack_managed_names = modpacks.apply_pack(profile, server_dir, repo_managed_names)
-    except (modpacks.ModPackError, OSError) as e:
-        logger.error("Failed to apply mod pack for %s: %s", profile.name, e)
-        current_state.status = ProfileStatus.CRASHED
-        raise LifecycleError(f"Failed to apply mod pack: {e}") from e
-    repo_managed_names.update(pack_managed_names)
-
-    # Apply the selected pack after Git and before direct links. A failed link
-    # pauses startup while preserving synced files and earlier downloads.
-    try:
-        await mod_downloads.install_configured_mods(
-            profile,
-            server_dir,
-            skip_indexes=skip_mod_download_indexes,
-            repo_managed_names=repo_managed_names,
-        )
-    except mod_downloads.ModDownloadFailure:
-        current_state.status = ProfileStatus.STOPPED
-        raise
 
     # 5. Install Loader (only if jar is missing or we just wiped)
     server_jar = server_dir / "server.jar"

@@ -10,9 +10,9 @@ from fastapi.templating import Jinja2Templates
 from pathlib import Path
 
 from mcpanel import db
-from mcpanel.api import profiles, lifecycle, console, modpacks as modpack_api, monitoring as monitoring_api
+from mcpanel.api import profiles, lifecycle, console, modpacks as modpack_api, monitoring as monitoring_api, mods as mods_api, storage as storage_api
 from mcpanel.models import ProfileStatus
-from mcpanel.core import process, runtime, modpacks, monitoring, backups
+from mcpanel.core import process, runtime, modpacks, monitoring, backups, storage
 from mcpanel.config import (
     DATA_DIR,
     LOGS_DIR,
@@ -21,6 +21,7 @@ from mcpanel.config import (
     PANEL_LOG_MAX_BYTES,
 )
 from mcpanel.core.panel_logging import PollingAccessFilter, SafePanelRotatingHandler
+from mcpanel.core.mod_provider import provider as mod_provider
 from mcpanel.security import (
     PanelAuthMiddleware, SESSION_COOKIE, SESSION_MAX_AGE,
     create_session_token, credentials_configured, same_origin, unlock_panel, valid_login,
@@ -44,12 +45,39 @@ logger = logging.getLogger(__name__)
 
 # Setup templates
 BASE_DIR = Path(__file__).resolve().parent
+_STATIC_DIR = BASE_DIR / "web" / "static"
+_static_version_cache: dict[str, tuple[float, str]] = {}
+
+def static_url(path: str) -> str:
+    """Generate a versioned URL for static assets based on mtime/sha256."""
+    clean_path = path.lstrip("/")
+    if clean_path.startswith("static/"):
+        rel_path = clean_path[len("static/"):]
+    else:
+        rel_path = clean_path
+    target_file = _STATIC_DIR / rel_path
+    try:
+        mtime = target_file.stat().st_mtime
+        cached_mtime, cached_hash = _static_version_cache.get(rel_path, (0, ""))
+        if cached_mtime == mtime and cached_hash:
+            v = cached_hash
+        else:
+            import hashlib
+            h = hashlib.sha256(target_file.read_bytes()).hexdigest()[:10]
+            _static_version_cache[rel_path] = (mtime, h)
+            v = h
+        return f"/static/{rel_path}?v={v}"
+    except OSError:
+        return f"/static/{rel_path}"
+
 templates = Jinja2Templates(directory=str(BASE_DIR / "web" / "templates"))
+templates.env.globals["static_url"] = static_url
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Runs before the app starts."""
     logger.info("Starting SSHMC Panel...")
+    console.reset_shutdown_state()
     unlock_panel()
     db.init_db()
     modpacks.cleanup_temporary_data()
@@ -77,21 +105,31 @@ async def lifespan(app: FastAPI):
     db.init_db()
 
     await monitoring.start_monitoring()
+    await storage.start_storage_monitoring()
+    await mod_provider.start()
     monitor = asyncio.create_task(_monitor_servers())
     upload_cleanup = asyncio.create_task(modpacks.upload_session_cleanup_loop())
     try:
         yield
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        pass
     finally:
-        await monitoring.stop_monitoring()
-        await runtime.shutdown_starting_servers()
-        monitor.cancel()
-        upload_cleanup.cancel()
         try:
-            await asyncio.gather(monitor, upload_cleanup, return_exceptions=True)
-        except asyncio.CancelledError:
+            await console.close_all_consoles()
+            await monitoring.stop_monitoring()
+            await storage.stop_storage_monitoring()
+            await mod_provider.close()
+            await runtime.shutdown_starting_servers()
+            monitor.cancel()
+            upload_cleanup.cancel()
+            try:
+                await asyncio.gather(monitor, upload_cleanup, return_exceptions=True)
+            except (asyncio.CancelledError, KeyboardInterrupt):
+                pass
+            logger.info("Shutting down SSHMC Panel...")
+            _remove_cli_pid_file()
+        except (asyncio.CancelledError, KeyboardInterrupt):
             pass
-        logger.info("Shutting down SSHMC Panel...")
-        _remove_cli_pid_file()
 
 
 def _remove_cli_pid_file() -> None:
@@ -103,6 +141,7 @@ def _remove_cli_pid_file() -> None:
 
 
 async def _signal_panel_shutdown() -> None:
+    await console.close_all_consoles()
     await asyncio.sleep(0.25)
     os.kill(os.getpid(), signal.SIGTERM)
 
@@ -140,9 +179,9 @@ async def login_page():
             "<h1>SSHMC password is not configured</h1><p>Stop the panel and start it from an interactive terminal to set a local password.</p>",
             status_code=503,
         )
-    return HTMLResponse("""
+    return HTMLResponse(f"""
         <!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>Sign in · SSHMC</title><link rel="icon" type="image/svg+xml" href="/static/favicon.svg"><link rel="stylesheet" href="/static/css/style.css">
+        <title>Sign in · SSHMC</title><link rel="icon" type="image/svg+xml" href="{static_url('favicon.svg')}"><link rel="stylesheet" href="{static_url('css/style.css')}">
         <body style="display:grid;place-items:center;overflow:auto;height:100vh">
           <form method="post" action="/auth/login" style="width:min(420px,92vw);padding:2rem;background:var(--surface);border:1px solid var(--border);border-radius:12px">
             <h1>Sign in to SSHMC</h1>
@@ -190,8 +229,45 @@ async def shutdown_panel(background_tasks: BackgroundTasks):
     background_tasks.add_task(_signal_panel_shutdown)
     return {"status": "shutting_down", "minecraft_servers": "left_running"}
 
-# Mount static files (CSS/JS)
-app.mount("/static", StaticFiles(directory=str(BASE_DIR / "web" / "static")), name="static")
+
+@app.get("/api/heartbeat")
+async def heartbeat():
+    """Lightweight single heartbeat for panel runtime state, startup events, and counts."""
+    profiles = db.list_profiles()
+    statuses: dict[str, str] = {}
+    running = 0
+    for p in profiles:
+        st = db.get_runtime_state(p.id)
+        val = st.status.value if st else "stopped"
+        statuses[p.id] = val
+        if val == "running":
+            running += 1
+    events = runtime.drain_startup_events()
+    return {
+        "statuses": statuses,
+        "running_count": running,
+        "total_count": len(profiles),
+        "events": events,
+    }
+
+
+class RevalidatingStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+# Mount static files (CSS/JS) with revalidating headers
+app.mount("/static", RevalidatingStaticFiles(directory=str(BASE_DIR / "web" / "static")), name="static")
+
+@app.middleware("http")
+async def add_no_cache_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    if not request.url.path.startswith("/static"):
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
 
 # Include API Routers
 app.include_router(profiles.router)
@@ -199,6 +275,8 @@ app.include_router(lifecycle.router)
 app.include_router(console.router)
 app.include_router(modpack_api.router)
 app.include_router(monitoring_api.router)
+app.include_router(mods_api.router)
+app.include_router(storage_api.router)
 
 # src/mcpanel/main.py (at the bottom)
 

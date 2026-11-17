@@ -27,11 +27,9 @@ SSHMC is a local web panel for creating and managing Minecraft server profiles. 
 ### Git repository synchronization
 
 - A profile can connect to a Git repository over HTTP(S) or SSH. The repository must be reachable by the machine running SSHMC (for SSH, its Git credentials or SSH key must be available to that user).
-- SSHMC synchronizes only these repository folders into the server directory:
-  - `mods/`
-  - `config/`
-  - `datapacks/`
-- Repository changes are applied during Start or Restart. Files removed from those folders in Git are removed from the server's corresponding synchronized folder.
+- Git contributes only `config/`, `defaultconfigs/`, `datapacks/`, `kubejs/`, and `scripts/` as non-mod content.
+- If no reusable pack is linked, Git's `mods/` folder supplies the base JAR set. If a pack is linked, Git's `mods/` is ignored.
+- Repository changes are applied during Start or Restart. Files removed from the allowed Git folders are removed from the corresponding server folders.
 - An empty public repository, or a repository with no remote branch yet, is treated as having no files to sync. The server can still be installed and started.
 - Repository sync does not run `git clean`; unrelated files such as worlds are not deleted by Git synchronization.
 
@@ -42,24 +40,25 @@ SSHMC is a local web panel for creating and managing Minecraft server profiles. 
 - Create a new pack or add uploaded files to an existing one. If an incoming JAR has the same filename as one already in the pack, SSHMC asks before replacing it. Expand a pack to see JAR sizes and detected loaders, or remove a JAR from the browser; linked profiles apply pack changes on their next Start or Restart.
 - After upload, name the pack and choose its intended loader. SSHMC safely stages the import before publishing it, rejects unsafe ZIP paths and symbolic links, checks JAR archives, and warns about skipped non-JAR files, invalid JARs, unknown loader metadata, and loader mismatches.
 - ZIPs may contain JARs at the root, in `mods/`, or inside one wrapper directory. `config/` and `datapacks/` are imported when present. JARs are flattened into the pack's `mods/` folder.
-- Packs are stored globally under `modpacks/` and can be linked to a profile in its edit form. A profile can use one pack. On Start or Restart, Git sync runs first; the linked pack then replaces all JARs in the server's `mods/` folder and overlays its `config/` and `datapacks/` folders; direct-link mods run last.
+- Packs are stored globally under `modpacks/` and can be linked to a profile in its edit form. A profile can use one pack. A linked pack supplies the base JARs and its `config/` and `datapacks/`; Git's allowed non-mod folders overlay the pack, with Git winning path collisions.
 - The editor warns about JARs whose detected loader differs from the profile and JARs with no supported loader metadata. This is a warning, not a startup block.
 - Replacing a pack requires an explicit choice. Deleting a pack unlinks profiles that used it. Changing a profile's build or version keeps its pack link, though the pack may need a compatibility review.
 
 ### Additional mod download links
 
 - Add up to 200 direct mod links to a profile, alongside its Git repository. Links must use public HTTPS URLs and point to JAR/ZIP-compatible mod files.
+- Browse Modrinth in the Mods section with profile-specific Minecraft and loader filters, inspect compatible releases, install dependency-aware downloads, and manage installed JARs. Downloads are checksum-verified, cached outside the live server folder, and tracked by SHA-256 in each profile's `mods.json` manifest.
 - An optional filename and SHA-256 checksum can be supplied for each link. SSHMC validates the downloaded archive and verifies the checksum when one is provided.
-- Each file has a 1 GiB download limit. Downloads are processed sequentially after Git synchronization and copied into the server's `mods/` folder.
+- Each file has a 1 GiB download limit. Modrinth and direct-link JARs are add-ons to the Git or pack base and are staged into the server's `mods/` folder at Start or Restart.
 - Successfully downloaded files are cached locally. Later starts reuse the cache; syncing the Git repository does not re-download these files. Use **Forget cache and retry links next start** to clear the cache.
-- If a link download or installation fails, SSHMC asks whether to continue without that link or stop startup. Stopping preserves repository files and already downloaded mods. Continuing remembers that link as skipped on future starts until you edit it or choose **Retry on next start**.
+- If a link download fails, SSHMC asks whether to continue without that link or stop startup. Continuing remembers that link as skipped on future starts until you edit it or choose **Retry on next start**. Mod source folders are staged and preflighted before replacing the live folders; filename/hash conflicts, identified incompatible JARs, and missing required dependencies block startup with a reviewable error.
 - Changing or adding a link does not restart a running server. Save the profile, then choose Start or Restart when you want the change applied.
 - A missing mod download can affect world compatibility if the mod changes terrain or world data. SSHMC cannot determine in general whether a mod is safe to omit; review the failed link before choosing to continue.
 
 ### Version changes and backups
 
 - Changing a profile's build, Minecraft version, or loader version marks its current server installation as incompatible. Stop the server before changing these settings.
-- Saving such a change disconnects the old Git repository and clears that profile's configured direct mod links and download cache. Add the repository and links compatible with the new version afterward.
+- Saving such a change disconnects the old Git repository, clears the direct-link cache and Modrinth manifest/cache, and resets previously skipped link downloads so they resolve again. Configured link URLs and the linked pack stay attached; the pack is checked during the next Start.
 - Start and Restart never create or prune backups automatically. Choose **Backup** on a profile to make an archive, or select items in **Before replacing the server** when changing its build, Minecraft version, or loader version.
 - Version-change choices are saved with the pending profile change. World folders are selected by default; mods, config, datapacks, and server settings files are unchecked by default. Unselected world folders are deleted during replacement. If a requested archive fails or free space is insufficient, replacement stops before changing the server files. Selecting nothing skips the archive.
 - A manual backup lets you choose world folders, mods, config, datapacks, and server settings (`server.properties`, ops, whitelist, ban lists, and user cache files). It also accepts an optional label. The archive contains a manifest with the selected items, profile version, timestamp, label, and whether the server was running.
@@ -73,6 +72,13 @@ SSHMC is a local web panel for creating and managing Minecraft server profiles. 
 - Choose how many recent lines to keep visible: 100, 500, 1,000, 2,000, or 5,000. The selection is saved in that browser. Minecraft output rotates at 10 MiB and keeps five older files. On every Start, SSHMC also prunes the server's own compressed logs to the newest ten and removes crash reports older than 14 days, keeping the newest three.
 - Panel logs are written to the terminal and to a rotating data/logs/panel.log file, with three older files kept. Routine dashboard polling requests are filtered from the HTTP access log; errors remain visible.
 - The console shows server output; it is not an interactive command terminal.
+
+### Storage controls
+
+- The **Storage** dashboard reports the data-directory total and per-profile sizes for server files, worlds, backups, server logs, crash reports, direct-link and Modrinth JAR caches, and Git repositories. It also reports panel logs, reusable mod packs, temporary uploads, external backup storage when configured, unlinked profile folders, and named unclassified data locations.
+- From Storage, you can clear panel logs, a stopped profile's logs and crash reports, direct-link caches, Modrinth source manifests and caches, and expired uploads; delete backups, packs, or world folders; and remove unlinked profile data. World and unlinked profile deletion is permanent; server files must be stopped before clearing logs or deleting worlds.
+- Panel and Minecraft relay logs rotate at configured size limits. Upload sessions older than 24 hours are cleaned automatically. Worlds, backups, reusable mod packs, and mod caches have no automatic size or age cap; Storage shows their current size and offers cleanup controls.
+- Storage sizes are sampled in the background every 60 seconds. Modrinth lookup cache and install-job history are bounded in memory; downloaded Modrinth JARs are persistent files shown in profile storage.
 
 ### Monitoring
 
@@ -128,6 +134,9 @@ The panel shutdown button and `./sshmc stop` signal only the panel process. They
 
 ## Data locations
 
+Mod browsing and management API routes are under `/api/mods` and `/api/profiles/{profile_id}/mods`.
+Storage inventory and cleanup routes are under `/api/storage`.
+
 By default, persistent data is stored in the project's `data/` directory:
 
 - `panel.db` — profiles and runtime state
@@ -135,6 +144,9 @@ By default, persistent data is stored in the project's `data/` directory:
 - `profiles/<profile-id>/server/` — installed server, mods, configuration, and worlds
 - `profiles/<profile-id>/repo/` — local Git checkout for the profile
 - `profiles/<profile-id>/downloaded_mods/` — cached direct-link downloads
+- `profiles/<profile-id>/modrinth_mods/` — checksum-addressed Modrinth JAR cache
+- `profiles/<profile-id>/mods.json` — Modrinth source manifest keyed by SHA-256
+- `profiles/<profile-id>/owned_files.json` — last-applied source and content hashes for managed server files
 - `profiles/<profile-id>/logs/latest.log` and .1 through .5 — Minecraft server output and rotated files shown in the live console
 - `profiles/<profile-id>/server/logs/` — Minecraft's own server logs; old compressed files are pruned on Start
 - `profiles/<profile-id>/backups/` — manually created compressed backups (unless `MCPANEL_BACKUPS_DIR` is configured)

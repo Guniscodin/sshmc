@@ -1,8 +1,9 @@
 import logging
 from fastapi import APIRouter, HTTPException, Query
 from mcpanel import db
+from mcpanel.config import PROFILES_DIR
 from mcpanel.models import ProfileStatus
-from mcpanel.core import lifecycle, runtime, mod_downloads, backups
+from mcpanel.core import lifecycle, runtime, mod_downloads, backups, mod_storage
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/lifecycle", tags=["lifecycle"])
@@ -55,6 +56,11 @@ async def start_profile(profile_id: str, skip_mod_download_indexes: list[int] = 
         raise HTTPException(status_code=409, detail="This profile is backing up. Wait for the backup to finish.")
     state.status = ProfileStatus.STARTING
     db.update_runtime_state(state)
+    async with mod_storage.source_lock(profile_id):
+        profile = db.get_profile(profile_id)
+        if not profile:
+            db.claim_runtime_state(profile_id, [ProfileStatus.STARTING], ProfileStatus.STOPPED)
+            raise HTTPException(status_code=404, detail="Profile not found")
 
     try:
         # Run the pipeline
@@ -82,11 +88,31 @@ async def start_profile(profile_id: str, skip_mod_download_indexes: list[int] = 
         logger.error(f"Start failed for {profile.name}: {e}")
         # Unlock the state and mark it as crashed so the UI updates
         state = db.get_runtime_state(profile_id) or state
-        state.status = ProfileStatus.STOPPED if "replacement aborted because" in str(e).lower() else ProfileStatus.CRASHED
+        state.status = ProfileStatus.STOPPED if e.preflight or "replacement aborted because" in str(e).lower() else ProfileStatus.CRASHED
         if state.status == ProfileStatus.STOPPED:
             state.pid = None
             state.pid_create_time = None
         db.update_runtime_state(state)
+        if e.preflight:
+            try:
+                relay_log = PROFILES_DIR / profile_id / "logs" / "latest.log"
+                relay_log.parent.mkdir(parents=True, exist_ok=True)
+                with open(relay_log, "a", encoding="utf-8") as f:
+                    f.write(f"\n[SSHMC] Mod source preflight failed:\n")
+                    for conflict in e.preflight.conflicts:
+                        f.write(f"  - {conflict}\n")
+                    for warning in e.preflight.warnings:
+                        f.write(f"  [warning] {warning}\n")
+            except Exception:
+                pass
+            raise HTTPException(status_code=409, detail={
+                "code": "source_preflight_failed",
+                "profile_id": profile_id,
+                "message": str(e),
+                "conflicts": e.preflight.conflicts,
+                "issues_by_jar": e.preflight.issues_by_jar,
+                "warnings": e.preflight.warnings,
+            }) from e
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         logger.error(f"Unexpected error starting {profile.name}: {e}")
@@ -170,6 +196,11 @@ async def restart_profile(
         raise HTTPException(status_code=409, detail="This profile is backing up. Wait for the backup to finish.")
     state.status = ProfileStatus.STARTING
     db.update_runtime_state(state)
+    async with mod_storage.source_lock(profile_id):
+        profile = db.get_profile(profile_id)
+        if not profile:
+            db.claim_runtime_state(profile_id, [ProfileStatus.STARTING], ProfileStatus.STOPPED)
+            raise HTTPException(status_code=404, detail="Profile not found")
 
     try:
         _remember_skipped_downloads(profile, skip_mod_download_indexes)
@@ -198,11 +229,31 @@ async def restart_profile(
     except lifecycle.LifecycleError as e:
         logger.error(f"Restart failed for {profile.name}: {e}")
         state = db.get_runtime_state(profile_id) or state
-        state.status = ProfileStatus.STOPPED if "replacement aborted because" in str(e).lower() else ProfileStatus.CRASHED
+        state.status = ProfileStatus.STOPPED if e.preflight or "replacement aborted because" in str(e).lower() else ProfileStatus.CRASHED
         if state.status == ProfileStatus.STOPPED:
             state.pid = None
             state.pid_create_time = None
         db.update_runtime_state(state)
+        if e.preflight:
+            try:
+                relay_log = PROFILES_DIR / profile_id / "logs" / "latest.log"
+                relay_log.parent.mkdir(parents=True, exist_ok=True)
+                with open(relay_log, "a", encoding="utf-8") as f:
+                    f.write(f"\n[SSHMC] Mod source preflight failed:\n")
+                    for conflict in e.preflight.conflicts:
+                        f.write(f"  - {conflict}\n")
+                    for warning in e.preflight.warnings:
+                        f.write(f"  [warning] {warning}\n")
+            except Exception:
+                pass
+            raise HTTPException(status_code=409, detail={
+                "code": "source_preflight_failed",
+                "profile_id": profile_id,
+                "message": str(e),
+                "conflicts": e.preflight.conflicts,
+                "issues_by_jar": e.preflight.issues_by_jar,
+                "warnings": e.preflight.warnings,
+            }) from e
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         logger.error(f"Unexpected error restarting {profile.name}: {e}")

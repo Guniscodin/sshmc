@@ -1,0 +1,112 @@
+:root {
+    /* Color Palette - Dark Theme Default */
+    --bg: #090c10;
+    --bg-subtle: #0d1117;
+    --surface: #161b22;
+    --surface-hover: #1f242c;
+    --surface-active: #262c36;
+    
+    /* Borders */
+    --border: #30363d;
+    --border-subtle: #21262d;
+    --border-hover: #484f58;
+    --border-focus: #58a6ff;
+    
+    /* Typography Colors (WCAG AA compliant) */
+    --text-primary: #f0f6fc;
+    --text-secondary: #c9d1d9;
+    --text-muted: #8b949e;
+    --text-inverse: #090c10;
+    
+    /* Primary / Accent */
+    --primary: #388bfd;
+    --primary-hover: #58a6ff;
+    --primary-active: #1f6feb;
+    --primary-subtle: rgba(56, 139, 253, 0.15);
+    --accent: #388bfd;
+    
+    /* Semantic Colors */
+    --success: #238636;
+    --success-hover: #2ea043;
+    --success-text: #3fb950;
+    --success-subtle: rgba(46, 160, 67, 0.15);
+    
+    --warning: #9e6a03;
+    --warning-hover: #b08800;
+    --warning-text: #e3b341;
+    --warning-subtle: rgba(210, 153, 34, 0.15);
+    
+    --danger: #da3633;
+    --danger-hover: #f85149;
+    --danger-text: #f85149;
+    --danger-subtle: rgba(248, 81, 73, 0.15);
+    
+    --info: #388bfd;
+    --info-hover: #58a6ff;
+    --info-text: #58a6ff;
+    --info-subtle: rgba(56, 139, 253, 0.15);
+
+    /* Spacing Scale */
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-6: 24px;
+    --space-8: 32px;
+    --space-12: 48px;
+
+    /* Radii */
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius: 10px;
+    --radius-lg: 14px;
+    --radius-full: 9999px;
+
+    /* Shadows */
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
+    --shadow-lg: 0 12px 28px rgba(0, 0, 0, 0.65);
+    --shadow-modal: 0 24px 50px rgba(0, 0, 0, 0.85);
+
+    /* Typography */
+    --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    
+    --font-xs: 0.75rem;
+    --font-sm: 0.84rem;
+    --font-base: 0.93rem;
+    --font-md: 1.05rem;
+    --font-lg: 1.25rem;
+    --font-xl: 1.5rem;
+    --font-2xl: 1.85rem;
+
+    --fw-normal: 400;
+    --fw-medium: 500;
+    --fw-semibold: 600;
+    --fw-bold: 700;
+
+    /* Z-Index Layers */
+    --z-dropdown: 20;
+    --z-sticky: 30;
+    --z-drawer: 40;
+    --z-backdrop: 50;
+    --z-modal: 60;
+    --z-toast: 100;
+
+    /* Animations & Transitions */
+    --transition-fast: 140ms cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-base: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-slow: 250ms cubic-bezier(0.4, 0, 0.2, 1);
+
+    /* Page Constraints */
+    --page-max-width: 1280px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *, ::before, ::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+}

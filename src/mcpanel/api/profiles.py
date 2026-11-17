@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import AsyncExitStack
 import logging
 import os
 import shutil
@@ -13,9 +14,9 @@ from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse
 from pydantic import ValidationError
 
-from mcpanel.models import Profile, BuildType, ProfileStatus
+from mcpanel.models import Profile, BuildType, ProfileStatus, ModDownload
 from mcpanel.config import PROFILES_DIR
-from mcpanel.core import runtime, loader, ports, process, modpacks, backups, rcon
+from mcpanel.core import runtime, loader, ports, process, modpacks, backups, rcon, mod_storage, mod_downloads
 from mcpanel import db
 
 logger = logging.getLogger(__name__)
@@ -179,9 +180,25 @@ async def update_existing_profile(
     try:
         clean_git_url = git_url.strip() if git_url and git_url.strip() else None
         parsed_mod_downloads = _parse_mod_downloads(mod_downloads)
+        existing_downloads = [item.model_dump(exclude_none=True) for item in existing.mod_downloads]
         requested_pack = modpacks.sanitize_pack_name(modpack_name) if modpack_name and modpack_name.strip() else None
         if requested_pack and not modpacks.get_pack(requested_pack):
             raise HTTPException(status_code=422, detail="The selected mod pack no longer exists.")
+        effective_git_url = None if incompatible_change else clean_git_url
+        effective_pack = existing.modpack_name if incompatible_change else requested_pack
+        effective_downloads = (
+            [{**item, "skip_on_start": False} for item in parsed_mod_downloads]
+            if incompatible_change else parsed_mod_downloads
+        )
+        effective_download_models = [ModDownload.model_validate(item) for item in effective_downloads]
+        normalized_effective_downloads = [item.model_dump(exclude_none=True) for item in effective_download_models]
+        sources_changed = any((
+            effective_git_url != existing.git_url,
+            effective_pack != existing.modpack_name,
+            normalized_effective_downloads != existing_downloads,
+        ))
+        if sources_changed and state and state.status in (ProfileStatus.STARTING, ProfileStatus.STOPPING):
+            raise HTTPException(status_code=409, detail="Mod sources cannot be changed while the profile is starting or stopping.")
         
         updated_profile = Profile(
             id=profile_id,
@@ -189,9 +206,9 @@ async def update_existing_profile(
             build=build,
             mc_version=mc_version,
             loader_version=loader_version,
-            git_url=None if incompatible_change else clean_git_url,
-            modpack_name=existing.modpack_name if incompatible_change else requested_pack,
-            mod_downloads=[] if incompatible_change else parsed_mod_downloads,
+            git_url=effective_git_url,
+            modpack_name=effective_pack,
+            mod_downloads=effective_downloads,
             java_path=java_path,
             ram_mb=ram_mb,
             port=assigned_port,
@@ -205,16 +222,60 @@ async def update_existing_profile(
             created_at=existing.created_at
         )
         
-        db.update_profile(updated_profile)
-        if incompatible_change:
-            repo_dir = PROFILES_DIR / profile_id / "repo"
-            if repo_dir.exists():
-                await asyncio.to_thread(shutil.rmtree, repo_dir, True)
-            download_cache = PROFILES_DIR / profile_id / "downloaded_mods"
-            if download_cache.exists():
-                await asyncio.to_thread(shutil.rmtree, download_cache, True)
+        async with AsyncExitStack() as source_stack:
+            for pack_name in sorted({item for item in (existing.modpack_name, effective_pack) if item}):
+                await source_stack.enter_async_context(mod_storage.pack_lock(pack_name))
+            await source_stack.enter_async_context(mod_storage.source_lock(profile_id))
+            current_state = db.get_runtime_state(profile_id)
+            if (sources_changed or incompatible_change) and current_state and current_state.status in (
+                ProfileStatus.STARTING, ProfileStatus.STOPPING
+            ):
+                message = (
+                    "Stop the profile lifecycle operation before changing its build or version."
+                    if incompatible_change
+                    else "Mod sources cannot be changed while the profile is starting or stopping."
+                )
+                raise HTTPException(status_code=409, detail=message)
+            if effective_pack and not modpacks.get_pack(effective_pack):
+                raise HTTPException(status_code=422, detail="The selected mod pack no longer exists.")
+            db.update_profile(updated_profile)
+            root = mod_storage.profile_root(profile_id)
+            if not incompatible_change:
+                retained = {mod_downloads.source_key(item, index) for index, item in enumerate(effective_download_models)}
+                cache_root = root / "downloaded_mods"
+                if cache_root.is_dir() and not cache_root.is_symlink():
+                    for index, old_item in enumerate(existing.mod_downloads):
+                        key = mod_downloads.source_key(old_item, index)
+                        if key not in retained:
+                            for cache_key in (key, mod_downloads.legacy_cache_key(old_item)):
+                                folder = cache_root / cache_key
+                                if folder.is_dir() and not folder.is_symlink():
+                                    await asyncio.to_thread(shutil.rmtree, folder, True)
+            else:
+                repo_dir = root / "repo"
+                if repo_dir.is_symlink():
+                    repo_dir.unlink(missing_ok=True)
+                elif repo_dir.exists():
+                    await asyncio.to_thread(shutil.rmtree, repo_dir, True)
+                download_cache = root / "downloaded_mods"
+                if download_cache.is_symlink():
+                    download_cache.unlink(missing_ok=True)
+                elif download_cache.exists():
+                    await asyncio.to_thread(shutil.rmtree, download_cache, True)
+                manifest = mod_storage.manifest_path(profile_id)
+                if manifest.is_symlink():
+                    manifest.unlink(missing_ok=True)
+                elif manifest.exists():
+                    await asyncio.to_thread(manifest.unlink)
+                modrinth_cache = root / "modrinth_mods"
+                if modrinth_cache.is_symlink():
+                    modrinth_cache.unlink(missing_ok=True)
+                elif modrinth_cache.exists():
+                    await asyncio.to_thread(shutil.rmtree, modrinth_cache, True)
         logger.info(f"API: Updated profile '{updated_profile.name}'")
-        return updated_profile.model_dump(mode="json", exclude={"rcon_password"})
+        result = updated_profile.model_dump(mode="json", exclude={"rcon_password"})
+        result["applies_on_next_restart"] = bool(sources_changed and state and state.status == ProfileStatus.RUNNING)
+        return result
         
     except HTTPException:
         raise
@@ -486,18 +547,24 @@ async def clear_mod_download_cache(profile_id: str):
     profile = db.get_profile(profile_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
-    state = db.get_runtime_state(profile_id)
-    if state and state.status in (ProfileStatus.STARTING, ProfileStatus.STOPPING):
-        raise HTTPException(status_code=409, detail="Wait until the server lifecycle operation finishes.")
-    skipped_links = [item for item in profile.mod_downloads if item.skip_on_start]
-    if skipped_links:
-        for item in skipped_links:
-            item.skip_on_start = False
-        db.update_profile(profile)
-    cache_dir = PROFILES_DIR / profile_id / "downloaded_mods"
-    if cache_dir.exists():
-        try:
-            await asyncio.to_thread(shutil.rmtree, cache_dir)
-        except OSError as exc:
-            raise HTTPException(status_code=500, detail=f"Could not clear the mod download cache: {exc}") from exc
+    async with mod_storage.source_lock(profile_id):
+        profile = db.get_profile(profile_id)
+        if not profile:
+            raise HTTPException(status_code=404, detail="Profile not found")
+        state = db.get_runtime_state(profile_id)
+        if state and state.status in (ProfileStatus.STARTING, ProfileStatus.STOPPING):
+            raise HTTPException(status_code=409, detail="Wait until the server lifecycle operation finishes.")
+        skipped_links = [item for item in profile.mod_downloads if item.skip_on_start]
+        if skipped_links:
+            for item in skipped_links:
+                item.skip_on_start = False
+            db.update_profile(profile)
+        cache_dir = mod_storage.profile_root(profile_id) / "downloaded_mods"
+        if cache_dir.is_symlink():
+            cache_dir.unlink(missing_ok=True)
+        elif cache_dir.exists():
+            try:
+                await asyncio.to_thread(shutil.rmtree, cache_dir)
+            except OSError as exc:
+                raise HTTPException(status_code=500, detail=f"Could not clear the mod download cache: {exc}") from exc
     return None

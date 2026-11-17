@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import AsyncExitStack, asynccontextmanager
 import logging
 import re
 import threading
@@ -22,12 +23,39 @@ from mcpanel.config import (
     MAX_SINGLE_MOD_UPLOAD_BYTES,
     UPLOADS_DIR,
 )
-from mcpanel.core import modpacks
+from mcpanel.core import modpacks, mod_storage
+from mcpanel.models import ProfileStatus
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/modpacks", tags=["modpacks"])
 _SESSION_UPLOAD_LOCK = asyncio.Lock()
 _SESSION_RESERVED_BYTES: dict[str, int] = {}
+
+
+def _ensure_pack_not_transitioning(name: str) -> str:
+    try:
+        safe_name = modpacks.sanitize_pack_name(name)
+    except modpacks.ModPackError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    for profile in db.list_profiles():
+        if profile.modpack_name != safe_name:
+            continue
+        state = db.get_runtime_state(profile.id)
+        if state and state.status in (ProfileStatus.STARTING, ProfileStatus.STOPPING):
+            raise HTTPException(409, detail=f"Mod pack '{safe_name}' is linked to a profile that is starting or stopping. Wait for it to finish.")
+    return safe_name
+
+
+@asynccontextmanager
+async def _pack_source_guard(name: str):
+    safe_name = _ensure_pack_not_transitioning(name)
+    async with mod_storage.pack_lock(safe_name):
+        linked = sorted((profile for profile in db.list_profiles() if profile.modpack_name == safe_name), key=lambda item: item.id)
+        async with AsyncExitStack() as stack:
+            for profile in linked:
+                await stack.enter_async_context(mod_storage.source_lock(profile.id))
+            _ensure_pack_not_transitioning(safe_name)
+            yield safe_name
 
 
 class ImportRequest(BaseModel):
@@ -296,6 +324,13 @@ def cancel_or_discard_upload(upload_id: str):
 
 @router.post("/import")
 async def import_modpack(payload: ImportRequest):
+    if payload.replace:
+        async with _pack_source_guard(payload.name):
+            return await _import_modpack(payload)
+    return await _import_modpack(payload)
+
+
+async def _import_modpack(payload: ImportRequest):
     cancelled = threading.Event()
     worker = asyncio.create_task(asyncio.to_thread(
         modpacks.import_pack,
@@ -330,6 +365,13 @@ async def import_modpack(payload: ImportRequest):
 
 @router.post("/import-files")
 async def import_modpack_files(payload: FileImportRequest):
+    if payload.replace:
+        async with _pack_source_guard(payload.name):
+            return await _import_modpack_files(payload)
+    return await _import_modpack_files(payload)
+
+
+async def _import_modpack_files(payload: FileImportRequest):
     try:
         pack = await asyncio.to_thread(
             modpacks.import_file_session,
@@ -347,6 +389,11 @@ async def import_modpack_files(payload: FileImportRequest):
 
 @router.post("/{pack_name}/files")
 async def add_files_to_modpack(pack_name: str, payload: AddFilesRequest):
+    async with _pack_source_guard(pack_name) as pack_name:
+        return await _add_files_to_modpack(pack_name, payload)
+
+
+async def _add_files_to_modpack(pack_name: str, payload: AddFilesRequest):
     try:
         pack = await asyncio.to_thread(
             modpacks.add_files_to_pack,
@@ -366,20 +413,24 @@ async def add_files_to_modpack(pack_name: str, payload: AddFilesRequest):
 
 
 @router.delete("/{pack_name}/jars/{filename}", status_code=204)
-def delete_modpack_jar(pack_name: str, filename: str):
-    try:
-        modpacks.delete_pack_jar(pack_name, filename)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Pack JAR not found.") from exc
-    except (modpacks.ModPackError, OSError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+async def delete_modpack_jar(pack_name: str, filename: str):
+    async with _pack_source_guard(pack_name) as pack_name:
+        try:
+            modpacks.delete_pack_jar(pack_name, filename)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="Pack JAR not found.") from exc
+        except (modpacks.ModPackError, OSError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@router.delete("/{pack_name}", status_code=204)
-def remove_modpack(pack_name: str):
-    try:
-        modpacks.delete_pack(pack_name)
-    except (modpacks.ModPackError, FileNotFoundError) as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    db.unlink_modpack(modpacks.sanitize_pack_name(pack_name))
-    return None
+@router.delete("/{pack_name}")
+async def remove_modpack(pack_name: str):
+    async with _pack_source_guard(pack_name) as safe_name:
+        linked = [profile for profile in db.list_profiles() if profile.modpack_name == safe_name]
+        try:
+            modpacks.delete_pack(safe_name)
+        except (modpacks.ModPackError, FileNotFoundError) as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        db.unlink_modpack(safe_name)
+        running = [profile.name for profile in linked if (state := db.get_runtime_state(profile.id)) and state.status == ProfileStatus.RUNNING]
+        return {"deleted": safe_name, "unlinked_profiles": len(linked), "running_profiles": running}

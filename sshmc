@@ -93,7 +93,8 @@ start_panel() {
     printf '%s\n' "$$" > "$PID_FILE"
     echo "Starting SSHMC on ${MCPANEL_HOST:-127.0.0.1}:${MCPANEL_PORT:-8000}. Press Ctrl+C to stop the panel."
     exec "$uvicorn" mcpanel.main:app --app-dir "$ROOT/src" \
-        --host "${MCPANEL_HOST:-127.0.0.1}" --port "${MCPANEL_PORT:-8000}"
+        --host "${MCPANEL_HOST:-127.0.0.1}" --port "${MCPANEL_PORT:-8000}" \
+        --timeout-graceful-shutdown 5
 }
 
 install_panel() {

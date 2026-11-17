@@ -1,12 +1,9 @@
 import asyncio
-import shutil
 import logging
 from pathlib import Path
 from typing import Optional
 import git
 from git.exc import GitCommandError
-
-from mcpanel.config import GIT_SYNC_FOLDERS
 
 logger = logging.getLogger(__name__)
 
@@ -14,8 +11,8 @@ class GitSyncError(Exception):
     """Raised when a git operation fails."""
     pass
 
-def _clone_or_fetch_sync(repo_url: str, repo_dir: Path, server_dir: Path) -> None:
-    """Synchronous internal function for git operations."""
+def _clone_or_fetch_sync(repo_url: str, repo_dir: Path) -> bool:
+    """Fetch/reset the profile checkout; return True when the remote is empty."""
     repo_dir.mkdir(parents=True, exist_ok=True)
     
     # 1. Clone or Open
@@ -27,21 +24,29 @@ def _clone_or_fetch_sync(repo_url: str, repo_dir: Path, server_dir: Path) -> Non
             logger.error(f"Git clone failed: {e}")
             raise GitSyncError(f"Failed to clone repo: {e}") from e
     else:
+        git_marker = repo_dir / ".git"
+        if git_marker.is_symlink():
+            raise GitSyncError("The local repository metadata cannot be a symbolic link.")
         repo = git.Repo(repo_dir)
+
+    try:
+        Path(repo.git_dir).resolve().relative_to(repo_dir.resolve())
+    except ValueError as exc:
+        raise GitSyncError("The local Git metadata resolves outside the profile repository folder.") from exc
 
     # 2. Fetch latest changes and Hard Reset
     try:
         origin = repo.remotes.origin
         if origin.url != repo_url:
             origin.set_url(repo_url)
-        origin.fetch()
+        origin.fetch(prune=True)
 
         # Empty repositories have no remote refs and no commit to reset to. Treat
         # them as a configured repo with no files yet, preserving local folders.
-        remote_refs = list(origin.refs)
+        remote_refs = [ref for ref in origin.refs if ref.name != "origin/HEAD"]
         if not remote_refs:
-            logger.info("Repository has no commits or remote branches yet; skipping file sync.")
-            return
+            logger.warning("Configured Git repository is empty; no Git files will be applied.")
+            return True
 
         # Prefer the remote's default branch, then the active branch's upstream.
         try:
@@ -78,30 +83,19 @@ def _clone_or_fetch_sync(repo_url: str, repo_dir: Path, server_dir: Path) -> Non
         logger.error(f"Git sync failed: {e}")
         raise GitSyncError(f"Failed to sync repo: {e}") from e
 
-    # 3. Sync specific folders to the server directory
-    for folder in GIT_SYNC_FOLDERS:
-        source = repo_dir / folder
-        dest = server_dir / folder
-        
-        # Delete the existing destination folder to ensure exact mirror 
-        # (this removes mods deleted from the repo)
-        if dest.exists():
-            shutil.rmtree(dest)
-            
-        if source.exists() and source.is_dir():
-            logger.debug(f"Syncing {folder} to server directory...")
-            shutil.copytree(source, dest)
+    return False
 
-async def sync_git_repository(repo_url: Optional[str], repo_dir: Path, server_dir: Path) -> None:
-    """Async wrapper to clone/fetch a repository. Skips if repo_url is None."""
+async def sync_git_repository(repo_url: Optional[str], repo_dir: Path, server_dir: Path | None = None) -> bool:
+    """Fetch the Git checkout without modifying the live server tree."""
     if not repo_url:
         logger.info("No Git URL provided for this profile. Skipping Git sync.")
-        return
+        return False
         
     logger.info(f"Starting git sync for {repo_url}")
     try:
-        await asyncio.to_thread(_clone_or_fetch_sync, repo_url, repo_dir, server_dir)
+        empty = await asyncio.to_thread(_clone_or_fetch_sync, repo_url, repo_dir)
         logger.info("Git sync completed successfully.")
+        return empty
     except GitSyncError:
         # Re-raise our custom error as-is so the lifecycle pipeline can catch it
         raise

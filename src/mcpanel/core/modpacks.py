@@ -170,6 +170,14 @@ def get_pack(name: str | None) -> dict | None:
     return _manifest(_pack_dir(name))
 
 
+def get_pack_directory(name: str) -> Path:
+    """Return a validated pack folder for the source resolver."""
+    path = _pack_dir(name)
+    if path.is_symlink() or not path.is_dir() or not _manifest(path):
+        raise ModPackError(f"Mod pack '{name}' is missing or invalid.")
+    return path
+
+
 def loader_warnings(pack: dict | None, loader: str) -> list[str]:
     if not pack:
         return []

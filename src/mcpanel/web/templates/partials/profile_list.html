@@ -1,123 +1,163 @@
 {% for item in data %}
-<div class="card {{ item.state.status.value }}">
-    <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1rem;">
+<div class="card profile-card {{ item.state.status.value }}" data-profile-id="{{ item.profile.id }}">
+    <div class="profile-card-header">
+        <div class="profile-card-title-group">
+            <h3 class="profile-card-name">{{ item.profile.name }}</h3>
+            <div class="profile-card-tags">
+                <span class="tag-loader">{{ item.profile.build.value | upper }}</span>
+                <span class="tag-loader">{{ item.profile.mc_version }}</span>
+                {% if item.profile.modpack_name %}
+                <span class="source-badge" data-source="pack" title="Linked to mod pack {{ item.profile.modpack_name }}">
+                    <i class="fa-solid fa-box"></i> {{ item.profile.modpack_name }}
+                </span>
+                {% endif %}
+            </div>
+        </div>
         <div>
-            <h3>{{ item.profile.name }}</h3>
-            <span style="font-size: 0.8rem; color: var(--text-muted); font-weight: 500;">
-                {{ item.profile.build.value | upper }} {{ item.profile.mc_version }}
+            <span class="badge badge-status badge-{{ item.state.status.value }}">
+                <span class="badge-status-dot"></span> {{ item.state.status.value }}
             </span>
-        </div>
-        <div style="font-size: 0.8rem; font-weight: 600; display: flex; align-items: center; text-transform: uppercase; letter-spacing: 0.5px;">
-            <span class="status-dot"></span> {{ item.state.status.value }}
-        </div>
-    </div>
-    {% if item.backup_state %}<div class="backup-running" role="status"><i class="fa-solid fa-spinner fa-spin"></i> Backing up… {{ item.backup_state.elapsed_seconds }}s</div>{% endif %}
-    
-    <details class="profile-details" data-profile-details="{{ item.profile.id }}" open>
-    <summary><span>Profile details</span><i class="fa-solid fa-chevron-down"></i></summary>
-    <div class="profile-detail-content">
-    <div style="background: var(--bg); padding: 0.8rem; border-radius: 8px; font-size: 0.85rem; margin-bottom: 1.5rem; border: 1px solid var(--border);">
-        <div style="display: flex; justify-content: space-between; margin-bottom: 0.4rem;">
-            <span style="color: var(--text-muted);">Port</span>
-            <strong>{{ item.profile.port }}</strong>
-        </div>
-        <div style="display: flex; justify-content: space-between; margin-bottom: 0.4rem;">
-            <span style="color: var(--text-muted);">RAM</span>
-            <strong>{{ item.profile.ram_mb }} MB</strong>
-        </div>
-        <div style="display: flex; justify-content: space-between;">
-            <span style="color: var(--text-muted);">Repo</span>
-            <span style="max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted);">
-                {{ item.profile.git_url or 'None' }}
-            </span>
-        </div>
-        <div style="display: flex; justify-content: space-between; margin-top: 0.4rem;">
-            <span style="color: var(--text-muted);">Direct mod links</span>
-            <strong>{{ item.profile.mod_downloads | length }}</strong>
-        </div>
-        <div style="display: flex; justify-content: space-between; margin-top: 0.4rem;">
-            <span style="color: var(--text-muted);">Mod pack</span>
-            <strong>{{ item.profile.modpack_name or 'None' }}</strong>
         </div>
     </div>
 
-    {% if item.state.status.value == 'running' %}
-    <div class="server-monitoring" data-server-monitor="{{ item.profile.id }}">
-        <div><span>CPU</span><strong data-monitor-cpu>—</strong></div>
-        <div><span>RSS / allocation</span><strong data-monitor-rss>—</strong></div>
-        <div><span>Server folder</span><strong data-monitor-server-size>—</strong></div>
-        <div><span>World folders</span><strong data-monitor-world-size>—</strong></div>
-        <div><span>Backups</span><strong data-monitor-backup-size>—</strong></div>
+    <!-- Quick stats: Port and RAM -->
+    <div class="profile-quick-stats">
+        <div class="profile-stat-row">
+            <span class="profile-stat-label">Port</span>
+            <span class="profile-stat-value">{{ item.profile.port }}</span>
+        </div>
+        <div class="profile-stat-row">
+            <span class="profile-stat-label">RAM</span>
+            <span class="profile-stat-value">{{ item.profile.ram_mb }} MB</span>
+        </div>
+    </div>
+
+    {% if item.backup_state %}
+    <div class="source-preflight-alert source-preflight-warning" role="status">
+        <i class="fa-solid fa-spinner fa-spin"></i> Backing up… {{ item.backup_state.elapsed_seconds }}s
     </div>
     {% endif %}
 
-    <details class="profile-backups">
-        <summary>Backups · {{ item.backups.backups | length }} · {{ (item.backups.total_bytes / 1024 / 1024) | round(1) }} MiB total{% if item.backups.over_limit %} · ⚠ Above warning threshold{% endif %}</summary>
-        {% if item.backups.over_limit %}<p class="backup-storage-warning">Backups exceed the configured {{ (item.backups.warning_bytes / 1024 / 1024 / 1024) | round(1) }} GiB warning threshold. Nothing was deleted.</p>{% endif %}
-        {% if item.backup_state %}<p class="backup-running" role="status"><i class="fa-solid fa-spinner fa-spin"></i> Backing up… {{ item.backup_state.elapsed_seconds }}s</p>{% endif %}
-        {% for backup in item.backups.backups %}
-        <div class="profile-backup-row">
-            <div><strong>{{ backup.name }}</strong><span>{{ backup.modified_at[:19].replace('T', ' ') }} UTC · {{ (backup.size_bytes / 1024 / 1024) | round(1) }} MiB</span><span>{% if backup.manifest %}Includes: {{ backup.manifest.included | join(', ') }}{% else %}Contents: legacy archive{% endif %}</span></div>
-            <div class="profile-backup-actions"><a class="quiet-button" href="/api/profiles/{{ item.profile.id }}/backups/{{ backup.name }}/download">Download</a><button type="button" class="icon-btn danger" @click="deleteBackup({{ item.profile.id | tojson }}, {{ backup.name | tojson }})" aria-label="Delete backup {{ backup.name }}" title="Delete backup" {% if item.backup_state %}disabled{% endif %}><i class="fa-solid fa-trash"></i></button></div>
+    <!-- Collapsed by default -->
+    <details class="profile-details" data-profile-details="{{ item.profile.id }}">
+        <summary>
+            <span><i class="fa-solid fa-sliders"></i> Configuration & Details</span>
+            <i class="fa-solid fa-chevron-down"></i>
+        </summary>
+        <div class="profile-detail-content">
+            <div class="profile-quick-stats grid-1">
+                <div class="profile-stat-row">
+                    <span class="profile-stat-label">Git Repo</span>
+                    <span class="profile-stat-value profile-git-url" title="{{ item.profile.git_url or 'None' }}">
+                        {{ item.profile.git_url or 'None' }}
+                    </span>
+                </div>
+                <div class="profile-stat-row">
+                    <span class="profile-stat-label">Direct Mod Links</span>
+                    <span class="profile-stat-value">{{ item.profile.mod_downloads | length }}</span>
+                </div>
+                <div class="profile-stat-row">
+                    <span class="profile-stat-label">Mod Pack</span>
+                    <span class="profile-stat-value">{{ item.profile.modpack_name or 'None' }}</span>
+                </div>
+            </div>
+
+            {% if item.state.status.value == 'running' %}
+            <div class="server-monitoring" data-server-monitor="{{ item.profile.id }}">
+                <div class="server-monitoring-row"><span>CPU:</span><strong data-monitor-cpu>—</strong></div>
+                <div class="server-monitoring-row"><span>RSS / Alloc:</span><strong data-monitor-rss>—</strong></div>
+                <div class="server-monitoring-row"><span>Server Folder:</span><strong data-monitor-server-size>—</strong></div>
+                <div class="server-monitoring-row"><span>World Folders:</span><strong data-monitor-world-size>—</strong></div>
+                <div class="server-monitoring-row"><span>Backups:</span><strong data-monitor-backup-size>—</strong></div>
+            </div>
+            {% endif %}
+
+            <!-- Backups expandable subsection -->
+            <details class="profile-backups">
+                <summary>
+                    <i class="fa-solid fa-box-archive"></i> Backups ({{ item.backups.backups | length }} · {{ (item.backups.total_bytes / 1024 / 1024) | round(1) }} MiB)
+                </summary>
+                <div class="profile-backup-list">
+                    {% for backup in item.backups.backups %}
+                    <div class="profile-backup-item">
+                        <div class="profile-backup-meta">
+                            <strong>{{ backup.name }}</strong>
+                            <span>{{ backup.modified_at[:19].replace('T', ' ') }} UTC · {{ (backup.size_bytes / 1024 / 1024) | round(1) }} MiB</span>
+                        </div>
+                        <div class="profile-backup-actions">
+                            <a class="btn btn-ghost btn-icon btn-sm" href="/api/profiles/{{ item.profile.id }}/backups/{{ backup.name }}/download" title="Download backup">
+                                <i class="fa-solid fa-download"></i>
+                            </a>
+                            <button type="button" class="btn btn-danger btn-icon btn-sm" @click="deleteBackup({{ item.profile.id | tojson }}, {{ backup.name | tojson }})" aria-label="Delete backup {{ backup.name }}" title="Delete backup" {% if item.backup_state %}disabled{% endif %}>
+                                <i class="fa-solid fa-trash"></i>
+                            </button>
+                        </div>
+                    </div>
+                    {% else %}
+                    <p class="form-hint p-2">No backups yet.</p>
+                    {% endfor %}
+                </div>
+            </details>
         </div>
-        {% else %}
-        <p class="form-hint">No backups yet.</p>
-        {% endfor %}
     </details>
-    </div>
-    </details>
-    
+
+    <!-- Profile Action Bar -->
     <div class="profile-actions">
         <div class="profile-primary-actions">
-            <button type="button" class="quiet-button" @click="openBackupModal({{ item.profile.id | tojson }}, {{ item.profile.name | tojson }})" {% if item.backup_state %}disabled{% endif %}>
-                <i class="fa-solid fa-box-archive"></i> {% if item.backup_state %}Backing up…{% else %}Backup{% endif %}
-            </button>
             {% if item.state.status.value == 'stopped' or item.state.status.value == 'crashed' %}
-                <button hx-post="/api/lifecycle/{{ item.profile.id }}/start" hx-swap="none" hx-disabled-elt="this" @click="warnIfInsufficientRam({{ item.profile.ram_mb }})" style="background: var(--success);" {% if item.backup_state %}disabled title="Wait for the backup to finish"{% endif %}>
+                <button hx-post="/api/lifecycle/{{ item.profile.id }}/start" hx-swap="none" hx-disabled-elt="this" class="btn btn-success btn-sm" {% if item.backup_state %}disabled title="Wait for backup to finish"{% endif %}>
                     <i class="fa-solid fa-play"></i> Start
                 </button>
             {% elif item.state.status.value == 'running' %}
-                <button hx-post="/api/lifecycle/{{ item.profile.id }}/stop" hx-swap="none" hx-disabled-elt="this" class="danger" {% if item.backup_state %}disabled title="Wait for the backup to finish"{% endif %}>
+                <button hx-post="/api/lifecycle/{{ item.profile.id }}/stop" hx-swap="none" hx-disabled-elt="this" class="btn btn-danger btn-sm" {% if item.backup_state %}disabled title="Wait for backup to finish"{% endif %}>
                     <i class="fa-solid fa-stop"></i> Stop
                 </button>
-                <button hx-post="/api/lifecycle/{{ item.profile.id }}/restart" hx-swap="none" hx-disabled-elt="this" @click="warnIfInsufficientRam({{ item.profile.ram_mb }})" class="icon-btn" title="Restart and sync server" aria-label="Restart and sync server" {% if item.backup_state %}disabled{% endif %}>
+                <button hx-post="/api/lifecycle/{{ item.profile.id }}/restart" hx-swap="none" hx-disabled-elt="this" class="btn btn-secondary btn-icon" title="Restart and sync server" aria-label="Restart server" {% if item.backup_state %}disabled{% endif %}>
                     <i class="fa-solid fa-rotate"></i>
                 </button>
             {% elif item.state.status.value == 'starting' %}
                 {% if item.state.pid %}
-                    <button hx-post="/api/lifecycle/{{ item.profile.id }}/cancel-start" hx-swap="none" hx-disabled-elt="this" class="danger">
-                        <i class="fa-solid fa-ban"></i> Cancel Startup
+                    <button hx-post="/api/lifecycle/{{ item.profile.id }}/cancel-start" hx-swap="none" hx-disabled-elt="this" class="btn btn-danger btn-sm">
+                        <i class="fa-solid fa-ban"></i> Cancel
                     </button>
                 {% else %}
-                    <button disabled aria-live="polite"><i class="fa-solid fa-spinner fa-spin"></i> Preparing</button>
+                    <button class="btn btn-secondary btn-sm" disabled aria-live="polite">
+                        <i class="fa-solid fa-spinner fa-spin"></i> Preparing
+                    </button>
                 {% endif %}
             {% else %}
-                <button disabled aria-live="polite">
+                <button class="btn btn-secondary btn-sm" disabled aria-live="polite">
                     <i class="fa-solid fa-spinner fa-spin"></i> {{ item.state.status.value | title }}
                 </button>
             {% endif %}
-            
-            <button class="icon-btn" style="background: var(--border);" @click='openConsole({{ item.profile.id | tojson }}, {{ item.profile.name | tojson }})' title="View Console" aria-label="View server console">
+
+            <button type="button" class="btn btn-secondary btn-icon" @click='openConsole({{ item.profile.id | tojson }}, {{ item.profile.name | tojson }})' title="View Console" aria-label="View server console">
                 <i class="fa-solid fa-terminal"></i>
             </button>
         </div>
-        
+
         <div class="profile-secondary-actions">
-            <!-- The Edit Button passes the profile data into the Alpine function -->
-            <button class="icon-btn" style="background: var(--border);" @click='openEditModal({{ item.profile.id | tojson }})' title="Edit Profile" aria-label="Edit profile" {% if item.state.status.value in ['starting', 'stopping'] or item.backup_state %}disabled{% endif %}>
+            <button type="button" class="btn btn-ghost btn-sm" @click="openBackupModal({{ item.profile.id | tojson }}, {{ item.profile.name | tojson }})" {% if item.backup_state %}disabled{% endif %} title="Create backup">
+                <i class="fa-solid fa-box-archive"></i> Backup
+            </button>
+
+            <button type="button" class="btn btn-ghost btn-icon" @click='openEditModal({{ item.profile.id | tojson }})' title="Edit Profile" aria-label="Edit profile" {% if item.state.status.value in ['starting', 'stopping'] or item.backup_state %}disabled{% endif %}>
                 <i class="fa-solid fa-pen"></i>
             </button>
             
-            <button class="danger icon-btn" @click='openDeleteModal("{{ item.profile.id }}", {{ item.profile.name | tojson }})' title="Delete Profile" aria-label="Delete profile" {% if item.state.status.value in ['starting', 'stopping'] or item.backup_state %}disabled{% endif %}>
+            <button type="button" class="btn btn-danger btn-icon" @click='openDeleteModal("{{ item.profile.id }}", {{ item.profile.name | tojson }})' title="Delete Profile" aria-label="Delete profile" {% if item.state.status.value in ['starting', 'stopping'] or item.backup_state %}disabled{% endif %}>
                 <i class="fa-solid fa-trash"></i>
             </button>
         </div>
     </div>
 </div>
 {% else %}
-<div style="grid-column: 1 / -1; text-align: center; padding: 4rem; color: var(--text-muted); background: var(--surface); border-radius: var(--radius); border: 1px dashed var(--border);">
-    <i class="fa-solid fa-server" style="font-size: 3rem; margin-bottom: 1rem; opacity: 0.5;"></i>
-    <h3>No instances found</h3>
-    <p>Create your first Minecraft server using the panel on the left.</p>
+<div class="empty-state grid-full-width">
+    <i class="fa-solid fa-server"></i>
+    <h3>No profiles found</h3>
+    <p>Create your first Minecraft server instance to get started.</p>
+    <button type="button" class="btn btn-primary" @click="openNewProfileModal()">
+        <i class="fa-solid fa-plus"></i> Create Profile
+    </button>
 </div>
 {% endfor %}

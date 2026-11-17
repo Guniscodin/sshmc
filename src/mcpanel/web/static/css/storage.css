@@ -1,0 +1,30 @@
+/* Storage tab — component styles.
+ * Orphaned classes (storage-heading, storage-card, storage-card-heading,
+ * storage-section, storage-section-heading, storage-summary, storage-policy,
+ * storage-scan-note, storage-upload-card, storage-empty, storage-page)
+ * were removed 2026-11-17 after the storage_tab.html rewrite.
+ */
+
+.storage-location, .storage-profile { margin: 1rem 0; padding: 1rem; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.storage-location { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; color: var(--text-muted); font-size: .82rem; }
+.storage-location code { color: var(--text-main); overflow-wrap: anywhere; }
+.storage-file-list { margin-top: .8rem; list-style: none; }
+.storage-file-list li { display: flex; justify-content: space-between; gap: 1rem; padding: .45rem 0; border-top: 1px solid var(--border); color: var(--text-muted); font-size: .76rem; }
+.storage-file-list code, .storage-world-list code { overflow-wrap: anywhere; }
+.storage-profile { padding: 0; overflow: hidden; }
+.storage-profile > summary { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: .9rem 1rem; cursor: pointer; list-style: none; }
+.storage-profile > summary::-webkit-details-marker { display: none; }
+.storage-profile > summary > span { display: flex; align-items: center; gap: .65rem; }
+.storage-profile > summary small, .storage-pack-list small { color: var(--text-muted); font-size: .68rem; }
+.storage-profile > summary > b { font-variant-numeric: tabular-nums; }
+.storage-breakdown { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: .5rem; padding: 0 1rem 1rem; }
+.storage-breakdown > div { display: flex; justify-content: space-between; gap: .5rem; padding: .55rem; border-radius: 6px; background: var(--bg); color: var(--text-muted); font-size: .72rem; }
+.storage-breakdown b { color: var(--text-main); font-variant-numeric: tabular-nums; }
+.storage-orphan { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: 0 1rem 1rem; }
+.storage-orphan p { color: var(--text-muted); font-size: .78rem; }
+.storage-actions, .storage-world-list { margin: 0 1rem 1rem; }
+.storage-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+.storage-world-list > div { display: flex; align-items: center; justify-content: space-between; gap: .8rem; padding: .5rem 0; border-top: 1px solid var(--border); font-size: .76rem; }
+.storage-pack-list > div { display: flex; justify-content: space-between; align-items: center; gap: 1rem; margin: .5rem 0; padding: .8rem 1rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.storage-pack-list > div > span { display: grid; gap: .2rem; }
+.storage-muted { color: var(--text-muted); font-size: .78rem; }

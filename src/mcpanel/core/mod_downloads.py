@@ -1,11 +1,9 @@
-"""Download configured mod JARs into a profile's mods folder, with local caching."""
+"""Resolve configured mod links into a profile-owned cache for staged startup."""
 import asyncio
 import hashlib
 import ipaddress
-import json
 import logging
 import os
-import shutil
 import socket
 import tempfile
 import zipfile
@@ -36,9 +34,19 @@ def _filename(download: ModDownload, index: int) -> str:
         name = f"external-mod-{index + 1}.jar"
     if not name.lower().endswith(".jar"):
         raise ModDownloadFailure(index, name, "The link does not identify a .jar file. Set its filename to a .jar name.")
-    if name in {".", ".."} or "/" in name or "\\" in name or any(ord(char) < 32 for char in name):
+    if name in {".", ".."} or "/" in name or "\\" in name or ":" in name or any(ord(char) < 32 for char in name):
         raise ModDownloadFailure(index, name, "The mod filename is not a safe plain filename.")
     return name
+
+
+def source_key(download: ModDownload, index: int = 0) -> str:
+    filename = _filename(download, index)
+    value = f"{download.url}\0{filename}\0{(download.sha256 or '').lower()}"
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def legacy_cache_key(download: ModDownload) -> str:
+    return hashlib.sha256(download.url.encode("utf-8")).hexdigest()
 
 
 async def _validate_public_https_url(url: str, index: int, filename: str) -> None:
@@ -128,80 +136,42 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _save_manifest(path: Path, names: set[str]) -> None:
-    temp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=path.parent,
-            prefix=".mod-manifest-", suffix=".tmp", delete=False,
-        ) as output:
-            temp_path = Path(output.name)
-            json.dump(sorted(names), output, indent=2)
-            output.write("\n")
-            output.flush()
-            os.fsync(output.fileno())
-        os.replace(temp_path, path)
-    finally:
-        if temp_path:
-            temp_path.unlink(missing_ok=True)
-
-
 async def install_configured_mods(
     profile: Profile,
-    server_dir: Path,
+    cache_root: Path,
     skip_indexes: set[int] | None = None,
-    repo_managed_names: set[str] | None = None,
-) -> None:
-    """Install cached or freshly downloaded mods sequentially; stop on first failure."""
+) -> list[dict]:
+    """Resolve configured links into cached source candidates without touching the live server."""
     downloads = profile.mod_downloads
     skip_indexes = skip_indexes or set()
-    repo_managed_names = repo_managed_names or set()
-    mods_dir = server_dir / "mods"
-    if downloads:
-        mods_dir.mkdir(parents=True, exist_ok=True)
-    cache_root = server_dir.parent / "downloaded_mods"
-    manifest_path = server_dir.parent / "installed_mod_downloads.json"
-    planned_names: dict[str, int] = {}
-    installed_names: set[str] = set()
-    try:
-        stored_names = json.loads(manifest_path.read_text(encoding="utf-8"))
-        previous_names = {
-            name for name in stored_names
-            if isinstance(name, str) and name not in {".", ".."}
-            and Path(name).name == name and name.lower().endswith(".jar")
-        } if isinstance(stored_names, list) else set()
-    except (OSError, TypeError, json.JSONDecodeError):
-        previous_names = set()
+    candidates = []
+    if cache_root.is_symlink():
+        raise ModDownloadFailure(0, "download cache", "The direct-link cache cannot be a symbolic link.")
+    cache_root.mkdir(parents=True, exist_ok=True)
 
     for index, download in enumerate(downloads):
         filename = _filename(download, index)
-        key = hashlib.sha256(download.url.encode("utf-8")).hexdigest()
-        cached_file = cache_root / key / filename
-        target = mods_dir / filename
         if index in skip_indexes or download.skip_on_start:
             logger.warning("Skipping configured mod download %s for this start, as requested.", filename)
-            # Continuing without a failed link also removes its previously
-            # installed direct-link JAR, but leaves repo and user-managed files.
-            if (
-                target.is_file()
-                and filename in previous_names
-                and filename not in repo_managed_names
-                and filename not in installed_names
-            ):
-                try:
-                    target.unlink(missing_ok=True)
-                except OSError as exc:
-                    raise ModDownloadFailure(index, filename, f"Could not skip the previously installed file: {exc}") from exc
-            elif target.is_file() and filename not in repo_managed_names:
-                installed_names.add(filename)
-                _save_manifest(manifest_path, previous_names | installed_names)
             continue
-        if filename in planned_names and planned_names[filename] != index:
-            raise ModDownloadFailure(index, filename, "Another configured link uses the same filename.")
-        planned_names[filename] = index
-        if filename in repo_managed_names:
-            raise ModDownloadFailure(index, filename, "This filename is already provided by the connected repository.")
-
+        key = source_key(download, index)
+        cache_folder = cache_root / key
+        if cache_folder.is_symlink():
+            raise ModDownloadFailure(index, filename, "The cached mod path cannot be a symbolic link.")
+        cached_file = cache_folder / filename
+        if cached_file.is_symlink():
+            raise ModDownloadFailure(index, filename, "The cached mod file cannot be a symbolic link.")
+        legacy_folder = cache_root / legacy_cache_key(download)
+        legacy_file = legacy_folder / filename
+        if key != legacy_folder.name and not cached_file.exists() and not legacy_folder.is_symlink() and legacy_file.is_file() and not legacy_file.is_symlink():
+            valid_legacy = zipfile.is_zipfile(legacy_file) and (not download.sha256 or _sha256(legacy_file) == download.sha256.lower())
+            if valid_legacy:
+                cache_folder.mkdir(parents=True, exist_ok=True)
+                os.replace(legacy_file, cached_file)
+                try:
+                    legacy_folder.rmdir()
+                except OSError:
+                    pass
         if cached_file.exists() and (
             not zipfile.is_zipfile(cached_file)
             or (download.sha256 and _sha256(cached_file) != download.sha256)
@@ -219,34 +189,11 @@ async def install_configured_mods(
             except Exception as exc:
                 raise ModDownloadFailure(index, filename, f"Could not download mod: {exc}") from exc
 
-        try:
-            if target.exists() and _sha256(target) != _sha256(cached_file):
-                raise ModDownloadFailure(
-                    index,
-                    filename,
-                    "A different mod file with this name already exists in the server mods folder.",
-                )
-            if not target.exists():
-                await asyncio.to_thread(shutil.copy2, cached_file, target)
-            installed_names.add(filename)
-        except ModDownloadFailure:
-            raise
-        except OSError as exc:
-            raise ModDownloadFailure(index, filename, f"Could not install the downloaded mod: {exc}") from exc
-
-        logger.info("Installed configured mod %s for profile %s.", filename, profile.name)
-        _save_manifest(manifest_path, previous_names | installed_names)
-
-    # Retire only old direct-link JARs after all links were resolved. If a link
-    # fails, this point is never reached, so Stop never cleans up mod files.
-    retained_names = set(installed_names)
-    for stale_name in previous_names - installed_names - repo_managed_names:
-        stale_path = mods_dir / stale_name
-        try:
-            if stale_path.is_file() and stale_path.suffix.lower() == ".jar":
-                stale_path.unlink()
-                logger.info("Removed no-longer-configured external mod %s.", stale_name)
-        except OSError as exc:
-            logger.warning("Could not remove stale external mod %s: %s", stale_name, exc)
-            retained_names.add(stale_name)
-    _save_manifest(manifest_path, retained_names)
+        candidates.append({
+            "filename": filename,
+            "owner": "link",
+            "path": cached_file,
+            "source_key": key,
+        })
+        logger.info("Resolved configured mod link %s for profile %s.", filename, profile.name)
+    return candidates

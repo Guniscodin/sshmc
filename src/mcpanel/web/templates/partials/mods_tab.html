@@ -1,0 +1,257 @@
+<section class="page-container" x-show="activeTab === 'mods'" x-data="modsApp({% if data and data|length > 0 %}'{{ data[0].profile.id }}', '{{ data[0].profile.name }}', '{{ data[0].profile.build.value }}', '{{ data[0].profile.mc_version }}'{% endif %})" x-init="init()" aria-labelledby="mods-title">
+    <div class="page-header">
+        <div class="page-header-info">
+            <span class="page-eyebrow">Modrinth Library</span>
+            <h1 id="mods-title" class="page-title">Mods</h1>
+            <p class="page-subtitle">Browse compatible mods and install them directly into server profiles.</p>
+        </div>
+        <div class="page-actions">
+            <div class="flex items-center gap-2">
+                <label for="mods-profile-select" class="m-0 text-xs">Profile:</label>
+                <select id="mods-profile-select" x-model="profileId" @change="selectProfile()" class="mods-profile-select">
+                    <option value="">Choose a profile</option>
+                    {% for item in data %}
+                    <option value="{{ item.profile.id }}">{{ item.profile.name }}</option>
+                    {% endfor %}
+                    <template x-for="item in profiles.filter(p => ![{% for item in data %}'{{ item.profile.id }}',{% endfor %}].includes(p.id))" :key="item.id">
+                        <option :value="item.id" x-text="item.name"></option>
+                    </template>
+                </select>
+                <span class="badge badge-status badge-running" x-show="profile">
+                    <span x-text="profile ? profile.build.toUpperCase() + ' ' + profile.mc_version : ''"></span>
+                </span>
+            </div>
+        </div>
+    </div>
+
+    <div class="form-hint callout-box" x-show="profile?.modpack_name && profile?.git_url" role="status">
+        <i class="fa-solid fa-circle-info text-primary-color"></i> Git <code>mods/</code> is ignored while a mod pack is linked. Git config, defaultconfigs, datapacks, kubejs, and scripts are still applied.
+    </div>
+
+    <!-- No profile selected empty state -->
+    <div x-show="!profileId || !profile" class="empty-state mt-6">
+        <i class="fa-solid fa-server empty-state-hero-icon text-muted"></i>
+        <h3 class="mt-2">No profile selected</h3>
+        <p class="text-muted max-w-md line-height-base">
+            Select a Minecraft profile from the dropdown in the header to browse the Modrinth catalog, check mod compatibility, and manage installed JARs.
+        </p>
+        <div class="flex gap-3 mt-2">
+            <template x-if="profiles.length > 0">
+                <button type="button" class="btn btn-primary btn-sm" @click="profileId = profiles[0].id; selectProfile();">
+                    <i class="fa-solid fa-cube"></i> Select <span x-text="profiles[0].name"></span>
+                </button>
+            </template>
+            <template x-if="profiles.length === 0">
+                <button type="button" class="btn btn-primary btn-sm" @click="openNewProfileModal()">
+                    <i class="fa-solid fa-plus"></i> Create your first profile
+                </button>
+            </template>
+        </div>
+    </div>
+
+    <!-- Vanilla profile unsupported empty state -->
+    <div x-show="profile && profile.build === 'vanilla'" class="empty-state mt-6">
+        <i class="fa-solid fa-circle-info empty-state-hero-icon text-warning"></i>
+        <h3 class="mt-2">Mods need a mod loader</h3>
+        <p class="text-muted max-w-md line-height-base">
+            The profile "<span x-text="profile ? profile.name : ''"></span>" is configured as Vanilla, which does not support mods. Edit the profile to use Fabric, Forge, or NeoForge.
+        </p>
+        <button type="button" class="btn btn-secondary btn-sm mt-2" @click="openEditModal(profile.id)">
+            <i class="fa-solid fa-pen"></i> Edit Profile
+        </button>
+    </div>
+
+    <div x-show="profileId && profile && profile.build !== 'vanilla'" class="stack-md">
+        <div class="flex-between flex-wrap gap-4">
+            <div class="mods-tabs">
+                <button type="button" :class="{ 'is-active': view === 'browse' }" @click="view = 'browse'">Browse Catalog</button>
+                <button type="button" :class="{ 'is-active': view === 'installed' }" @click="view = 'installed'; loadInstalled()">
+                    Installed (<span x-text="installedCount"></span>)
+                </button>
+            </div>
+        </div>
+
+        <div class="mod-job-list" x-show="jobs.some(job => job.profileId === profileId && !dismissedJobs.includes(job.id))">
+            <template x-for="job in jobs.filter(job => job.profileId === profileId && !dismissedJobs.includes(job.id))" :key="job.id">
+                <div class="mod-job-item">
+                    <i class="fa-solid fa-spinner fa-spin text-primary-color" x-show="jobStatuses[job.id]?.status !== 'done' && jobStatuses[job.id]?.status !== 'failed'"></i>
+                    <i class="fa-solid fa-circle-check text-success" x-show="jobStatuses[job.id]?.status === 'done'"></i>
+                    <i class="fa-solid fa-circle-exclamation text-danger" x-show="jobStatuses[job.id]?.status === 'failed'"></i>
+                    <strong x-text="jobStatuses[job.id]?.status || 'queued'" class="capitalize" :class="{ 'text-success': jobStatuses[job.id]?.status === 'done' }"></strong>
+                    <template x-for="item in (jobStatuses[job.id]?.items || [])" :key="item.name">
+                        <span x-text="item.name + ' (' + item.status + (item.progress ? ' ' + item.progress + '%' : '') + ')'" class="text-muted text-xs"></span>
+                    </template>
+                    <span class="form-error" x-show="jobStatuses[job.id]?.error" x-text="jobStatuses[job.id]?.error"></span>
+                    <button type="button" class="btn btn-ghost btn-icon btn-sm ml-auto" @click="dismissJob(job.id)" title="Dismiss status" aria-label="Dismiss install status">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+            </template>
+        </div>
+
+        <!-- BROWSE TAB -->
+        <div x-show="view === 'browse'">
+            <div class="mods-search-toolbar">
+                <div class="mods-search-row">
+                    <div class="mods-search-input">
+                        <input type="search" x-model="query" @input.debounce.350ms="search()" placeholder="Search Modrinth mods…" aria-label="Search mods">
+                    </div>
+                    <div class="mods-filter-selects">
+                        <select x-model="sort" @change="search()" aria-label="Sort mods">
+                            <option value="relevance">Relevance</option>
+                            <option value="downloads">Most downloaded</option>
+                            <option value="updated">Recently updated</option>
+                        </select>
+                        <select x-model="category" @change="search()" aria-label="Filter by category">
+                            <option value="">All categories</option>
+                            <template x-for="item in categories" :key="item.name">
+                                <option :value="item.name" x-text="item.name"></option>
+                            </template>
+                        </select>
+                        <label class="toggle-label" title="Hide client-only mods like Sodium, Iris, and mini-maps">
+                            <span class="toggle-switch">
+                                <input type="checkbox" x-model="serverOnly" @change="search()">
+                                <span class="toggle-slider"></span>
+                            </span>
+                            <span>Server-compatible only</span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            <p class="form-error mt-3" x-show="error" x-text="error"></p>
+
+            <div class="mods-grid">
+                <template x-for="mod in results" :key="mod.project_id">
+                    <article class="mod-card" @click="openProject(mod.project_id)">
+                        <img class="mod-card-icon" :src="mod.icon_url || '/static/favicon.svg'" alt="" loading="lazy">
+                        <div class="mod-card-content">
+                            <h3 class="mod-card-title" x-text="mod.title"></h3>
+                            <span class="mod-card-author" x-text="'by ' + mod.author + ' · ' + Number(mod.downloads).toLocaleString() + ' downloads'"></span>
+                            <p class="mod-card-description" x-text="mod.description"></p>
+                            <div class="mod-card-footer">
+                                <span class="text-xs text-muted capitalize" x-text="mod.server_side + ' server · ' + mod.client_side + ' client'"></span>
+                                <button type="button" class="btn btn-sm" :class="isInstalled(mod.project_id) ? 'btn-secondary' : 'btn-primary'" @click.stop="installProject(mod.project_id)" :disabled="transitioning || isInstalled(mod.project_id) || isQueued(mod.project_id)">
+                                    <span x-text="isInstalled(mod.project_id) ? 'Installed' : (isQueued(mod.project_id) ? 'Queued…' : 'Install')"></span>
+                                </button>
+                            </div>
+                        </div>
+                    </article>
+                </template>
+            </div>
+
+            <button type="button" class="btn btn-secondary my-6 mx-auto flex" x-show="results.length && results.length < total" @click="loadMore()" :disabled="loading">
+                <span x-show="!loading">Load more mods</span>
+                <span x-show="loading"><i class="fa-solid fa-spinner fa-spin"></i> Loading...</span>
+            </button>
+
+            <div class="empty-state" x-show="!loading && !results.length && !error">
+                <i class="fa-solid fa-cubes"></i>
+                <h3>No mods found</h3>
+                <p>Try broadening your query, changing categories, or unchecking "Server-compatible only".</p>
+            </div>
+
+            <div class="skeleton skeleton-tall mt-4" x-show="loading"></div>
+        </div>
+
+        <!-- INSTALLED TAB -->
+        <div x-show="view === 'installed'" class="stack">
+            <p class="form-hint callout-box" x-show="transitioning" role="status">
+                <i class="fa-solid fa-lock text-warning"></i> Source changes are paused while this server is starting or stopping.
+            </p>
+            <p class="source-preflight-alert" x-show="hasPendingRemovals" role="status">
+                <i class="fa-solid fa-triangle-exclamation"></i> One or more mods are queued for removal and will be removed from the server on the next Start or Restart.
+            </p>
+            <template x-for="warning in installedWarnings" :key="warning">
+                <p class="source-preflight-alert source-preflight-warning" role="status" x-text="warning"></p>
+            </template>
+
+            <div class="stack-sm">
+                <template x-for="mod in installed" :key="mod.filename">
+                    <article class="installed-mod-card">
+                        <div class="installed-mod-info">
+                            <strong x-text="mod.name || mod.filename" class="installed-mod-name"></strong>
+                            <div class="installed-mod-meta">
+                                <span class="source-badge" :data-source="mod.source" x-text="mod.pending_removal ? 'Removal applies on next restart' : (mod.missing_file ? 'Missing file' : (mod.remove_allowed ? sourceLabel(mod.source) : 'Managed by ' + sourceLabel(mod.source)))" :class="mod.pending_removal ? 'badge-warning' : (mod.missing_file ? 'badge-danger' : '')"></span>
+                                <span class="text-xs text-muted" x-text="(mod.version || 'Manual file') + ' · ' + (mod.side || 'unknown') + ' · ' + formatSize(mod.size)"></span>
+                                <template x-for="dep in (mod.dependencies || []).filter(d => d.dependency_type === 'required')" :key="dep.project_id">
+                                    <span class="dependency-chip" :title="'Requires project ' + dep.project_id"><i class="fa-solid fa-link"></i> Dep</span>
+                                </template>
+                            </div>
+                        </div>
+                        <div>
+                            <button type="button" class="btn btn-danger btn-sm" @click="removeMod(mod)" x-show="mod.remove_allowed" :disabled="transitioning">Remove</button>
+                        </div>
+                    </article>
+                </template>
+            </div>
+
+            <div class="empty-state" x-show="!installed.length">
+                <i class="fa-solid fa-cubes"></i>
+                <h3>No mods installed</h3>
+                <p>Browse the Modrinth catalog above to install mods into this profile.</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Mod Details Modal / Drawer -->
+    <div class="mod-drawer-backdrop" x-show="detail" @click.self="detail = null" x-cloak>
+        <article class="mod-drawer-panel">
+            <div class="mod-drawer-header">
+                <div class="flex items-center gap-3">
+                    <img :src="detail?.icon_url || '/static/favicon.svg'" alt="" class="mod-drawer-icon">
+                    <h2 x-text="detail?.title" class="m-0 text-lg"></h2>
+                </div>
+                <button type="button" class="btn btn-ghost btn-icon btn-sm" @click="detail = null" aria-label="Close details">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+            <div class="mod-drawer-body" x-show="detail">
+                <div class="mods-gallery" x-show="detail?.gallery?.length">
+                    <template x-for="image in detail?.gallery || []" :key="image.url">
+                        <figure class="mod-gallery-item">
+                            <img :src="image.url" :alt="image.title || detail.title" class="mod-gallery-img">
+                        </figure>
+                    </template>
+                </div>
+                <div class="mods-description" x-html="renderDescription(detail?.description || '')"></div>
+                <div class="border-t pt-4">
+                    <h4 class="text-sm mb-3">Available Versions for this Profile</h4>
+                    <div class="stack-sm">
+                        <template x-for="version in versions" :key="version.id">
+                            <div class="mod-version-item">
+                                <div>
+                                    <strong x-text="version.name || version.version_number"></strong>
+                                    <span class="text-muted block" x-text="version.version_number"></span>
+                                </div>
+                                <button type="button" class="btn btn-primary btn-sm" @click="installVersion(version)" :disabled="transitioning || installing || isInstalled(detail.id) || isQueued(detail.id)" x-text="isInstalled(detail.id) ? 'Installed' : (isQueued(detail.id) ? 'Queued…' : 'Install')"></button>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+            </div>
+        </article>
+    </div>
+
+    <!-- Confirm Modal -->
+    <div class="modal-backdrop" x-show="confirmation" x-cloak @keydown.escape.window="finishConfirmation(false)">
+        <section class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="mods-confirm-title">
+            <div class="modal-header">
+                <h3 id="mods-confirm-title" x-text="confirmation?.title"></h3>
+                <button type="button" class="btn btn-ghost btn-icon btn-sm" @click="finishConfirmation(false)" aria-label="Cancel">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+            <p x-text="confirmation?.message" class="text-sm text-secondary"></p>
+            <ul x-show="confirmation?.details?.length" class="pl-4 text-xs text-warning">
+                <template x-for="(item, index) in (confirmation?.details || [])" :key="index">
+                    <li x-text="item"></li>
+                </template>
+            </ul>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-ghost" @click="finishConfirmation(false)">Cancel</button>
+                <button type="button" class="btn btn-danger" @click="finishConfirmation(true)" x-text="confirmation?.confirmLabel || 'Continue'"></button>
+            </div>
+        </section>
+    </div>
+</section>

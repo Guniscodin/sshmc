@@ -36,6 +36,45 @@ class SafePanelRotatingHandler(RotatingFileHandler):
         if not self.delay:
             self.stream = self._open()
 
+    def clear_files(self) -> list[dict]:
+        """Clear the active file and rotations while holding the logging lock."""
+        removed = []
+        self.acquire()
+        try:
+            if self.stream:
+                self.stream.flush()
+                self.stream.close()
+                self.stream = None
+            base = Path(self.baseFilename)
+            paths = [base, *(base.with_name(base.name + f".{index}") for index in range(1, self.backupCount + 1))]
+            failure = None
+            try:
+                for path in paths:
+                    if not path.exists() and not path.is_symlink():
+                        continue
+                    if path.is_symlink():
+                        raise ValueError("Panel log files cannot be symbolic links.")
+                    path.resolve().relative_to(self.data_dir)
+                    removed.append({"filename": path.name, "size_bytes": path.stat().st_size})
+                    path.unlink()
+            except (OSError, ValueError) as exc:
+                failure = exc
+            finally:
+                self.stream = self._open()
+            if failure:
+                raise failure
+            return removed
+        finally:
+            self.release()
+
+
+def clear_panel_log_files() -> list[dict]:
+    """Clear the configured rotating panel log handler, if the app has one."""
+    for handler in logging.getLogger().handlers:
+        if isinstance(handler, SafePanelRotatingHandler):
+            return handler.clear_files()
+    raise RuntimeError("The rotating panel log handler is not configured.")
+
 
 class PollingAccessFilter(logging.Filter):
     _paths = {
