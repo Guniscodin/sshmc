@@ -139,9 +139,6 @@
                             <p class="mod-card-description" x-text="mod.description"></p>
                             <div class="mod-card-footer">
                                 <span class="text-xs text-muted capitalize" x-text="mod.server_side + ' server · ' + mod.client_side + ' client'"></span>
-                                <a class="btn btn-ghost btn-icon btn-sm" :href="'https://modrinth.com/mod/' + (mod.slug || mod.project_id)" target="_blank" rel="noopener noreferrer" @click.stop aria-label="View on Modrinth" title="View on Modrinth">
-                                    <i class="fa-solid fa-up-right-from-square"></i>
-                                </a>
                                 <button type="button" class="btn btn-sm" :class="isInstalled(mod.project_id) ? 'btn-secondary' : 'btn-primary'" @click.stop="installProject(mod.project_id)" :disabled="transitioning || isInstalled(mod.project_id) || isQueued(mod.project_id)"
                                         @pointerenter="loadPlan(mod.project_id)" :title="installPlanTooltip(mod.project_id)">
                                     <span x-text="isInstalled(mod.project_id) ? 'Installed' : (isQueued(mod.project_id) ? 'Queued…' : 'Install')"></span>
