@@ -5,8 +5,15 @@ import logging
 logger = logging.getLogger(__name__)
 
 class RCONError(Exception):
-    """Base exception for RCON errors."""
-    pass
+    """Base exception for RCON errors.
+
+    command_sent is True when the request packet was flushed to the socket
+    before the failure (e.g. the response timed out or the connection dropped).
+    Callers use it to decide whether the command still reached the server.
+    """
+    def __init__(self, message: str = "", *, command_sent: bool = False):
+        super().__init__(message)
+        self.command_sent = command_sent
 
 class RCONAuthError(RCONError):
     """Raised when authentication fails."""
@@ -84,13 +91,24 @@ async def send_command(
 
         # 2. Command Phase
         cmd_packet = _pack_packet(req_id=2, req_type=SERVERDATA_EXECCOMMAND, payload=command)
-        writer.write(cmd_packet)
-        await writer.drain()
+        try:
+            writer.write(cmd_packet)
+            await writer.drain()
+        except Exception as e:
+            # The packet never left the socket, so the server never got it.
+            raise RCONError(f"RCON write failed while sending '{command}': {e}", command_sent=False) from e
 
         # Read command response
-        response_id, _, response = await asyncio.wait_for(_read_packet(reader), timeout=timeout)
+        try:
+            response_id, _, response = await asyncio.wait_for(_read_packet(reader), timeout=timeout)
+        except asyncio.TimeoutError as e:
+            logger.error(f"RCON timeout while executing '{command}'.")
+            raise RCONError("RCON operation timed out.", command_sent=True) from e
+        except RCONError as e:
+            # Malformed/dropped response packet — the command may well have run.
+            raise RCONError(str(e), command_sent=True) from e
         if response_id != 2:
-            raise RCONError("Unexpected RCON command response.")
+            raise RCONError("Unexpected RCON command response.", command_sent=True)
         
         logger.debug(f"RCON command '{command}' executed successfully.")
         return response

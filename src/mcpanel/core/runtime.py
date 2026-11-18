@@ -304,7 +304,11 @@ async def stop_server(profile: Profile, state: RuntimeState) -> RuntimeState:
     logger.info(f"Stopping server '{profile.name}' (PID: {state.pid})...")
     state.status = ProfileStatus.STOPPING
     
-    # 1. RCON Attempt
+    # 1. RCON Attempt: send "stop" if the server is reachable. The JVM may
+    # have received the command even when RCON then fails (response timeout,
+    # dropped connection), so give it a grace window to save and exit before
+    # signaling — 30s when delivery is likely, 5s when it definitely wasn't.
+    command_delivered = False
     try:
         await rcon.send_command(
             host="127.0.0.1", 
@@ -312,16 +316,21 @@ async def stop_server(profile: Profile, state: RuntimeState) -> RuntimeState:
             password=profile.rcon_password, 
             command="stop"
         )
+        command_delivered = True
         logger.info("RCON 'stop' sent. Waiting for process to exit...")
-        exited = await asyncio.to_thread(process.wait_for_group_exit, state.pid, 30)
-        if exited:
-            state.status = ProfileStatus.STOPPED
-            state.pid = None
-            state.pid_create_time = None
-            return state
-            
     except rcon.RCONError as e:
-        logger.warning(f"RCON stop failed: {e}. Falling back to SIGTERM.")
+        command_delivered = getattr(e, "command_sent", False)
+        if command_delivered:
+            logger.warning(f"RCON stop failed after the command was sent: {e}. Waiting for the server to exit before signaling.")
+        else:
+            logger.warning(f"RCON stop failed: {e}. Waiting briefly before signaling.")
+
+    exited = await asyncio.to_thread(process.wait_for_group_exit, state.pid, 30 if command_delivered else 5)
+    if exited:
+        state.status = ProfileStatus.STOPPED
+        state.pid = None
+        state.pid_create_time = None
+        return state
 
     # 2. SIGTERM Fallback
     if process.send_signal(state.pid, state.pid_create_time, signal.SIGTERM):

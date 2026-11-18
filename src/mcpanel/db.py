@@ -279,8 +279,10 @@ def update_profile(profile: Profile) -> None:
     with get_db() as conn:
         conn.execute("BEGIN IMMEDIATE")
         cursor = conn.cursor()
-        old = cursor.execute("SELECT port FROM profiles WHERE id = ?", (profile.id,)).fetchone()
-        if old and old["port"] != profile.port:
+        old = cursor.execute("SELECT port, rcon_port FROM profiles WHERE id = ?", (profile.id,)).fetchone()
+        if old is None:
+            raise DatabaseError("Profile not found.")
+        if old["port"] != profile.port or old["rcon_port"] != profile.rcon_port:
             collision = cursor.execute(
                 "SELECT id FROM profiles WHERE id != ? AND (port IN (?, ?) OR rcon_port IN (?, ?)) LIMIT 1",
                 (profile.id, profile.port, profile.rcon_port, profile.port, profile.rcon_port),
@@ -290,7 +292,8 @@ def update_profile(profile: Profile) -> None:
         cursor.execute("""
             UPDATE profiles 
             SET name = ?, build = ?, mc_version = ?, loader_version = ?, 
-                git_url = ?, modpack_name = ?, description = ?, mod_downloads = ?, java_path = ?, ram_mb = ?, port = ?,
+                git_url = ?, modpack_name = ?, description = ?, mod_downloads = ?, java_path = ?, ram_mb = ?,
+                port = ?, rcon_port = ?,
                 backup_worlds_on_change = ?, backup_mods_on_change = ?, backup_config_on_change = ?,
                 backup_datapacks_on_change = ?, backup_server_settings_on_change = ?
             WHERE id = ?
@@ -301,7 +304,7 @@ def update_profile(profile: Profile) -> None:
             profile.description,
             json.dumps([item.model_dump(mode="json") for item in profile.mod_downloads]),
             profile.java_path,
-            profile.ram_mb, profile.port, int(profile.backup_worlds_on_change), int(profile.backup_mods_on_change),
+            profile.ram_mb, profile.port, profile.rcon_port, int(profile.backup_worlds_on_change), int(profile.backup_mods_on_change),
             int(profile.backup_config_on_change), int(profile.backup_datapacks_on_change),
             int(profile.backup_server_settings_on_change), profile.id
         ))
