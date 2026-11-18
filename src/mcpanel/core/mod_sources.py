@@ -1,5 +1,6 @@
 """Resolve, validate, stage, and atomically apply profile mod sources."""
 
+import asyncio
 import logging
 import os
 import re
@@ -75,26 +76,27 @@ async def _manifest_mod_candidates(profile_id: str, server_dir: Path, profile_ro
         if not digest and isinstance(item.get("filename"), str):
             legacy = existing_mods / item["filename"]
             if not existing_mods.is_symlink() and safe_file(legacy, existing_mods):
-                digest = hash_file_sync(legacy)
+                digest = await asyncio.to_thread(hash_file_sync, legacy)
                 cached = cache / f"{digest}.jar"
                 if cached.is_symlink():
                     raise ValueError("The Modrinth cache destination cannot be a symbolic link.")
                 temporary = cache / f".{digest}.{uuid.uuid4().hex}.part"
                 try:
-                    shutil.copy2(legacy, temporary)
-                    if hash_file_sync(temporary) != digest:
+                    await asyncio.to_thread(shutil.copy2, legacy, temporary)
+                    if await asyncio.to_thread(hash_file_sync, temporary) != digest:
                         raise ValueError(f"The legacy Modrinth file changed while being copied: {item['filename']}.")
                     os.replace(temporary, cached)
                 finally:
                     temporary.unlink(missing_ok=True)
-                item = {**item, "sha256": digest, "sha1": hash_file_sync(cached, "sha1"), "cache_filename": cached.name}
+                item = {**item, "sha256": digest, "sha1": await asyncio.to_thread(hash_file_sync, cached, "sha1"), "cache_filename": cached.name}
                 changed = True
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
             changed = True
             continue
         if cached is None:
             cached = cache / f"{digest}.jar"
-        if not safe_file(cached, profile_root_path) or hash_file_sync(cached) != digest:
+        cached_valid = safe_file(cached, profile_root_path) and await asyncio.to_thread(hash_file_sync, cached) == digest
+        if not cached_valid:
             warnings.append(f"{item.get('filename', digest)}: stale Modrinth cache entry was removed from the manifest.")
             changed = True
             continue
@@ -142,12 +144,13 @@ async def _preflight(candidates: list[dict], profile, warnings: list[str]) -> li
         else:
             conflicts.append(f"{item['relative']} from {old['owner']} conflicts with {item['relative']} from {item['owner']}.")
     mods = list(unique.values())
-    invalid = [item["relative"] for item in mods if not zipfile.is_zipfile(item["path"])]
+    zip_checks = await asyncio.gather(*(asyncio.to_thread(zipfile.is_zipfile, item["path"]) for item in mods))
+    invalid = [item["relative"] for item, ok in zip(mods, zip_checks) if not ok]
     conflicts.extend(f"{name}: file is not a valid JAR/ZIP archive." for name in invalid)
     mods = [item for item in mods if item["relative"] not in invalid]
     hashes: dict[str, list[dict]] = {}
     for item in mods:
-        item["sha512"] = item.get("sha512") or hash_file_sync(item["path"], "sha512")
+        item["sha512"] = item.get("sha512") or await asyncio.to_thread(hash_file_sync, item["path"], "sha512")
         hashes.setdefault(item["sha512"], []).append(item)
     try:
         identified = await provider.identify_files(list(hashes), "sha512")
@@ -259,7 +262,7 @@ async def build_profile_sources(profile, repo_dir: Path, server_dir: Path, skip_
         except ValueError as exc:
             raise ValueError("Profile source paths must stay inside profile storage.") from exc
     async with source_lock(profile.id):
-        recover_staging(profile_root_path, server_dir, OUTPUT_FOLDERS)
+        await asyncio.to_thread(recover_staging, profile_root_path, server_dir, OUTPUT_FOLDERS)
         warnings = []
         git_empty = bool(profile.git_url and await git_sync.sync_git_repository(profile.git_url, repo_dir))
         if git_empty:
@@ -268,26 +271,27 @@ async def build_profile_sources(profile, repo_dir: Path, server_dir: Path, skip_
         if profile.modpack_name and not pack:
             raise SourcePreflightError([f"Linked mod pack '{profile.modpack_name}' no longer exists."], warnings)
         ownership = load_source_manifest(profile.id)
-        unowned = old_unowned(server_dir, ownership, OUTPUT_FOLDERS)
+        unowned = await asyncio.to_thread(old_unowned, server_dir, ownership, OUTPUT_FOLDERS)
         base_owner, base_path = _mod_base(profile, repo_dir, pack)
         if base_owner == "git" and git_empty:
             base_candidates = []
         elif base_owner and base_path:
             base_candidates = []
-            copy_source_tree(base_path, "mods", base_owner, base_candidates)
+            await asyncio.to_thread(copy_source_tree, base_path, "mods", base_owner, base_candidates)
         else:
             base_candidates = []
         manifest_mods, reconciled_manifest, manifest_data = await _manifest_mod_candidates(
             profile.id, server_dir, profile_root_path, warnings
         )
-        legacy_mods = mod_legacy.legacy_candidates(server_dir, ownership, manifest_data)
+        legacy_mods = await asyncio.to_thread(mod_legacy.legacy_candidates, server_dir, ownership, manifest_data)
         link_candidates = await mod_downloads.install_configured_mods(
             profile, profile_root_path / "downloaded_mods", skip_link_indexes or set()
         )
-        link_candidates = [
-            {**item, "relative": item["filename"], "sha256": hash_file_sync(item["path"])}
-            for item in link_candidates
-        ]
+        hashed_links = []
+        for item in link_candidates:
+            hashed_links.append({**item, "relative": item["filename"],
+                                 "sha256": await asyncio.to_thread(hash_file_sync, item["path"])})
+        link_candidates = hashed_links
         mod_candidates = await _preflight(
             [*base_candidates, *manifest_mods, *legacy_mods, *link_candidates], profile, warnings
         )
@@ -301,10 +305,10 @@ async def build_profile_sources(profile, repo_dir: Path, server_dir: Path, skip_
         if pack:
             pack_dir = modpacks.get_pack_directory(pack["name"])
             for folder in ("config", "datapacks"):
-                copy_source_tree(pack_dir / folder, folder, "pack", data_candidates)
+                await asyncio.to_thread(copy_source_tree, pack_dir / folder, folder, "pack", data_candidates)
         if profile.git_url and not git_empty:
             for folder in GIT_DATA_FOLDERS:
-                copy_source_tree(repo_dir / folder, folder, "git", data_candidates)
+                await asyncio.to_thread(copy_source_tree, repo_dir / folder, folder, "git", data_candidates)
         stage_root = server_dir / f".sshmc-source-stage-{uuid.uuid4().hex}"
         new_root = stage_root / "new"
         try:
@@ -313,7 +317,8 @@ async def build_profile_sources(profile, repo_dir: Path, server_dir: Path, skip_
             for folder in OUTPUT_FOLDERS:
                 (new_root / folder).mkdir(parents=True)
             for item in mod_candidates:
-                ownership_files.append(copy_candidate(item, new_root / "mods", profile_root_path))
+                copied = await asyncio.to_thread(copy_candidate, item, new_root / "mods", profile_root_path)
+                ownership_files.append(copied)
             winners: dict[str, dict] = {}
             for item in data_candidates:
                 target = f"{item['folder']}/{item['relative']}" if item.get("folder") else item["relative"]
@@ -324,7 +329,7 @@ async def build_profile_sources(profile, repo_dir: Path, server_dir: Path, skip_
                 winners[target] = item
             for item in winners.values():
                 folder, relative = item["relative"].split("/", 1)
-                copied = copy_candidate({**item, "relative": relative}, new_root / folder, profile_root_path)
+                copied = await asyncio.to_thread(copy_candidate, {**item, "relative": relative}, new_root / folder, profile_root_path)
                 ownership_files.append(copied)
                    # After staging succeeds, purge pending_removal entries so they are gone
             # from the manifest on the next read (they were already excluded from staging).
@@ -339,10 +344,13 @@ async def build_profile_sources(profile, repo_dir: Path, server_dir: Path, skip_
                 if current_pending:
                     reconciled_manifest = {**manifest_data, "mods": [m for m in manifest_data.get("mods", []) if not (isinstance(m, dict) and m.get("pending_removal"))]}
             extra_manifests = {manifest_path(profile.id): reconciled_manifest} if reconciled_manifest is not None else None
-            install_transaction(server_dir, stage_root, source_manifest_path(profile.id), {"files": ownership_files}, OUTPUT_FOLDERS, extra_manifests)
+            await asyncio.to_thread(
+                install_transaction, server_dir, stage_root, source_manifest_path(profile.id),
+                {"files": ownership_files}, OUTPUT_FOLDERS, extra_manifests,
+            )
         except Exception:
             if not (stage_root / "RECOVERY_FAILED").exists():
-                shutil.rmtree(stage_root, ignore_errors=True)
+                await asyncio.to_thread(shutil.rmtree, stage_root, True)
             raise
-        shutil.rmtree(stage_root, ignore_errors=True)
+        await asyncio.to_thread(shutil.rmtree, stage_root, True)
         return {"warnings": list(dict.fromkeys(warnings)), "mods": mod_candidates}

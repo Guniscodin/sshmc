@@ -117,7 +117,7 @@ async def restart_profile(
         raise LifecycleError(f"Could not stage profile mod sources: {exc}") from exc
 
     if should_wipe:
-        _wipe_server_directory(profile)
+        await asyncio.to_thread(_wipe_server_directory, profile)
     if version_change_pending:
         # The backup_*_on_change flags are a one-shot selection consumed by the
         # backup above, not persistent preferences. Resetting them to the
