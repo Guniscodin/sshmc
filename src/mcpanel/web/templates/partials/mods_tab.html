@@ -1,4 +1,4 @@
-<section class="page-container" x-show="activeTab === 'mods'" x-data="modsApp({% if data and data|length > 0 %}'{{ data[0].profile.id }}', '{{ data[0].profile.name }}', '{{ data[0].profile.build.value }}', '{{ data[0].profile.mc_version }}'{% endif %})" x-init="init()" aria-labelledby="mods-title">
+<section class="page-container" x-show="activeTab === 'mods'" x-data='modsApp({% if data and data|length > 0 %}{{ data[0].profile.id | tojson }}, {{ data[0].profile.name | tojson }}, {{ data[0].profile.build.value | tojson }}, {{ data[0].profile.mc_version | tojson }}{% endif %})' x-init="init()" aria-labelledby="mods-title">
     <div class="page-header">
         <div class="page-header-info">
             <span class="page-eyebrow">Modrinth Library</span>
@@ -13,7 +13,7 @@
                     {% for item in data %}
                     <option value="{{ item.profile.id }}">{{ item.profile.name }}</option>
                     {% endfor %}
-                    <template x-for="item in profiles.filter(p => ![{% for item in data %}'{{ item.profile.id }}',{% endfor %}].includes(p.id))" :key="item.id">
+                    <template x-for='item in profiles.filter(p => ![{% for item in data %}{{ item.profile.id | tojson }},{% endfor %}].includes(p.id))' :key="item.id">
                         <option :value="item.id" x-text="item.name"></option>
                     </template>
                 </select>

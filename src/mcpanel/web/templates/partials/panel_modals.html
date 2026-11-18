@@ -89,8 +89,10 @@
 
                 <div class="form-group">
                     <label for="create-loader-version">Loader Version</label>
-                    <select id="create-loader-version" name="loader_version" x-model="selectedLoader" :disabled="isLoading || loaders.length === 0"
-                            x-html="loaders.map(v => `<option value='${v}'>${v}</option>`).join('')">
+                    <select id="create-loader-version" name="loader_version" x-model="selectedLoader" :disabled="isLoading || loaders.length === 0">
+                        <template x-for="loader in loaders" :key="loader">
+                            <option :value="loader" x-text="loader"></option>
+                        </template>
                     </select>
                     <div x-show="isLoading" class="form-hint"><i class="fa-solid fa-spinner fa-spin"></i> Fetching compatible versions...</div>
                     <div x-show="loaderError" x-text="loaderError" role="status" class="form-error"></div>
@@ -215,8 +217,10 @@
 
                 <div class="form-group">
                     <label for="edit-loader-version">Loader Version</label>
-                    <select id="edit-loader-version" x-model="profile.loader_version" :disabled="isLoading || loaders.length === 0"
-                            x-html="loaders.map(v => `<option value='${v}'>${v}</option>`).join('')">
+                    <select id="edit-loader-version" x-model="profile.loader_version" :disabled="isLoading || loaders.length === 0">
+                        <template x-for="loader in loaders" :key="loader">
+                            <option :value="loader" x-text="loader"></option>
+                        </template>
                     </select>
                     <div x-show="isLoading" class="form-hint"><i class="fa-solid fa-spinner fa-spin"></i> Fetching compatible versions...</div>
                     <div x-show="loaderError" x-text="loaderError" role="status" class="form-error"></div>
