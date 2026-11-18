@@ -139,6 +139,9 @@
                             <p class="mod-card-description" x-text="mod.description"></p>
                             <div class="mod-card-footer">
                                 <span class="text-xs text-muted capitalize" x-text="mod.server_side + ' server · ' + mod.client_side + ' client'"></span>
+                                <a class="btn btn-ghost btn-icon btn-sm" :href="'https://modrinth.com/mod/' + (mod.slug || mod.project_id)" target="_blank" rel="noopener noreferrer" @click.stop aria-label="View on Modrinth" title="View on Modrinth">
+                                    <i class="fa-solid fa-up-right-from-square"></i>
+                                </a>
                                 <button type="button" class="btn btn-sm" :class="isInstalled(mod.project_id) ? 'btn-secondary' : 'btn-primary'" @click.stop="installProject(mod.project_id)" :disabled="transitioning || isInstalled(mod.project_id) || isQueued(mod.project_id)"
                                         @pointerenter="loadPlan(mod.project_id)" :title="installPlanTooltip(mod.project_id)">
                                     <span x-text="isInstalled(mod.project_id) ? 'Installed' : (isQueued(mod.project_id) ? 'Queued…' : 'Install')"></span>
@@ -257,9 +260,14 @@
                     <img :src="detail?.icon_url || '/static/favicon.svg'" alt="" class="mod-drawer-icon">
                     <h2 x-text="detail?.title" class="m-0 text-lg"></h2>
                 </div>
-                <button type="button" class="btn btn-ghost btn-icon btn-sm" @click="detail = null" aria-label="Close details">
-                    <i class="fa-solid fa-xmark"></i>
-                </button>
+                <div class="flex items-center gap-1">
+                    <a :href="'https://modrinth.com/mod/' + (detail?.slug || detail?.id)" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-icon btn-sm" aria-label="View on Modrinth" title="View on Modrinth">
+                        <i class="fa-solid fa-up-right-from-square"></i>
+                    </a>
+                    <button type="button" class="btn btn-ghost btn-icon btn-sm" @click="detail = null" aria-label="Close details">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
             </div>
             <div class="mod-drawer-body" x-show="detail">
                 <div class="mods-gallery" x-show="detail?.gallery?.length">
