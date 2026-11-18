@@ -205,9 +205,11 @@ async def _watch_startup(profile: Profile, state: RuntimeState, log_path: Path, 
                     log_identity = current_identity
                 except OSError:
                     current_identity = log_identity
+                # Bound each read; the watcher keeps only the tail anyway, and
+                # an unlucky poll after a log burst shouldn't allocate MBs here.
                 with open(log_path, "rb") as log_file:
                     log_file.seek(log_position)
-                    new_bytes = log_file.read()
+                    new_bytes = log_file.read(256 * 1024)
                     log_position += len(new_bytes)
                 if new_bytes:
                     recent_output = (recent_output + new_bytes.decode("utf-8", errors="replace"))[-8000:]
@@ -235,6 +237,14 @@ async def _watch_startup(profile: Profile, state: RuntimeState, log_path: Path, 
                         db.update_runtime_state(state)
                         return
             if not process.is_process_alive(pid, create_time):
+                # The relay (group leader) is gone. If Java survived inside the
+                # group, nothing is watching the console, rotation or shutdown
+                # hooks — killing the orphan avoids a server that holds the game
+                # port while the panel is convinced it is stopped.
+                if process.process_group_alive(pid):
+                    logger.error("Log relay PID %d died but its process group survived; terminating the orphaned group.", pid)
+                    process.send_signal(pid, create_time, signal.SIGKILL)
+                    await asyncio.to_thread(process.wait_for_group_exit, pid, 5)
                 state.status = ProfileStatus.CRASHED
                 state.pid = None
                 state.pid_create_time = None

@@ -37,10 +37,10 @@ def _needs_wipe(profile: Profile, server_dir: Path) -> bool:
         return False
 
 def _wipe_server_directory(profile: Profile) -> None:
-    """Removes the world, mods, configs, and old server JAR."""
+    """Removes the world folders, loader libraries and caches; mods/configs are owned by the source staging layer."""
     server_dir = PROFILES_DIR / profile.id / "server"
     logger.warning(f"Wiping server directory for profile '{profile.name}' due to build changes.")
-    
+
     # Clear old world/mod content and loader-specific caches before reinstalling.
     for folder in ["world", "world_nether", "world_the_end", "libraries", ".fabric", "versions"]:
         target = server_dir / folder
@@ -69,9 +69,13 @@ async def restart_profile(
 
     logger.info(f"Initiating restart pipeline for '{profile.name}'...")
 
-    # 1. Stop if running
+    # 1. Stop if running. Callers (the API) claim RUNNING -> STOPPING before
+    # invoking the pipeline, so reaching this branch means an unsynchronized
+    # caller — fail loudly instead of stopping the process untracked.
     if current_state.status == ProfileStatus.RUNNING:
-        current_state = await runtime.stop_server(profile, current_state)
+        raise LifecycleError(
+            "restart_profile was called with a RUNNING server without claiming it first."
+        )
 
     # 2. Back up only the categories explicitly selected for this pending replacement.
     version_change_pending = _needs_wipe(profile, server_dir)

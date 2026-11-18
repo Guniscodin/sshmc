@@ -147,7 +147,10 @@ async def _profile_size_loop() -> None:
 
 async def start_monitoring() -> None:
     global _latest, _sampler_task, _profile_size_task
-    if _sampler_task and not _sampler_task.done():
+    sampler_running = _sampler_task is not None and not _sampler_task.done()
+    size_task_running = _profile_size_task is not None and not _profile_size_task.done()
+    if sampler_running and size_task_running:
+        logger.warning("Monitoring is already running; start_monitoring() ignored a duplicate start.")
         return
     try:
         psutil.cpu_percent(interval=None)
@@ -160,8 +163,10 @@ async def start_monitoring() -> None:
         _history.append(_history_sample(_latest))
     except Exception:
         logger.exception("Could not collect initial monitoring sample")
-    _sampler_task = asyncio.create_task(_sampler_loop(), name="host-monitor-sampler")
-    _profile_size_task = asyncio.create_task(_profile_size_loop(), name="profile-size-sampler")
+    if not sampler_running:
+        _sampler_task = asyncio.create_task(_sampler_loop(), name="host-monitor-sampler")
+    if not size_task_running:
+        _profile_size_task = asyncio.create_task(_profile_size_loop(), name="profile-size-sampler")
 
 
 async def stop_monitoring() -> None:

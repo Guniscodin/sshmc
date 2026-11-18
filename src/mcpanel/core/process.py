@@ -3,6 +3,7 @@ import signal
 import subprocess
 import logging
 import sys
+import threading
 from pathlib import Path
 import psutil
 import time
@@ -43,6 +44,13 @@ def prepare_server_log(log_file_path: Path) -> None:
     if log_file_path.exists() and log_file_path.stat().st_size >= SERVER_LOG_MAX_BYTES:
         _rotate_server_log(log_file_path)
 
+def _reap_relay(process: subprocess.Popen) -> None:
+    try:
+        process.wait()
+    except Exception:
+        logger.debug("Relay reaper could not reap PID %s", process.pid, exc_info=True)
+
+
 def spawn_detached_process(cmd: list[str], cwd: Path, log_file_path: Path) -> tuple[int, float]:
     """
     Spawns a process detached from the parent (panel).
@@ -67,7 +75,15 @@ def spawn_detached_process(cmd: list[str], cwd: Path, log_file_path: Path) -> tu
             start_new_session=True,
             close_fds=True,
         )
-            
+
+        # Reap the relay on exit so it cannot accumulate as a zombie of the panel.
+        threading.Thread(
+            target=_reap_relay,
+            args=(process,),
+            name=f"relay-reaper-{process.pid}",
+            daemon=True,
+        ).start()
+
         # Get process create_time immediately to prevent race conditions
         proc_info = psutil.Process(process.pid)
         create_time = proc_info.create_time()
@@ -97,6 +113,37 @@ def is_process_alive(pid: int, expected_create_time: float) -> bool:
         logger.warning(f"Access denied verifying creation time for PID {pid}; refusing to trust it.")
         return False
 
+def _group_matches_spawn(pgid: int, expected_create_time: float) -> bool:
+    """
+    When the relay leader is gone, PGID alone is not proof of our server:
+    the number can be reused by an unrelated process group. Require at least
+    one group member that looks like the spawned server (Java, or sh for
+    run.sh) started at or after the relay. If no member info is obtainable,
+    fall back to the previous behaviour.
+    """
+    try:
+        members = list(psutil.process_iter(["pid", "name", "cmdline", "create_time"]))
+    except Exception:
+        return True
+    ours = False
+    for proc in members:
+        try:
+            info = proc.info
+            if os.getpgid(info["pid"]) != pgid:
+                continue
+            create_time = info.get("create_time")
+            if create_time is None or create_time < expected_create_time - 2:
+                # Predates the relay; cannot belong to the spawned server.
+                continue
+            name = (info.get("name") or "").lower()
+            cmd = " ".join(info.get("cmdline") or []).lower()
+            if name.startswith("java") or name in {"sh", "bash"} or "java" in cmd or "run.sh" in cmd:
+                ours = True
+        except (ProcessLookupError, PermissionError, psutil.NoSuchProcess):
+            continue
+    return ours
+
+
 def send_signal(pid: int, expected_create_time: float, sig: signal.Signals) -> bool:
     """Signals the detached group, even if its shell leader exited before Java."""
     leader_alive = is_process_alive(pid, expected_create_time)
@@ -104,7 +151,13 @@ def send_signal(pid: int, expected_create_time: float, sig: signal.Signals) -> b
     # also safely reaches Java when `sh run.sh` has already gone away.
     if not leader_alive and not process_group_alive(pid):
         return False
-        
+    if not leader_alive and not _group_matches_spawn(pid, expected_create_time):
+        logger.error(
+            "Refusing to signal process group %d: no member looks like the spawned server (possible PGID reuse).",
+            pid,
+        )
+        return False
+
     try:
         os.killpg(pid, sig)
         logger.info(f"Sent signal {sig.name} to process group {pid}")

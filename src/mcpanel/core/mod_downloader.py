@@ -14,7 +14,7 @@ import httpx
 
 from mcpanel import db
 from mcpanel.core import mod_storage
-from mcpanel.core.mod_job_state import JOBS
+from mcpanel.core.mod_job_state import JOBS, prune_jobs
 from mcpanel.core.mod_provider import provider
 from mcpanel.core.mod_storage import hash_file, load_manifest, record_installed_mod
 from mcpanel.models import ProfileStatus
@@ -128,10 +128,18 @@ async def _download_item(client, job, profile_id, cache_dir, version, job_id):
         destination = cache_dir / f"{hashes['sha256']}.jar"
         if destination.is_symlink():
             raise ValueError("The Modrinth cache destination cannot be a symbolic link.")
-        if destination.exists() and await hash_file(destination, "sha256") != hashes["sha256"]:
-            raise ValueError("A different file already uses this cache key.")
-        if not destination.exists():
-            os.link(part, destination)
+        if destination.exists():
+            if await hash_file(destination, "sha256") != hashes["sha256"]:
+                raise ValueError("A different file already uses this cache key.")
+        else:
+            try:
+                os.link(part, destination)
+            except FileExistsError:
+                # Another concurrent job finished between the exists() check and
+                # the link. The cache filename is the SHA-256 of the content,
+                # so an existing file is by definition the same artifact.
+                if await hash_file(destination, "sha256") != hashes["sha256"]:
+                    raise ValueError("A different file already uses this cache key.")
         await _record_cached_mod(profile_id, job, version, file, name, destination, hashes["sha256"], hashes["sha1"], hashes["sha512"])
         entry.update(status="done", progress=100)
     except Exception as exc:
@@ -192,3 +200,6 @@ async def run_download_job(job_id, profile_id, version, versions):
     finally:
         if job_id in JOBS:
             JOBS[job_id]["finished_at"] = time()
+        # Jobs only got pruned when the install endpoints were hit; ensure a
+        # finished job always triggers a prune of the in-memory registry.
+        prune_jobs()

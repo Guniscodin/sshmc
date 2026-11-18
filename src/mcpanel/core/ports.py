@@ -7,14 +7,14 @@ def is_port_available(port: int) -> bool:
     """
     Checks if a TCP port is available to bind on all interfaces (0.0.0.0).
     Returns True if available, False if in use.
+
+    This is a best-effort probe: the check and Minecraft's own bind are not
+    atomic, so a port can be stolen between the two. Note SO_REUSEADDR is
+    deliberately NOT set — a probe that rebinds a taken port would report it
+    free; the panel instead reports honest availability only.
     """
-    # Create a TCP socket
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        # Set SO_REUSEADDR to avoid "Address already in use" errors during rapid restarts
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        
         try:
-            # Try to bind to the port on all interfaces
             sock.bind(("0.0.0.0", port))
             return True
         except OSError:

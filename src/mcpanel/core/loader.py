@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 import httpx
 import subprocess
 import shlex
@@ -18,6 +19,10 @@ logger = logging.getLogger(__name__)
 class LoaderInstallError(Exception):
     pass
 
+# Generous ceiling for server installers/jars (~300 MB in practice).
+MAX_SERVER_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024
+
+
 async def _download_file(url: str, dest: Path) -> None:
     """Download and validate a JAR, replacing the destination only when complete."""
     logger.info(f"DOWNLOADING URL: {url}")
@@ -27,10 +32,17 @@ async def _download_file(url: str, dest: Path) -> None:
         async with httpx.AsyncClient(follow_redirects=True, timeout=httpx.Timeout(120.0, connect=15.0)) as client:
             async with client.stream("GET", url) as response:
                 response.raise_for_status()
+                declared = response.headers.get("content-length")
+                if declared and int(declared) > MAX_SERVER_DOWNLOAD_BYTES:
+                    raise LoaderInstallError(f"Download from {url} exceeds the {MAX_SERVER_DOWNLOAD_BYTES} byte limit.")
                 with tempfile.NamedTemporaryFile(dir=dest.parent, prefix=f".{dest.name}.", suffix=".part", delete=False) as f:
                     temp_path = Path(f.name)
+                downloaded = 0
                 async with aiofiles.open(temp_path, "wb") as f:
                     async for chunk in response.aiter_bytes(1024 * 256):
+                        downloaded += len(chunk)
+                        if downloaded > MAX_SERVER_DOWNLOAD_BYTES:
+                            raise LoaderInstallError(f"Download from {url} exceeds the {MAX_SERVER_DOWNLOAD_BYTES} byte limit.")
                         await f.write(chunk)
         if not temp_path or not await asyncio.to_thread(zipfile.is_zipfile, temp_path):
             raise LoaderInstallError(f"Downloaded file from {url} is not a valid JAR archive.")
@@ -83,17 +95,29 @@ def _run_forge_installer(installer_path: Path, dest_dir: Path, build: BuildType,
         )
 
         logger.debug(f"Installer stdout:\n{process.stdout}")
-        
+
         if not (dest_dir / "run.sh").exists():
             raise LoaderInstallError("Installer finished but run.sh was not generated.")
-            
+
         run_sh_path = dest_dir / "run.sh"
         content = run_sh_path.read_text()
-        
-        if "java @" in content and "exec " not in content:
-            content = content.replace("java @", f"exec {shlex.quote(java_path)} @")
-            run_sh_path.write_text(content)
-            logger.info(f"Configured run.sh to use 'exec' with Java at: {java_path}")
+
+        # Rewrite the java invocation line for user-supplied Java paths.
+        # A best-effort match; anything unrecognized leaves run.sh untouched
+        # with a loud warning instead of a silent no-op.
+        if re.search(r"^\s*exec\s+[^\n]*java", content, re.MULTILINE):
+            logger.debug("run.sh already execs java; leaving it untouched.")
+        else:
+            java_match = re.search(r"^(\s*)java(\s[^\n]*@[^\n]*)$", content, re.MULTILINE)
+            if java_match:
+                indent, rest = java_match.groups()
+                content = content[:java_match.start()] + f"{indent}exec {shlex.quote(java_path)}{rest}" + content[java_match.end():]
+                run_sh_path.write_text(content)
+                logger.info("Configured run.sh to use java at: %s", java_path)
+            else:
+                logger.warning(
+                    "run.sh has no recognized 'java @...' line; leaving the default java in place (custom Java path ignored)."
+                )
         
     except subprocess.TimeoutExpired as e:
         logger.error(f"{build.value} installer timed out after 600 seconds.")

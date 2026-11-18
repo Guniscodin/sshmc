@@ -144,7 +144,7 @@ async def stop_profile(profile_id: str):
     try:
         new_state = await runtime.stop_server(profile, state)
         db.update_runtime_state(new_state)
-        return {"status": "stopped", "state": new_state}
+        return {"status": new_state.status.value, "state": new_state}
     except Exception as e:
         logger.error(f"Failed to stop server: {e}")
         # If stop fails, it might be crashed or hung. Mark as crashed.

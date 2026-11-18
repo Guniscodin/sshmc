@@ -42,6 +42,15 @@ def _regular_files(directory: Path, suffix: str | None = None) -> list[Path]:
         return []
 
 
+def _mtime_or_minus_inf(path: Path) -> float:
+    """Sort key that never raises; files deleted mid-scan sort last (and are
+    skipped afterward anyway)."""
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return float("-inf")
+
+
 def prune_server_artifacts(profile_id: str) -> None:
     server_dir = PROFILES_DIR / profile_id / "server"
     if server_dir.is_symlink():
@@ -55,7 +64,7 @@ def prune_server_artifacts(profile_id: str) -> None:
 
     log_files = sorted(
         _regular_files(server_dir / "logs", ".log.gz"),
-        key=lambda path: path.stat().st_mtime,
+        key=_mtime_or_minus_inf,
         reverse=True,
     )
     for stale in log_files[SERVER_ROTATED_LOG_KEEP:]:
@@ -65,7 +74,7 @@ def prune_server_artifacts(profile_id: str) -> None:
             logger.warning("Could not remove old server log %s", stale)
 
     reports_dir = server_dir / "crash-reports"
-    reports = sorted(_regular_files(reports_dir), key=lambda path: path.stat().st_mtime, reverse=True)
+    reports = sorted(_regular_files(reports_dir), key=_mtime_or_minus_inf, reverse=True)
     protected = {path.name for path in reports[:CRASH_REPORT_KEEP]}
     cutoff = time.time() - CRASH_REPORT_RETENTION_DAYS * 24 * 60 * 60
     for report in reports:

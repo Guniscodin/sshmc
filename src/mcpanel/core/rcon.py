@@ -77,9 +77,20 @@ async def send_command(
         writer.write(auth_packet)
         await writer.drain()
 
-        # Read auth response
-        auth_id, auth_type, _ = await asyncio.wait_for(_read_packet(reader), timeout=timeout)
-        
+        # Read auth response. The Source RCON spec permits an empty
+        # RESPONSE_VALUE packet before the auth response, so keep reading
+        # until the auth response itself arrives (max 3 packets).
+        auth_packet = None
+        for _ in range(3):
+            candidate = await asyncio.wait_for(_read_packet(reader), timeout=timeout)
+            cand_id, cand_type, _ = candidate
+            if cand_id == -1 or cand_type != 0:
+                auth_packet = candidate
+                break
+        if auth_packet is None:
+            raise RCONError("Unexpected RCON authentication response.")
+        auth_id, auth_type, _ = auth_packet
+
         # According to RCON spec, failed auth returns ID -1
         if auth_id == -1:
             logger.error("RCON authentication failed: Bad password.")
@@ -117,9 +128,11 @@ async def send_command(
         logger.error(f"RCON timeout while executing '{command}'.")
         raise RCONError("RCON operation timed out.") from e
     finally:
-        # Always close the connection cleanly
+        # Always close the connection cleanly. wait_closed() can surface a reset
+        # raised inside the protocol callback, which is outside the OSError path —
+        # cleanup must never raise out of the finally.
         writer.close()
         try:
             await writer.wait_closed()
-        except OSError:
+        except Exception:
             logger.debug("RCON connection closed with a socket error.")
