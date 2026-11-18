@@ -25,11 +25,12 @@ def get_db() -> Generator[sqlite3.Connection, None, None]:
         # check_same_thread=False is required if FastAPI runs sync DB calls in a threadpool
         conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         conn.execute("PRAGMA foreign_keys=ON;")
-        
-        # Performance & Concurrency: WAL mode allows reads while writing
+        # WAL mode allows reads while writing
         conn.execute("PRAGMA journal_mode=WAL;")
+        # Explicit busy timeout so a locked writer waits instead of failing
+        conn.execute("PRAGMA busy_timeout=5000;")
         conn.row_factory = sqlite3.Row  # Allows accessing columns by name
-        
+
         yield conn
         conn.commit()
     except sqlite3.Error as e:
@@ -42,7 +43,12 @@ def get_db() -> Generator[sqlite3.Connection, None, None]:
             conn.close()
 
 def init_db() -> None:
-    """Initializes the database schema. Safe to call multiple times."""
+    """Initializes the database schema. Safe to call multiple times.
+
+    Schema/migration work only — no socket probes, no user-data changes
+    beyond schema defaults. Port-conflict repair lives in
+    repair_profile_ports().
+    """
     logger.info(f"Initializing database at {DB_PATH}")
     with get_db() as conn:
         cursor = conn.cursor()
@@ -127,44 +133,66 @@ def init_db() -> None:
             SELECT id, 'stopped' FROM profiles
             WHERE id NOT IN (SELECT profile_id FROM runtime_states)
         """)
+        logger.debug("Database schema initialized successfully.")
 
-        # Resolve port collisions for stopped profiles created before automatic
-        # port assignment existed. Keep active profiles' configured ports fixed.
-        rows = cursor.execute("""
-            SELECT p.id, p.port, p.rcon_port, p.created_at, r.status, r.pid, r.pid_create_time
+
+def repair_profile_ports() -> list[dict]:
+    """
+    Reassign ports that collide with another profile (or an in-use port) for
+    STOPPED profiles only; profiles that are running/starting/stopping keep
+    their configured ports.
+
+    Socket probes run with no database connection held, and the reassignment
+    is applied in one short transaction. Returns a list of reassignments for
+    the caller to surface; the database is NEVER silently rewritten here.
+    """
+    with get_db() as conn:
+        rows = conn.execute("""
+            SELECT p.id, p.name, p.port, p.rcon_port, p.created_at, r.status, r.pid, r.pid_create_time
             FROM profiles p JOIN runtime_states r ON r.profile_id = p.id
             ORDER BY p.created_at, p.id
         """).fetchall()
-        reserved: set[int] = set()
-        inactive = []
-        for row in rows:
-            active = row["status"] in ("running", "starting", "stopping") or row["pid"] is not None
-            if active:
-                reserved.update((row["port"], row["rcon_port"]))
-            else:
-                inactive.append(row)
-        for row in inactive:
-            game_port, rcon_port = row["port"], row["rcon_port"]
-            invalid = (
-                game_port == rcon_port or game_port in reserved or rcon_port in reserved
-                or not is_port_available(game_port) or not is_port_available(rcon_port)
+    reserved: set[int] = set()
+    inactive = []
+    for row in rows:
+        active = row["status"] in ("running", "starting", "stopping") or row["pid"] is not None
+        if active:
+            reserved.update((row["port"], row["rcon_port"]))
+        else:
+            inactive.append(row)
+    repaired: list[dict] = []
+    for row in inactive:
+        game_port, rcon_port = row["port"], row["rcon_port"]
+        invalid = (
+            game_port == rcon_port or game_port in reserved or rcon_port in reserved
+            or not is_port_available(game_port) or not is_port_available(rcon_port)
+        )
+        if invalid:
+            new_game = find_available_port(25565, reserved)
+            reserved.add(new_game)
+            new_rcon = find_available_port(25575, reserved)
+            reserved.add(new_rcon)
+            repaired.append({
+                "id": row["id"], "name": row["name"],
+                "old_port": game_port, "old_rcon_port": rcon_port,
+                "port": new_game, "rcon_port": new_rcon,
+            })
+        else:
+            reserved.update((game_port, rcon_port))
+    if not repaired:
+        return []
+    with get_db() as conn:
+        for item in repaired:
+            conn.execute(
+                "UPDATE profiles SET port = ?, rcon_port = ? WHERE id = ?",
+                (item["port"], item["rcon_port"], item["id"]),
             )
-            if invalid:
-                game_port = find_available_port(25565, reserved)
-                reserved.add(game_port)
-                rcon_port = find_available_port(25575, reserved)
-                reserved.add(rcon_port)
-                cursor.execute(
-                    "UPDATE profiles SET port = ?, rcon_port = ? WHERE id = ?",
-                    (game_port, rcon_port, row["id"]),
-                )
-                logger.warning(
-                    "Reassigned conflicting ports for stopped profile %s to game=%s rcon=%s",
-                    row["id"], game_port, rcon_port,
-                )
-            else:
-                reserved.update((game_port, rcon_port))
-        logger.debug("Database schema initialized successfully.")
+    for item in repaired:
+        logger.warning(
+            "Reassigned conflicting ports for stopped profile '%s' (%s) to game=%s rcon=%s",
+            item["name"], item["id"], item["port"], item["rcon_port"],
+        )
+    return repaired
 
 # ==========================================
 # PROFILE CRUD OPERATIONS

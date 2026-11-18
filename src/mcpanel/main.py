@@ -101,8 +101,24 @@ async def lifespan(app: FastAPI):
             continue
         db.update_runtime_state(state)
 
-    # Re-run port repair after dead processes have been reconciled to inactive.
-    db.init_db()
+    # Port repair runs after dead processes are reconciled to stopped, because
+    # it only ever reassigns stopped profiles. Sockets are probed with no
+    # database lock held, and any reassignment is surfaced in the panel.
+    repaired = db.repair_profile_ports()
+    for item in repaired:
+        try:
+            profile = db.get_profile(item["id"])
+            if profile:
+                if item["old_rcon_port"] == item["rcon_port"]:
+                    rcon_note = f"RCON kept at {item['rcon_port']}"
+                else:
+                    rcon_note = f"RCON {item['old_rcon_port']} → {item['rcon_port']}"
+                runtime.record_startup_warning(
+                    profile,
+                    f"Ports were reassigned after a conflict: game {item['old_port']} → {item['port']}, {rcon_note}.",
+                )
+        except Exception:
+            logger.exception("Could not record port-repair warning for %s", item["id"])
 
     await monitoring.start_monitoring()
     await storage.start_storage_monitoring()
