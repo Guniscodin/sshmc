@@ -9,7 +9,7 @@ from pathlib import Path
 
 from mcpanel.models import Profile, RuntimeState, ProfileStatus
 from mcpanel.config import PROFILES_DIR
-from mcpanel.core import process, rcon, housekeeping
+from mcpanel.core import process, rcon, housekeeping, backups
 from mcpanel import db
 
 logger = logging.getLogger(__name__)
@@ -144,6 +144,7 @@ async def start_server(profile: Profile) -> RuntimeState:
         raise FileNotFoundError(f"Server directory missing for {profile.name}. Run sync first.")
 
     await asyncio.to_thread(housekeeping.prune_server_artifacts, profile.id)
+    await asyncio.to_thread(housekeeping.prune_unreferenced_mod_caches, profile)
 
     # 1. Auto-accept the Minecraft EULA
     # 2. Generate server.properties (Fixes port and RCON issues)
@@ -342,6 +343,7 @@ async def stop_server(profile: Profile, state: RuntimeState) -> RuntimeState:
         state.status = ProfileStatus.STOPPED
         state.pid = None
         state.pid_create_time = None
+        await asyncio.to_thread(backups.maybe_auto_backup, profile)
         return state
 
     # 2. SIGTERM Fallback
@@ -352,6 +354,7 @@ async def stop_server(profile: Profile, state: RuntimeState) -> RuntimeState:
             state.status = ProfileStatus.STOPPED
             state.pid = None
             state.pid_create_time = None
+            await asyncio.to_thread(backups.maybe_auto_backup, profile)
             return state
 
     # 3. SIGKILL Last Resort

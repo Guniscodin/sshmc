@@ -65,7 +65,8 @@ def init_db() -> None:
                 rcon_port INTEGER NOT NULL,
                 rcon_password TEXT NOT NULL,
                 backup_worlds_on_change INTEGER NOT NULL DEFAULT 1,
-                backup_on_restart INTEGER NOT NULL DEFAULT 1,
+                backup_on_restart INTEGER NOT NULL DEFAULT 0,
+                max_backups INTEGER NOT NULL DEFAULT 5,
                 exclude_regenerable_backup_folders INTEGER NOT NULL DEFAULT 1,
                 backup_mods_on_change INTEGER NOT NULL DEFAULT 0,
                 backup_config_on_change INTEGER NOT NULL DEFAULT 0,
@@ -99,8 +100,17 @@ def init_db() -> None:
             cursor.execute("ALTER TABLE profiles ADD COLUMN modpack_name TEXT")
         if "description" not in profile_columns:
             cursor.execute("ALTER TABLE profiles ADD COLUMN description TEXT NOT NULL DEFAULT ''")
+        # backup_on_restart existed since the first schema but was never read.
+        # Its default-1 rows carry no user intent, so when the max_backups
+        # migration runs (i.e. on a pre-feature database) switch it off.
+        legacy_backup_on_restart = "max_backups" not in profile_columns
         if "backup_on_restart" not in profile_columns:
-            cursor.execute("ALTER TABLE profiles ADD COLUMN backup_on_restart INTEGER NOT NULL DEFAULT 1")
+            cursor.execute("ALTER TABLE profiles ADD COLUMN backup_on_restart INTEGER NOT NULL DEFAULT 0")
+            legacy_backup_on_restart = True
+        if "max_backups" not in profile_columns:
+            cursor.execute("ALTER TABLE profiles ADD COLUMN max_backups INTEGER NOT NULL DEFAULT 5")
+        if legacy_backup_on_restart:
+            cursor.execute("UPDATE profiles SET backup_on_restart = 0 WHERE backup_on_restart = 1")
         if "exclude_regenerable_backup_folders" not in profile_columns:
             cursor.execute("ALTER TABLE profiles ADD COLUMN exclude_regenerable_backup_folders INTEGER NOT NULL DEFAULT 1")
         for column in (
@@ -184,11 +194,12 @@ def create_profile(profile: Profile) -> None:
         
         cursor.execute("""
             INSERT INTO profiles (
-                id, name, build, mc_version, loader_version, git_url, modpack_name, description, mod_downloads, java_path, 
+                id, name, build, mc_version, loader_version, git_url, modpack_name, description, mod_downloads, java_path,
                 ram_mb, port, rcon_port, rcon_password, backup_worlds_on_change,
                 backup_mods_on_change, backup_config_on_change,
-                backup_datapacks_on_change, backup_server_settings_on_change, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                backup_datapacks_on_change, backup_server_settings_on_change,
+                backup_on_restart, max_backups, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             profile.id, 
             profile.name, 
@@ -209,6 +220,8 @@ def create_profile(profile: Profile) -> None:
             int(profile.backup_config_on_change),
             int(profile.backup_datapacks_on_change),
             int(profile.backup_server_settings_on_change),
+            int(profile.backup_on_restart),
+            int(profile.max_backups),
             profile.created_at.isoformat()
         ))
         
@@ -351,7 +364,8 @@ def update_profile(profile: Profile) -> None:
                 git_url = ?, modpack_name = ?, description = ?, mod_downloads = ?, java_path = ?, ram_mb = ?,
                 port = ?, rcon_port = ?,
                 backup_worlds_on_change = ?, backup_mods_on_change = ?, backup_config_on_change = ?,
-                backup_datapacks_on_change = ?, backup_server_settings_on_change = ?
+                backup_datapacks_on_change = ?, backup_server_settings_on_change = ?,
+                backup_on_restart = ?, max_backups = ?
             WHERE id = ?
         """, (
             profile.name, profile.build.value, profile.mc_version,
@@ -362,5 +376,5 @@ def update_profile(profile: Profile) -> None:
             profile.java_path,
             profile.ram_mb, profile.port, profile.rcon_port, int(profile.backup_worlds_on_change), int(profile.backup_mods_on_change),
             int(profile.backup_config_on_change), int(profile.backup_datapacks_on_change),
-            int(profile.backup_server_settings_on_change), profile.id
+            int(profile.backup_server_settings_on_change), int(profile.backup_on_restart), int(profile.max_backups), profile.id
         ))

@@ -80,6 +80,16 @@ class ProfileBase(BaseModel):
     backup_config_on_change: bool = False
     backup_datapacks_on_change: bool = False
     backup_server_settings_on_change: bool = False
+    backup_on_restart: bool = Field(
+        default=False,
+        description="Automatically back up the world folders on every server stop and restart",
+    )
+    max_backups: int = Field(
+        default=5,
+        ge=1,
+        le=100,
+        description="Maximum number of backups kept per profile (oldest are pruned automatically)",
+    )
     
     # Server settings
     ram_mb: int = Field(default=2048, ge=512, le=32768, description="RAM limit in MB")

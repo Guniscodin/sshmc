@@ -315,7 +315,9 @@ async def update_existing_profile(
     backup_mods_on_change: bool = Form(False),
     backup_config_on_change: bool = Form(False),
     backup_datapacks_on_change: bool = Form(False),
-    backup_server_settings_on_change: bool = Form(False)
+    backup_server_settings_on_change: bool = Form(False),
+    backup_on_restart: bool = Form(False),
+    max_backups: int = Form(5),
 ):
     """Updates an existing profile."""
     existing = db.get_profile(profile_id)
@@ -395,6 +397,8 @@ async def update_existing_profile(
             backup_config_on_change=backup_config_on_change,
             backup_datapacks_on_change=backup_datapacks_on_change,
             backup_server_settings_on_change=backup_server_settings_on_change,
+            backup_on_restart=backup_on_restart,
+            max_backups=max_backups,
             created_at=existing.created_at
         )
         

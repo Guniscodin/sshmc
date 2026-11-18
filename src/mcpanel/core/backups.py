@@ -280,7 +280,29 @@ def _make_archive(
     except OSError:
         logger.warning("Could not write backup manifest sidecar for %s", archive.name)
     info = archive.stat()
-    return {"name": archive.name, "size_bytes": info.st_size, "manifest": manifest}
+    result = {"name": archive.name, "size_bytes": info.st_size, "manifest": manifest}
+    # Enforce the profile's retention cap: keep the newest max_backups, oldest first out.
+    keep = getattr(profile, "max_backups", 5) or 5
+    pruned = prune_backups(profile.id, keep)
+    if pruned:
+        logger.info("Pruned %d old backup(s) for profile '%s' (kept %d): %s", len(pruned), profile.name, keep, ", ".join(pruned))
+    result["pruned"] = pruned
+    return result
+
+
+def prune_backups(profile_id: str, keep: int) -> list[str]:
+    """Delete the oldest backups beyond `keep` for a profile. Returns removed names."""
+    if keep < 1:
+        return []
+    listing = list_backups(profile_id)["backups"]  # sorted newest first
+    removed: list[str] = []
+    for item in listing[keep:]:
+        try:
+            delete_backup(profile_id, item["name"])
+            removed.append(item["name"])
+        except (OSError, ValueError, FileNotFoundError) as exc:
+            logger.warning("Could not prune old backup %s for profile %s: %s", item["name"], profile_id, exc)
+    return removed
 
 
 def create_manual_backup(
@@ -310,6 +332,32 @@ def create_change_backup(profile: Profile, cancel: threading.Event | None = None
     if not any(selection.values()):
         return None
     return create_manual_backup(profile, selection, "before-version-change", False, cancel)
+
+
+AUTO_BACKUP_SELECTION = {
+    "worlds": True,
+    "mods": False,
+    "config": False,
+    "datapacks": False,
+    "server_settings": False,
+}
+
+
+def maybe_auto_backup(profile: Profile, label: str = "auto") -> dict | None:
+    """World-only backup taken after a clean server stop, when the profile opts in.
+
+    Returns the created backup (or None); failures are logged and swallowed so
+    they never break the stop path.
+    """
+    if not getattr(profile, "backup_on_restart", False):
+        return None
+    try:
+        result = create_manual_backup(profile, dict(AUTO_BACKUP_SELECTION), label, was_running=False, cancel=None)
+        logger.info("Automatic world backup for profile '%s': %s", profile.name, result["name"])
+        return result
+    except Exception as exc:
+        logger.warning("Automatic world backup failed for profile '%s': %s", profile.name, exc)
+        return None
 
 
 def _sidecar_path(archive: Path) -> Path:

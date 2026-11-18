@@ -112,7 +112,7 @@
                     this.isSaving = true;
                     if (replacing) this.profile.modpack_name = this.originalModpackName;
                     const formData = new FormData();
-                    const fields = ['name', 'build', 'mc_version', 'loader_version', 'git_url', 'modpack_name', 'java_path', 'ram_mb', 'port', 'backup_worlds_on_change', 'backup_mods_on_change', 'backup_config_on_change', 'backup_datapacks_on_change', 'backup_server_settings_on_change'];
+                    const fields = ['name', 'build', 'mc_version', 'loader_version', 'git_url', 'modpack_name', 'java_path', 'ram_mb', 'port', 'backup_worlds_on_change', 'backup_mods_on_change', 'backup_config_on_change', 'backup_datapacks_on_change', 'backup_server_settings_on_change', 'backup_on_restart', 'max_backups'];
                     for (const key of fields) {
                         const value = this.profile[key];
                         formData.append(key, typeof value === 'boolean' ? String(value) : (value ?? ''));

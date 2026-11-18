@@ -262,6 +262,20 @@
                     </template>
                 </div>
 
+                <!-- WORLD BACKUPS -->
+                <div class="form-group">
+                    <label id="edit-backups-label">World Backups</label>
+                    <label class="checkbox-item" aria-labelledby="edit-backups-label">
+                        <input type="checkbox" x-model="profile.backup_on_restart">
+                        Automatically back up the world on every stop / restart
+                    </label>
+                    <div class="form-group" style="margin-top: var(--space-2); max-width: 240px;">
+                        <label for="edit-max-backups">Max backups to keep</label>
+                        <input id="edit-max-backups" type="number" x-model.number="profile.max_backups" min="1" max="100">
+                    </div>
+                    <p class="form-hint">When enabled, a world-only backup is created whenever this server stops or restarts (including version changes). Only the newest backups up to this limit are kept — the oldest are removed automatically. Manual and automatic backups both count; all of them are listed (and can be deleted) in the Storage tab.</p>
+                </div>
+
                 <div class="modal-footer">
                     <button type="button" class="btn btn-ghost" @click="$dispatch('close-edit')">Cancel</button>
                     <button type="submit" class="btn btn-success" :disabled="isSaving || isLoading || loaderPending || !profile.loader_version || (profile.build !== 'vanilla' && (!loaders.length || !!loaderError))">
