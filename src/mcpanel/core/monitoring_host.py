@@ -177,9 +177,8 @@ def _collect_sample() -> dict:
     disks = _disk_samples()
     cpu_count = host["logical_cpu_count"]
     servers = []
-    for profile in db.list_profiles():
-        state = db.get_runtime_state(profile.id)
-        if not state or state.status != ProfileStatus.RUNNING:
+    for profile, state in db.list_profiles_with_states():
+        if state.status != ProfileStatus.RUNNING:
             continue
         metrics = _server_process_metrics(state.pid, state.pid_create_time, cpu_count)
         servers.append({

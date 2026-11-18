@@ -9,6 +9,8 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 import zipfile
 
+import aiofiles
+
 from mcpanel.models import BuildType
 
 logger = logging.getLogger(__name__)
@@ -22,14 +24,15 @@ async def _download_file(url: str, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     temp_path: Path | None = None
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=httpx.Timeout(120.0, connect=15.0)) as client:
             async with client.stream("GET", url) as response:
                 response.raise_for_status()
                 with tempfile.NamedTemporaryFile(dir=dest.parent, prefix=f".{dest.name}.", suffix=".part", delete=False) as f:
                     temp_path = Path(f.name)
-                    async for chunk in response.aiter_bytes():
-                        f.write(chunk)
-        if not temp_path or not zipfile.is_zipfile(temp_path):
+                async with aiofiles.open(temp_path, "wb") as f:
+                    async for chunk in response.aiter_bytes(1024 * 256):
+                        await f.write(chunk)
+        if not temp_path or not await asyncio.to_thread(zipfile.is_zipfile, temp_path):
             raise LoaderInstallError(f"Downloaded file from {url} is not a valid JAR archive.")
         os.replace(temp_path, dest)
     except httpx.HTTPStatusError as e:
@@ -75,9 +78,10 @@ def _run_forge_installer(installer_path: Path, dest_dir: Path, build: BuildType,
             cwd=dest_dir,
             capture_output=True,
             text=True,
-            check=True
+            check=True,
+            timeout=600,
         )
-        
+
         logger.debug(f"Installer stdout:\n{process.stdout}")
         
         if not (dest_dir / "run.sh").exists():
@@ -91,6 +95,9 @@ def _run_forge_installer(installer_path: Path, dest_dir: Path, build: BuildType,
             run_sh_path.write_text(content)
             logger.info(f"Configured run.sh to use 'exec' with Java at: {java_path}")
         
+    except subprocess.TimeoutExpired as e:
+        logger.error(f"{build.value} installer timed out after 600 seconds.")
+        raise LoaderInstallError(f"{build.value} installer timed out.") from e
     except subprocess.CalledProcessError as e:
         logger.error(f"{build.value} installer failed with exit code {e.returncode}.")
         logger.error(f"Stdout: {e.stdout}")
@@ -113,11 +120,12 @@ async def install_forge_family(build: BuildType, mc_version: str, loader_version
 
     installer_path = dest_dir / "installer.jar"
     await _download_file(url, installer_path)
-    
-    await asyncio.to_thread(_run_forge_installer, installer_path, dest_dir, build, java_path)
-    
-    installer_path.unlink(missing_ok=True)
-    (dest_dir / "installer.jar.log").unlink(missing_ok=True)
+
+    try:
+        await asyncio.to_thread(_run_forge_installer, installer_path, dest_dir, build, java_path)
+    finally:
+        installer_path.unlink(missing_ok=True)
+        (dest_dir / "installer.jar.log").unlink(missing_ok=True)
 
 async def install_server(build: BuildType, mc_version: str, loader_version: str, dest_dir: Path, java_path: str) -> None:
     """Main entry point to install the correct server jar based on build type."""

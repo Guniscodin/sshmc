@@ -96,12 +96,18 @@ def list_packs() -> list[dict]:
     packs = []
     for folder in MODPACKS_DIR.iterdir():
         value = _manifest(folder)
-        if value:
-            jars, loader_counts = _actual_pack_jar_stats(folder)
-            value["jar_count"] = len(jars)
-            value["loader_counts"] = loader_counts
-            value["jars"] = jars
+        if not value:
+            continue
+        # jar_count/loader_counts/jars are maintained in pack.json on every
+        # create/delete, so only legacy manifests need the slow rescan.
+        if isinstance(value.get("jar_count"), int) and isinstance(value.get("loader_counts"), dict) and isinstance(value.get("jars"), list):
             packs.append(value)
+            continue
+        jars, loader_counts = _actual_pack_jar_stats(folder)
+        value["jar_count"] = len(jars)
+        value["loader_counts"] = loader_counts
+        value["jars"] = jars
+        packs.append(value)
     return sorted(packs, key=lambda pack: pack["name"].casefold())
 
 

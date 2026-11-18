@@ -81,16 +81,21 @@ async def _download_item(client, job, profile_id, cache_dir, version, job_id):
         _failed_item(job, name, "Modrinth did not provide a checksum for this file.")
         return
     algorithms = ("sha256", "sha1", "sha512")
+    primary_algorithm = "sha512" if "sha512" in expected_hashes else "sha1"
     for cached in cache_dir.glob("*.jar"):
         try:
             if cached.is_symlink():
                 continue
-            matches = True
+            # Short-circuit on the strongest expected hash first — most cached
+            # files are eliminated in a single read; the others get one more.
+            if await hash_file(cached, primary_algorithm) != expected_hashes[primary_algorithm]:
+                continue
+            confirmed = True
             for key, value in expected_hashes.items():
-                if await hash_file(cached, key) != value:
-                    matches = False
+                if key != primary_algorithm and await hash_file(cached, key) != value:
+                    confirmed = False
                     break
-            if matches:
+            if confirmed:
                 hashes = {key: await hash_file(cached, key) for key in algorithms}
                 await _record_cached_mod(profile_id, job, version, file, name, cached, hashes["sha256"], hashes["sha1"], hashes["sha512"])
                 entry = {"name": name, "status": "done", "progress": 100}
@@ -158,7 +163,13 @@ async def _download_job(job_id, profile_id, root_version, versions):
     additions = unique_additions
     mods = mod_storage.modrinth_cache_dir(profile_id)
     job["status"] = "downloading"
-    async with httpx.AsyncClient(timeout=None, headers=provider.headers, follow_redirects=True) as client:
+    # Bounded read timeout so a stalled CDN connection fails the item instead
+    # of hanging the job in "downloading" forever.
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(60.0, connect=15.0),
+        headers=provider.headers,
+        follow_redirects=True,
+    ) as client:
         for version in additions:
             if not db.get_profile(profile_id):
                 job.update(status="failed", error="The selected profile was deleted during installation.")

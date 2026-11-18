@@ -125,7 +125,7 @@ async def _sampler_loop() -> None:
     while True:
         await asyncio.sleep(SAMPLE_INTERVAL_SECONDS)
         try:
-            sample = _collect_sample()
+            sample = await asyncio.to_thread(_collect_sample)
         except Exception:
             logger.exception("Could not collect monitoring sample")
             continue
@@ -156,7 +156,7 @@ async def start_monitoring() -> None:
         logger.exception("Could not prime CPU monitoring")
     await asyncio.sleep(0.1)
     try:
-        _latest = _collect_sample()
+        _latest = await asyncio.to_thread(_collect_sample)
         _history.append(_history_sample(_latest))
     except Exception:
         logger.exception("Could not collect initial monitoring sample")

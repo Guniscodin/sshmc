@@ -93,9 +93,21 @@ async def sync_git_repository(repo_url: Optional[str], repo_dir: Path, server_di
         
     logger.info(f"Starting git sync for {repo_url}")
     try:
-        empty = await asyncio.to_thread(_clone_or_fetch_sync, repo_url, repo_dir)
+        # GitPython has no per-operation timeout and threads can't be
+        # cancelled; bound the wait so a black-holed remote fails the start
+        # instead of leaving the profile stuck in STARTING forever. The stray
+        # worker keeps running harmlessly in the background if it ever times out.
+        empty = await asyncio.wait_for(
+            asyncio.to_thread(_clone_or_fetch_sync, repo_url, repo_dir),
+            timeout=600,
+        )
         logger.info("Git sync completed successfully.")
         return empty
+    except asyncio.TimeoutError as e:
+        logger.error(f"Git sync timed out after 600 seconds for {repo_url}")
+        raise GitSyncError(
+            "Git sync timed out after 10 minutes. Check the repository URL and network connection."
+        ) from e
     except GitSyncError:
         # Re-raise our custom error as-is so the lifecycle pipeline can catch it
         raise

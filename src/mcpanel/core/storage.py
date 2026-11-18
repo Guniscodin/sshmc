@@ -17,7 +17,7 @@ from mcpanel.config import (
 )
 
 logger = logging.getLogger(__name__)
-SCAN_INTERVAL_SECONDS = 60
+SCAN_INTERVAL_SECONDS = 600
 WORLD_FOLDERS = ("world", "world_nether", "world_the_end")
 _snapshot: dict = {"scanned_at": None, "scanning": True, "total_bytes": 0, "profiles": [], "modpacks": [], "panel_logs": []}
 _refresh_event: asyncio.Event | None = None
@@ -156,9 +156,8 @@ def _scan_root(root: Path, inventory: dict, known_profiles: dict[str, dict]) -> 
 
 def _scan_storage() -> dict:
     profiles = {}
-    for profile in db.list_profiles():
+    for profile, state in db.list_profiles_with_states():
         entry = _empty_profile(profile.id, profile.name)
-        state = db.get_runtime_state(profile.id)
         entry["status"] = state.status.value if state else "stopped"
         profiles[profile.id] = entry
     inventory = {
