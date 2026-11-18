@@ -237,7 +237,7 @@ async def install_mod(profile_id: str, request: InstallRequest):
                 except OSError:
                     continue
     try:
-        resolved_dependencies, dependencies = await resolve_required_dependencies(
+        resolved_dependencies, dependency_metadata, skipped_dependencies = await resolve_required_dependencies(
             provider,
             version,
             profile.mc_version,
@@ -249,9 +249,35 @@ async def install_mod(profile_id: str, request: InstallRequest):
         )
     except (httpx.HTTPError, ValueError) as exc:
         raise HTTPException(409, f"A required dependency is unavailable or incompatible: {exc}. No mods were installed.") from exc
+
+    dependencies_out = [
+        {
+            "project_id": item.get("project_id"),
+            "title": item.get("_project_title") or item.get("name") or item.get("project_id"),
+            "version_name": item.get("name"),
+            "version_number": item.get("version_number"),
+            "size_bytes": next((f.get("size") or 0 for f in item.get("files") or []), 0),
+            "icon_url": item.get("_project_icon"),
+        }
+        for item in resolved_dependencies
+    ]
+    satisfied_out = [
+        {"project_id": s.get("project_id"), "version_id": s.get("version_id"), "reason": s.get("reason")}
+        for s in skipped_dependencies
+    ]
+    # One batch lookup to give the "Already installed" list human-readable titles.
+    satisfied_ids = [s["project_id"] for s in satisfied_out if s.get("project_id")]
+    if satisfied_ids:
+        try:
+            titles = {item.get("id"): item.get("title") for item in await provider.projects(satisfied_ids)}
+            for s in satisfied_out:
+                if s.get("project_id"):
+                    s["title"] = titles.get(s["project_id"])
+        except httpx.HTTPError as exc:
+            logger.warning("Could not fetch satisfied-dependency titles: %s", exc)
     unsupported = version.get("server_side") == "unsupported"
     if not request.confirm:
-        return {"needs_confirmation": True, "mod": version, "dependencies": dependencies, "unsupported_server": unsupported, "running": bool(state and state.status == ProfileStatus.RUNNING), "applies_on_next_restart": bool(state and state.status == ProfileStatus.RUNNING)}
+        return {"needs_confirmation": True, "mod": version, "dependencies": dependencies_out, "satisfied": satisfied_out, "unsupported_server": unsupported, "running": bool(state and state.status == ProfileStatus.RUNNING), "applies_on_next_restart": bool(state and state.status == ProfileStatus.RUNNING)}
     if unsupported and not request.skip_unsupported:
         raise HTTPException(409, "This mod does not support servers. Confirm skip_unsupported to install anyway.")
     for job in _jobs.values():

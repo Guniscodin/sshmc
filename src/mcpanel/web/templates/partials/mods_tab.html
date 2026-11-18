@@ -166,8 +166,30 @@
                 <p class="source-preflight-alert source-preflight-warning" role="status" x-text="warning"></p>
             </template>
 
+            <!-- Installed filter toolbar -->
+            <div class="installed-toolbar" x-show="installed.length">
+                <div class="form-group mb-0 flex-1">
+                    <label for="installed-search" class="text-xs">Search installed</label>
+                    <input type="search" id="installed-search" x-model="installedQuery" placeholder="Name, filename, version, project ID…" aria-label="Search installed mods">
+                </div>
+                <div class="form-group mb-0" style="min-width: 160px; margin-bottom: 0;">
+                    <label for="installed-source" class="text-xs">Source</label>
+                    <select id="installed-source" x-model="installedSource" aria-label="Filter installed mods by source">
+                        <option value="all">All sources</option>
+                        <option value="modrinth">Modrinth</option>
+                        <option value="link">Direct link</option>
+                        <option value="manual">Manual</option>
+                        <option value="pack">Mod pack</option>
+                        <option value="git">Git</option>
+                    </select>
+                </div>
+                <span class="form-hint self-center" x-show="installedQuery || installedSource !== 'all'" role="status">
+                    Showing <span x-text="filteredInstalled.length"></span> of <span x-text="installed.length"></span>
+                </span>
+            </div>
+
             <div class="stack-sm">
-                <template x-for="mod in installed" :key="mod.filename">
+                <template x-for="mod in filteredInstalled" :key="mod.filename">
                     <article class="installed-mod-card">
                         <div class="installed-mod-info">
                             <strong x-text="mod.name || mod.filename" class="installed-mod-name"></strong>
@@ -190,6 +212,15 @@
                 <i class="fa-solid fa-cubes"></i>
                 <h3>No mods installed</h3>
                 <p>Browse the Modrinth catalog above to install mods into this profile.</p>
+            </div>
+            <div class="empty-state" x-show="installed.length && !filteredInstalled.length">
+                <i class="fa-solid fa-magnifying-glass"></i>
+                <h3>No matches</h3>
+                <p>
+                    Nothing installed matches "<span x-text="installedQuery"></span>"
+                    <template x-if="installedSource !== 'all'"> from this source</template>.
+                    <button type="button" class="btn btn-ghost btn-sm" @click="installedQuery = ''; installedSource = 'all'">Clear filters</button>
+                </p>
             </div>
         </div>
     </div>
@@ -243,6 +274,27 @@
                 </button>
             </div>
             <p x-text="confirmation?.message" class="text-sm text-secondary"></p>
+            <!-- Rich dependency preview shown for installs with required deps -->
+            <div x-show="confirmation?.dependencyPlan?.install?.length" class="dependency-plan" role="group" aria-label="Dependencies to install">
+                <p class="dependency-plan-heading">Will install</p>
+                <ul class="dependency-plan-list">
+                    <template x-for="dep in (confirmation?.dependencyPlan?.install || [])" :key="dep.project_id || dep.version_name">
+                        <li class="dependency-plan-item">
+                            <img class="dependency-plan-icon" :src="dep.icon_url || '/static/favicon.svg'" alt="" loading="lazy" onerror="this.onerror=null;this.src='/static/favicon.svg'">
+                            <span class="dependency-plan-name" x-text="dep.title"></span>
+                            <span class="dependency-plan-version" x-text="dep.version_number ? 'v' + dep.version_number : ''"></span>
+                            <span class="dependency-plan-size" x-text="formatSize(dep.size_bytes)"></span>
+                        </li>
+                    </template>
+                </ul>
+                <template x-if="confirmation?.dependencyPlan?.skip?.length">
+                    <div>
+                        <p class="dependency-plan-heading dependency-plan-heading-satisfied">Already installed</p>
+                        <p class="dependency-plan-satisfied" x-text="(confirmation.dependencyPlan.skip || []).map(s => s.title || installedNameFor(s.project_id)).join(', ')"></p>
+                    </div>
+                </template>
+                <p class="dependency-plan-total">Total download: <b x-text="formatSize(confirmation?.dependencyPlan?.totalBytes || 0)"></b></p>
+            </div>
             <ul x-show="confirmation?.details?.length" class="pl-4 text-xs text-warning">
                 <template x-for="(item, index) in (confirmation?.details || [])" :key="index">
                     <li x-text="item"></li>

@@ -13,6 +13,7 @@ async def resolve_required_dependencies(provider, root_version, mc_version, load
     """Return unique compatible dependency versions and display metadata."""
     resolved = []
     projects = []
+    skipped = []
     visited = set(installed_projects) | set(reserved_projects)
     active = set()
     required_versions = {}
@@ -34,6 +35,13 @@ async def resolve_required_dependencies(provider, root_version, mc_version, load
                     raise ValueError(f"Dependency {project_id} is required at two different versions.")
             key = project_id or version_id
             if key in visited:
+                if project_id in installed_projects:
+                    reason = "already installed"
+                elif project_id in reserved_projects:
+                    reason = "queued to install"
+                else:
+                    reason = "already resolved"
+                skipped.append({"project_id": project_id, "version_id": version_id, "reason": reason})
                 if project_id and version_id and project_id in installed_versions and installed_versions[project_id] != version_id:
                     raise ValueError(f"Dependency {project_id} requires a different version than the one already installed.")
                 continue
@@ -62,6 +70,13 @@ async def resolve_required_dependencies(provider, root_version, mc_version, load
                         raise ValueError(f"Dependency {resolved_project} is required at two different versions.")
                 if resolved_project and resolved_project in visited:
                     visited.add(key)
+                    if resolved_project in installed_projects:
+                        reason = "already installed"
+                    elif resolved_project in reserved_projects:
+                        reason = "queued to install"
+                    else:
+                        reason = "already resolved"
+                    skipped.append({"project_id": resolved_project, "version_id": resolved_version, "reason": reason})
                     continue
                 hashes = {
                     (item.get("hashes", {}).get("sha1") or "").lower()
@@ -71,6 +86,8 @@ async def resolve_required_dependencies(provider, root_version, mc_version, load
                     visited.add(key)
                     if resolved_project:
                         visited.add(resolved_project)
+                    skipped.append({"project_id": resolved_project, "version_id": resolved_version,
+                                    "reason": "local file present"})
                     continue
                 await visit(child, depth + 1)
                 if resolved_project:
@@ -78,6 +95,8 @@ async def resolve_required_dependencies(provider, root_version, mc_version, load
                         project = await provider.project(resolved_project)
                     except httpx.HTTPError:
                         project = {"id": resolved_project, "title": child.get("name") or resolved_project}
+                    child["_project_title"] = project.get("title")
+                    child["_project_icon"] = project.get("icon_url")
                     projects.append(project)
                 resolved.append(child)
                 visited.add(key)
@@ -87,4 +106,4 @@ async def resolve_required_dependencies(provider, root_version, mc_version, load
                 active.discard(key)
 
     await visit(root_version, 1)
-    return resolved, projects
+    return resolved, projects, skipped

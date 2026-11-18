@@ -16,6 +16,8 @@ window.modsApp = function modsApp(initialProfileId = '', initialProfileName = ''
         query: '',
         sort: 'relevance',
         category: '',
+        installedQuery: '',
+        installedSource: 'all',
         transitioning: false,
         running: false,
         serverOnly: true,
@@ -124,9 +126,23 @@ window.modsApp = function modsApp(initialProfileId = '', initialProfileName = ''
         sourceLabel(source) { return ({ git: 'Git', pack: 'Pack', modrinth: 'Modrinth', link: 'Link', manual: 'Manual' })[source] || 'Manual'; },
         get hasPendingRemovals() { return this.installed.some(m => m.pending_removal); },
         get installedCount() { return this.installed.filter(m => !m.missing_file).length; },
-        askConfirmation(title, message, details = [], confirmLabel = 'Continue') {
-            this.confirmation = { title, message, details, confirmLabel };
+        get filteredInstalled() {
+            const source = this.installedSource;
+            const query = this.installedQuery.trim().toLowerCase();
+            return this.installed.filter(m => {
+                if (source !== 'all' && (m.source || 'manual') !== source) return false;
+                if (!query) return true;
+                const haystack = [m.name, m.filename, m.version, m.project_id, m.sha256].filter(Boolean).join(' ').toLowerCase();
+                return query.split(/\s+/).every(part => haystack.includes(part));
+            });
+        },
+        askConfirmation(title, message, details = [], confirmLabel = 'Continue', dependencyPlan = null) {
+            this.confirmation = { title, message, details, confirmLabel, dependencyPlan };
             return new Promise(resolve => { this.confirmationResolver = resolve; });
+        },
+        installedNameFor(projectId) {
+            const match = this.installed.find(m => m.project_id === projectId);
+            return match ? (match.name || match.filename || projectId) : projectId;
         },
         finishConfirmation(approved) {
             const resolve = this.confirmationResolver; this.confirmationResolver = null; this.confirmation = null;
@@ -157,17 +173,18 @@ window.modsApp = function modsApp(initialProfileId = '', initialProfileName = ''
                 let response = await fetch(`/api/profiles/${this.profileId}/mods/install`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version_id: version.id }) });
                 let data = await this.readJson(response, 'The install request returned an invalid response.');
                 if (data.needs_confirmation) {
-                    const dependencies = data.dependencies || [];
-                    if (dependencies.some(d => d.incompatible)) { this.notify('Required dependencies are unavailable or incompatible; install was stopped.', true); return; }
-                    const notes = dependencies.map(d => `${d.title} · required dependency`);
+                    const planInstall = Array.isArray(data.dependencies) ? data.dependencies : [];
+                    const planSkip = Array.isArray(data.satisfied) ? data.satisfied : [];
+                    const depTotal = planInstall.reduce((sum, d) => sum + (Number(d.size_bytes) || 0), 0);
+                    const notes = [];
                     if (data.unsupported_server) notes.push('Warning: this mod marks server-side use as unsupported.');
                     if (data.running) notes.push('This profile is running; installed mods take effect after restart.');
-                    const needsDecision = dependencies.length > 0 || data.unsupported_server || data.running;
+                    const needsDecision = planInstall.length > 0 || data.unsupported_server || data.running;
                     if (needsDecision) {
-                        const message = dependencies.length
+                        const message = planInstall.length
                             ? 'The following required dependencies will also be installed:'
                             : 'Review this installation before continuing:';
-                        if (!await this.askConfirmation(`Install ${version.name || version.version_number}?`, message, notes, 'Install mods')) return;
+                        if (!await this.askConfirmation(`Install ${version.name || version.version_number}?`, message, notes, 'Install mods', { install: planInstall, skip: planSkip, totalBytes: depTotal })) return;
                         warnedRunning = Boolean(data.running);
                     }
                     response = await fetch(`/api/profiles/${this.profileId}/mods/install`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ version_id: version.id, confirm: true, skip_unsupported: data.unsupported_server }) });
