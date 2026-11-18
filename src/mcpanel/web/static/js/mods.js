@@ -18,6 +18,7 @@ window.modsApp = function modsApp(initialProfileId = '', initialProfileName = ''
         category: '',
         installedQuery: '',
         installedSource: 'all',
+        installedLoaded: false,
         selectedForInstall: [],
         bulkBusy: false,
         planCache: {},
@@ -94,7 +95,7 @@ window.modsApp = function modsApp(initialProfileId = '', initialProfileName = ''
             } catch (error) { this.error = error.message || 'Could not load profiles.'; }
             if (!this.categoriesLoaded) this.loadCategories();
         },
-        syncProfile() { this.profile = this.profiles.find(p => p.id === this.profileId) || null; this.detail = null; this.versions = []; this.results = []; this.installed = []; this.installedWarnings = []; this.transitioning = false; this.searchToken++; },
+        syncProfile() { this.profile = this.profiles.find(p => p.id === this.profileId) || null; this.detail = null; this.versions = []; this.results = []; this.installed = []; this.installedWarnings = []; this.transitioning = false; this.searchToken++; this.installedLoaded = false; },
         selectProfile() { this.syncProfile(); if (this.profileId && this.profile) { this.loadInstalled(); this.search(); this.resumeJobs(this.profileId); } },
         async loadCategories() { try { const response = await fetch('/api/mods/categories'); if (!response.ok) throw new Error(); this.categories = (await this.readJson(response, 'Could not read Modrinth categories.')).filter(x => x.project_type === 'mod'); this.categoriesLoaded = true; } catch (_) {} },
         async search(append = false, requestedOffset = null) {
@@ -121,8 +122,10 @@ window.modsApp = function modsApp(initialProfileId = '', initialProfileName = ''
         async loadInstalled() {
             if (!this.profileId) return;
             const profileId = this.profileId, token = ++this.installedToken;
+            this.installedLoaded = false;
             try { const response = await fetch(`/api/profiles/${profileId}/mods`); const data = await this.readJson(response, 'Could not read the installed mods list.'); if (!response.ok) throw new Error(data.detail || 'Could not load installed mods.'); if (token === this.installedToken && profileId === this.profileId) { this.installed = data.mods || []; this.installedWarnings = data.warnings || []; this.transitioning = Boolean(data.transitioning); this.running = Boolean(data.running); } }
             catch (error) { if (token === this.installedToken) this.error = error.message; }
+            finally { if (token === this.installedToken && profileId === this.profileId) this.installedLoaded = true; }
         },
         isInstalled(projectId) { return this.installed.some(x => x.project_id === projectId); },
         isQueued(projectId) { return this.queuedProjects.includes(projectId) || this.jobs.some(job => job.profileId === this.profileId && this.jobStatuses[job.id]?.project_id === projectId && ['queued', 'downloading'].includes(this.jobStatuses[job.id]?.status)); },
@@ -189,6 +192,7 @@ window.modsApp = function modsApp(initialProfileId = '', initialProfileName = ''
         },
         async installProject(id) { await this.openProject(id); if (this.versions.length) await this.installVersion(this.versions[0]); },
         async installVersion(version) {
+            if (!this.installedLoaded) { this.notify('Loading the installed list — try again in a moment.', true); return; }
             const key = version.project_id || this.detail?.id || version.id;
             if (this.isInstalled(key) || this.isQueued(key)) return;
             this.installing = true;
@@ -263,6 +267,7 @@ window.modsApp = function modsApp(initialProfileId = '', initialProfileName = ''
             window.setTimeout(poll, 500);
         },
         async removeMod(mod) {
+            if (!this.installedLoaded) { this.notify('Loading the installed list — try again in a moment.', true); return; }
             if (!mod.remove_allowed) return;
             // Check if any other installed mod depends on this one (required dependency)
             const dependents = this.installed.filter(m =>
@@ -289,6 +294,7 @@ window.modsApp = function modsApp(initialProfileId = '', initialProfileName = ''
             } catch (error) { this.notify(error.message, true); }
         },
         toggleSelected(projectId) {
+            if (!this.installedLoaded) return;
             if (this.isInstalled(projectId) || this.isQueued(projectId)) return;
             const index = this.selectedForInstall.indexOf(projectId);
             if (index >= 0) this.selectedForInstall.splice(index, 1);
@@ -296,7 +302,7 @@ window.modsApp = function modsApp(initialProfileId = '', initialProfileName = ''
         },
         clearSelection() { this.selectedForInstall = []; },
         async installSelected() {
-            if (this.bulkBusy || !this.selectedForInstall.length) return;
+            if (this.bulkBusy || !this.installedLoaded || !this.selectedForInstall.length) return;
             const ids = [...this.selectedForInstall];
             this.bulkBusy = true;
             try {

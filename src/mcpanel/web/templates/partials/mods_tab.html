@@ -128,8 +128,8 @@
                                 @click.stop="toggleSelected(mod.project_id)"
                                 :aria-pressed="selectedForInstall.includes(mod.project_id).toString()"
                                 :aria-label="selectedForInstall.includes(mod.project_id) ? 'Deselect ' + mod.title : 'Select ' + mod.title + ' for bulk install'"
-                                :title="isInstalled(mod.project_id) ? 'Already installed' : (isQueued(mod.project_id) ? 'Queued' : 'Select for bulk install')"
-                                :disabled="isInstalled(mod.project_id) || isQueued(mod.project_id)">
+                                :title="!installedLoaded ? 'Loading installed list…' : (isInstalled(mod.project_id) ? 'Already installed' : (isQueued(mod.project_id) ? 'Queued' : 'Select for bulk install'))"
+                                :disabled="!installedLoaded || isInstalled(mod.project_id) || isQueued(mod.project_id)">
                             <i class="fa-solid fa-check"></i>
                         </button>
                         <img class="mod-card-icon" :src="mod.icon_url || '/static/favicon.svg'" alt="" loading="lazy">
@@ -139,8 +139,8 @@
                             <p class="mod-card-description" x-text="mod.description"></p>
                             <div class="mod-card-footer">
                                 <span class="text-xs text-muted capitalize" x-text="mod.server_side + ' server · ' + mod.client_side + ' client'"></span>
-                                <button type="button" class="btn btn-sm" :class="isInstalled(mod.project_id) ? 'btn-secondary' : 'btn-primary'" @click.stop="installProject(mod.project_id)" :disabled="transitioning || isInstalled(mod.project_id) || isQueued(mod.project_id)"
-                                        @pointerenter="loadPlan(mod.project_id)" :title="installPlanTooltip(mod.project_id)">
+                                <button type="button" class="btn btn-sm" :class="isInstalled(mod.project_id) ? 'btn-secondary' : 'btn-primary'" @click.stop="installProject(mod.project_id)" :disabled="transitioning || !installedLoaded || isInstalled(mod.project_id) || isQueued(mod.project_id)"
+                                        @pointerenter="loadPlan(mod.project_id)" :title="!installedLoaded ? 'Loading installed list…' : installPlanTooltip(mod.project_id)">
                                     <span x-text="isInstalled(mod.project_id) ? 'Installed' : (isQueued(mod.project_id) ? 'Queued…' : 'Install')"></span>
                                 </button>
                             </div>
@@ -159,7 +159,7 @@
                 <span class="bulk-install-count"><strong x-text="selectedForInstall.length"></strong> selected</span>
                 <div class="flex gap-2">
                     <button type="button" class="btn btn-ghost btn-sm" @click="clearSelection()">Clear</button>
-                    <button type="button" class="btn btn-primary btn-sm" @click="installSelected()" :disabled="bulkBusy">
+                    <button type="button" class="btn btn-primary btn-sm" @click="installSelected()" :disabled="bulkBusy || !installedLoaded">
                         <i class="fa-solid fa-download"></i>
                         <span x-text="bulkBusy ? 'Installing…' : 'Install selected'"></span>
                     </button>
@@ -284,7 +284,7 @@
                                     <strong x-text="version.name || version.version_number"></strong>
                                     <span class="text-muted block" x-text="version.version_number"></span>
                                 </div>
-                                <button type="button" class="btn btn-primary btn-sm" @click="installVersion(version)" :disabled="transitioning || installing || isInstalled(detail.id) || isQueued(detail.id)" x-text="isInstalled(detail.id) ? 'Installed' : (isQueued(detail.id) ? 'Queued…' : 'Install')"></button>
+                                <button type="button" class="btn btn-primary btn-sm" @click="installVersion(version)" :disabled="transitioning || !installedLoaded || installing || isInstalled(detail.id) || isQueued(detail.id)" x-text="!installedLoaded ? 'Loading…' : (isInstalled(detail.id) ? 'Installed' : (isQueued(detail.id) ? 'Queued…' : 'Install'))"></button>
                             </div>
                         </template>
                     </div>
