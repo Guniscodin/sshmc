@@ -231,6 +231,46 @@ def list_profiles() -> List[Profile]:
         rows = conn.execute("SELECT * FROM profiles ORDER BY created_at DESC").fetchall()
         return [_profile_from_row(row) for row in rows]
 
+def list_profiles_with_states() -> List[tuple[Profile, RuntimeState]]:
+    """Profiles and their runtime states in one query.
+
+    Hot paths (HTMX-polled dashboard partials) use this instead of
+    list_profiles() + get_runtime_state() per profile.
+    """
+    with get_db() as conn:
+        rows = conn.execute("""
+            SELECT p.*,
+                   r.status AS _rs_status, r.pid AS _rs_pid,
+                   r.pid_create_time AS _rs_pid_create_time,
+                   r.started_at AS _rs_started_at, r.current_commit AS _rs_current_commit
+            FROM profiles p LEFT JOIN runtime_states r ON r.profile_id = p.id
+            ORDER BY p.created_at DESC
+        """).fetchall()
+    results = []
+    for row in rows:
+        data = dict(row)
+        rs_status = data.pop("_rs_status", None)
+        rs_pid = data.pop("_rs_pid", None)
+        rs_pid_create_time = data.pop("_rs_pid_create_time", None)
+        rs_started_at = data.pop("_rs_started_at", None)
+        rs_current_commit = data.pop("_rs_current_commit", None)
+        profile = _profile_from_row(data)  # _rs_* keys already popped
+        if rs_status is not None:
+            state = RuntimeState(
+                profile_id=profile.id,
+                status=ProfileStatus(rs_status),
+                pid=rs_pid,
+                pid_create_time=rs_pid_create_time,
+                started_at=rs_started_at,
+                current_commit=rs_current_commit,
+            )
+        else:
+            # Self-healed rows are recreated at init, so this is only a
+            # fallback for a profile created since then.
+            state = RuntimeState(profile_id=profile.id, status=ProfileStatus.STOPPED)
+        results.append((profile, state))
+    return results
+
 def delete_profile(profile_id: str) -> None:
     """Deletes a profile and its runtime state (via CASCADE)."""
     logger.warning(f"Deleting profile ID: {profile_id}")

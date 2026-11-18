@@ -271,6 +271,14 @@ def _make_archive(
         except (OSError, ValueError):
             pass
         raise
+    # Write a small sidecar manifest so future listings don't have to
+    # re-open the gzip stream. Best-effort: listing falls back to the archive.
+    try:
+        _sidecar_path(archive).write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except OSError:
+        logger.warning("Could not write backup manifest sidecar for %s", archive.name)
     info = archive.stat()
     return {"name": archive.name, "size_bytes": info.st_size, "manifest": manifest}
 
@@ -304,7 +312,30 @@ def create_change_backup(profile: Profile, cancel: threading.Event | None = None
     return create_manual_backup(profile, selection, "before-version-change", False, cancel)
 
 
+def _sidecar_path(archive: Path) -> Path:
+    """Path of the JSON sidecar manifest for a backup archive."""
+    return archive.with_name(archive.name + ".json")
+
+
+def _sidecar_manifest(path: Path) -> dict | None:
+    try:
+        raw = _sidecar_path(path).read_bytes()
+    except OSError:
+        return None
+    if len(raw) > 1024 * 1024:
+        return None
+    try:
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
 def _manifest_for(path: Path) -> dict | None:
+    sidecar = _sidecar_manifest(path)
+    if sidecar is not None:
+        return sidecar
+    manifest = None
     try:
         with tarfile.open(path, "r:gz") as archive:
             first_entry = archive.next()
@@ -317,9 +348,18 @@ def _manifest_for(path: Path) -> dict | None:
             if len(raw) > 1024 * 1024:
                 return None
             value = json.loads(raw.decode("utf-8"))
-            return value if isinstance(value, dict) else None
+            manifest = value if isinstance(value, dict) else None
     except (OSError, tarfile.TarError, json.JSONDecodeError, UnicodeDecodeError):
         return None
+    if manifest is not None:
+        # Backfill the sidecar so future listings skip the gzip re-open.
+        try:
+            _sidecar_path(path).write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except OSError:
+            pass
+    return manifest
 
 
 def list_backups(profile_id: str) -> dict:
@@ -366,7 +406,9 @@ def resolve_backup(profile_id: str, filename: str) -> Path:
 
 
 def delete_backup(profile_id: str, filename: str) -> None:
-    resolve_backup(profile_id, filename).unlink()
+    backup = resolve_backup(profile_id, filename)
+    backup.unlink()
+    _sidecar_path(backup).unlink(missing_ok=True)
 
 
 def delete_backup_storage(profile_id: str) -> None:

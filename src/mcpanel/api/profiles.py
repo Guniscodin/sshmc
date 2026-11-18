@@ -659,10 +659,9 @@ async def delete_profile(profile_id: str, delete_files: bool = False):
 @router.get("/partials/list")
 def get_profile_list_partial(request: Request):
     """Returns just the HTML for the profile list (used by HTMX polling)."""
-    all_profiles = db.list_profiles()
+    all_profiles = db.list_profiles_with_states()
     profile_data = []
-    for p in all_profiles:
-        state = db.get_runtime_state(p.id)
+    for p, state in all_profiles:
         profile_data.append({
             "profile": p, "state": state, "backups": backups.list_backups(p.id),
             "backup_state": backups.backup_state(p.id), "has_icon": _profile_has_icon(p.id),
@@ -677,12 +676,11 @@ def get_profile_list_partial(request: Request):
 @router.get("/stats")
 def get_dashboard_stats(request: Request):
     """Returns the HTML for the top stats bar."""
-    profiles = db.list_profiles()
-    states = [db.get_runtime_state(p.id) for p in profiles]
-    
-    total = len(profiles)
-    running = sum(1 for s in states if s and s.status == ProfileStatus.RUNNING)
-    ram = sum(p.ram_mb for p, s in zip(profiles, states) if s and s.status == ProfileStatus.RUNNING)
+    profile_states = db.list_profiles_with_states()
+
+    total = len(profile_states)
+    running = sum(1 for _, s in profile_states if s and s.status == ProfileStatus.RUNNING)
+    ram = sum(p.ram_mb for p, s in profile_states if s and s.status == ProfileStatus.RUNNING)
     
     html = f"""
     <div class="stat-card"><span class="stat-label">Total Servers</span><span class="stat-value">{total}</span></div>
