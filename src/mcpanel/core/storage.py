@@ -19,6 +19,11 @@ from mcpanel.config import (
 logger = logging.getLogger(__name__)
 SCAN_INTERVAL_SECONDS = 600
 WORLD_FOLDERS = ("world", "world_nether", "world_the_end")
+
+# Monitoring payload derived from the last storage scan: one shared walk,
+# two consumers.
+_sizes_snapshot: list[dict] = []
+_sizes_timestamp: str | None = None
 _snapshot: dict = {"scanned_at": None, "scanning": True, "total_bytes": 0, "profiles": [], "modpacks": [], "panel_logs": []}
 _refresh_event: asyncio.Event | None = None
 _scan_task: asyncio.Task | None = None
@@ -178,6 +183,23 @@ def _scan_storage() -> dict:
         entry["backups"].sort(key=lambda item: item["filename"], reverse=True)
     all_profiles = [*profiles.values(), *inventory.pop("orphan_profiles").values()]
     modpacks = sorted(inventory.pop("modpack_map").values(), key=lambda item: item["name"].casefold())
+
+    # Publish the monitoring-facing per-profile sizes; derived from this same
+    # walk so monitoring never needs its own scan.
+    scanned_at = datetime.now(timezone.utc).isoformat()
+    global _sizes_snapshot, _sizes_timestamp
+    _sizes_snapshot = [
+        {
+            "profile_id": entry["id"],
+            "server_bytes": entry["server_bytes"],
+            "world_bytes": entry["world_bytes"],
+            "world_folders": dict(entry["worlds"]),
+            "backups_bytes": entry["backups_bytes"],
+        }
+        for entry in profiles.values()
+    ]
+    _sizes_timestamp = scanned_at
+
     inventory["other_bytes"] = max(
         0,
         inventory["total_bytes"] - inventory["panel_logs_bytes"] - inventory["uploads_bytes"]
@@ -192,7 +214,7 @@ def _scan_storage() -> dict:
             {"name": name, "size_bytes": size}
             for name, size in sorted(inventory["other_items"].items(), key=lambda item: item[1], reverse=True)
         ],
-        "scanned_at": datetime.now(timezone.utc).isoformat(),
+        "scanned_at": scanned_at,
         "scanning": False,
         "external_backup_root": str(BACKUPS_ROOT) if external else None,
         "policies": {
@@ -248,6 +270,11 @@ async def stop_storage_monitoring():
 
 def get_storage_snapshot() -> dict:
     return _snapshot
+
+
+def profile_sizes_snapshot() -> tuple[list[dict], str | None]:
+    """Per-profile sizes derived from the last storage scan (shared with monitoring)."""
+    return ([dict(item) for item in _sizes_snapshot], _sizes_timestamp)
 
 
 def request_storage_scan():
