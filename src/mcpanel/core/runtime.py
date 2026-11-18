@@ -146,21 +146,23 @@ async def start_server(profile: Profile) -> RuntimeState:
     await asyncio.to_thread(housekeeping.prune_server_artifacts, profile.id)
 
     # 1. Auto-accept the Minecraft EULA
-    eula_path = server_dir / "eula.txt"
-    if not eula_path.exists():
-        logger.info("Generating eula.txt (eula=true)")
-        with open(eula_path, "w") as f:
-            f.write("eula=true\n")
-
     # 2. Generate server.properties (Fixes port and RCON issues)
-    _generate_server_properties(profile, server_dir)
-    _apply_server_icon(profile, server_dir)
+    def _prepare_server_files() -> None:
+        eula_path = server_dir / "eula.txt"
+        if not eula_path.exists():
+            logger.info("Generating eula.txt (eula=true)")
+            with open(eula_path, "w") as f:
+                f.write("eula=true\n")
+        _generate_server_properties(profile, server_dir)
+        _apply_server_icon(profile, server_dir)
+
+    await asyncio.to_thread(_prepare_server_files)
 
     # 3. Spawn the process
     logger.info(f"Starting server for profile '{profile.name}'...")
-    cmd = _build_java_command(profile, server_dir)
-    
-    process.prepare_server_log(log_path)
+    cmd = await asyncio.to_thread(_build_java_command, profile, server_dir)
+
+    await asyncio.to_thread(process.prepare_server_log, log_path)
     start_offset = log_path.stat().st_size if log_path.exists() else 0
     pid, create_time = await asyncio.to_thread(
         process.spawn_detached_process, cmd, server_dir, log_path
