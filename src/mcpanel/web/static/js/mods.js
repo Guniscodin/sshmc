@@ -18,6 +18,9 @@ window.modsApp = function modsApp(initialProfileId = '', initialProfileName = ''
         category: '',
         installedQuery: '',
         installedSource: 'all',
+        selectedForInstall: [],
+        bulkBusy: false,
+        planCache: {},
         transitioning: false,
         running: false,
         serverOnly: true,
@@ -123,6 +126,28 @@ window.modsApp = function modsApp(initialProfileId = '', initialProfileName = ''
         },
         isInstalled(projectId) { return this.installed.some(x => x.project_id === projectId); },
         isQueued(projectId) { return this.queuedProjects.includes(projectId) || this.jobs.some(job => job.profileId === this.profileId && this.jobStatuses[job.id]?.project_id === projectId && ['queued', 'downloading'].includes(this.jobStatuses[job.id]?.status)); },
+        planKey(projectId) { return `${this.profileId}:${projectId}`; },
+        async loadPlan(projectId) {
+            const key = this.planKey(projectId);
+            if (this.planCache[key] || !this.profileId) return;
+            try {
+                const response = await fetch(`/api/profiles/${this.profileId}/mods/${encodeURIComponent(projectId)}/plan`);
+                if (!response.ok) { this.planCache[key] = { compatible: false, reason: 'Preview unavailable.', required: [] }; return; }
+                this.planCache[key] = await response.json();
+            } catch (_) {
+                this.planCache[key] = { compatible: false, reason: 'Preview unavailable.', required: [] };
+            }
+        },
+        installPlanTooltip(projectId) {
+            const plan = this.planCache[this.planKey(projectId)];
+            if (!plan) return 'Loading dependency preview…';
+            if (!plan.compatible) return plan.reason || 'Cannot install on this profile.';
+            const count = (plan.required || []).length;
+            if (!count) return `No required dependencies · ${plan.version_name || ''}`.trim();
+            const titles = (plan.required || []).slice(0, 4).map(d => d.title).join(', ');
+            const more = plan.required.length > 4 ? ` +${plan.required.length - 4} more` : '';
+            return `Adds ${count} required dependencies (${titles}${more})`;
+        },
         sourceLabel(source) { return ({ git: 'Git', pack: 'Pack', modrinth: 'Modrinth', link: 'Link', manual: 'Manual' })[source] || 'Manual'; },
         get hasPendingRemovals() { return this.installed.some(m => m.pending_removal); },
         get installedCount() { return this.installed.filter(m => !m.missing_file).length; },
@@ -262,6 +287,131 @@ window.modsApp = function modsApp(initialProfileId = '', initialProfileName = ''
                 await this.loadInstalled();
                 this.notify(data.applies_on_next_restart ? 'Mod removal queued — it takes effect on the next Start or Restart.' : 'Mod removed.');
             } catch (error) { this.notify(error.message, true); }
+        },
+        toggleSelected(projectId) {
+            if (this.isInstalled(projectId) || this.isQueued(projectId)) return;
+            const index = this.selectedForInstall.indexOf(projectId);
+            if (index >= 0) this.selectedForInstall.splice(index, 1);
+            else this.selectedForInstall.push(projectId);
+        },
+        clearSelection() { this.selectedForInstall = []; },
+        async installSelected() {
+            if (this.bulkBusy || !this.selectedForInstall.length) return;
+            const ids = [...this.selectedForInstall];
+            this.bulkBusy = true;
+            try {
+                // 1. Gather a plan for every selected mod (no downloads yet)
+                const plans = [];
+                for (const id of ids) {
+                    try {
+                        const response = await fetch(`/api/profiles/${this.profileId}/mods/install`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ project_id: id }),
+                        });
+                        const data = await this.readJson(response, 'The install request returned an invalid response.');
+                        if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Install failed.');
+                        plans.push({ id, data });
+                    } catch (error) {
+                        this.notify(`${id}: ${error.message || 'Install failed.'}`, true);
+                    }
+                }
+                // 2. Drop unsupported plans (these need the single-mod flow for explicit approval)
+                const runnable = plans.filter(p => !p.data.unsupported_server);
+                if (plans.length && !runnable.length) {
+                    this.notify('All selected mods are marked server-incompatible by their authors and can only be installed individually.', true);
+                    return;
+                }
+                if (plans.length - runnable.length) {
+                    this.notify(`${plans.length - runnable.length} selected mod(s) were skipped: server-incompatible. Install them individually to confirm.`, true);
+                }
+                if (!runnable.length) return;
+                // 3. Aggregate dependency plan for the confirmation dialog
+                const depMap = new Map();
+                const satisfiedSet = new Map();
+                for (const plan of runnable) {
+                    for (const dep of plan.data.dependencies || []) depMap.set(dep.project_id, dep);
+                    if (plan.data.satisfied) for (const s of plan.data.satisfied) satisfiedSet.set(s.project_id, s);
+                }
+                for (const s of satisfiedSet.keys()) depMap.delete(s);
+                const depInstall = [...depMap.values()];
+                const depTotal = depInstall.reduce((sum, d) => sum + (Number(d.size_bytes) || 0), 0);
+                const notes = [];
+                if (runnable.some(p => p.data.running)) notes.push('This profile is running; installed mods take effect after restart.');
+                const skipList = [...satisfiedSet.values()];
+                const confirmed = await this.askConfirmation(
+                    `Install ${runnable.length} mods?`,
+                    'The following required dependencies will also be installed:',
+                    notes,
+                    'Install all',
+                    { install: depInstall, skip: skipList, totalBytes: depTotal }
+                );
+                if (!confirmed) return;
+                // 4. Confirm installs sequentially, collecting jobs
+                let jobsStarted = 0;
+                let jobsFailed = 0;
+                for (const plan of runnable) {
+                    try {
+                        const response = await fetch(`/api/profiles/${this.profileId}/mods/install`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ project_id: plan.id, confirm: true }),
+                        });
+                        const data = await this.readJson(response, 'The install request returned an invalid response.');
+                        if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Install failed.');
+                        if (data.job_id) {
+                            const job = { id: data.job_id, profileId: this.profileId };
+                            this.jobs.push(job);
+                            this.jobStatuses[data.job_id] = { status: 'queued', project_id: plan.id, profile_id: this.profileId, items: [] };
+                            this.pollJob(job.id, job.profileId);
+                            jobsStarted += 1;
+                        }
+                    } catch (error) {
+                        jobsFailed += 1;
+                        this.notify(`${plan.id}: ${error.message || 'Install failed.'}`, true);
+                    }
+                }
+                this.selectedForInstall = [];
+                const runningNote = this.profile && this.running ? ' It takes effect after the next restart.' : '';
+                if (jobsStarted) this.notify(`${jobsStarted} mod install(s) queued.${runningNote}`);
+                else if (jobsFailed) this.notify('No installs were queued; see the errors above.', true);
+            } finally {
+                this.bulkBusy = false;
+            }
+        },
+        async copyModList() {
+            const profile = this.profile;
+            const build = profile ? profile.build : 'unknown';
+            const header = [
+                `# ${profile ? profile.name : 'Mods'} (${build} ${profile ? profile.mc_version : ''})`,
+                `# ${this.installed.length} mods`,
+                '',
+            ];
+            const lines = this.installed.map(mod => {
+                const name = mod.name || mod.filename;
+                const version = mod.version_number || mod.version || 'unknown version';
+                const source = mod.source ? ` [${mod.source}]` : '';
+                return `- ${name} ${version}${source}`;
+            });
+            const text = [...header, ...lines].join('\n');
+            try {
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    await navigator.clipboard.writeText(text);
+                } else {
+                    const area = document.createElement('textarea');
+                    area.value = text;
+                    area.setAttribute('readonly', '');
+                    area.style.position = 'fixed';
+                    area.style.opacity = '0';
+                    document.body.appendChild(area);
+                    area.select();
+                    document.execCommand('copy');
+                    area.remove();
+                }
+                this.notify('Mod list copied to the clipboard.');
+            } catch (_) {
+                this.notify('Could not copy the mod list to the clipboard.', true);
+            }
         },
         formatSize(bytes) { if (!bytes) return '0 B'; const units = ['B', 'KiB', 'MiB', 'GiB']; let n = bytes, i = 0; while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; } return `${n.toFixed(1)} ${units[i]}`; },
         renderDescription(markdown = '') {

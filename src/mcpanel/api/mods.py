@@ -4,6 +4,7 @@ import logging
 import uuid
 from pathlib import Path
 from time import time
+from typing import Optional
 
 import httpx
 from fastapi import APIRouter, HTTPException
@@ -185,8 +186,52 @@ async def list_profile_mods(profile_id: str):
     }
 
 
+@router.get("/profiles/{profile_id}/mods/{project_id}/plan")
+async def install_plan(profile_id: str, project_id: str):
+    """Lightweight install preview for hovers: required dependency count and titles.
+
+    Does NOT resolve the dependency graph, hash files, or queue downloads —
+    the confirm dialog remains the authoritative plan before anything is installed.
+    """
+    prune_jobs()
+    profile = _profile(profile_id)
+    if profile.build.value == "vanilla":
+        return {"compatible": False, "reason": "Mods cannot be installed on a Vanilla profile.", "required": []}
+    state = db.get_runtime_state(profile_id)
+    if state and state.status in (ProfileStatus.STARTING, ProfileStatus.STOPPING):
+        return {"compatible": False, "reason": "Mod sources cannot be changed while the server is starting or stopping.", "required": []}
+    try:
+        candidates = await provider.versions(project_id, profile.mc_version, profile.build.value)
+        if not candidates:
+            return {"compatible": False, "reason": "No compatible version for this profile.", "required": []}
+        version = candidates[0]
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, "Could not load compatible versions.") from exc
+    required = [
+        {"project_id": d.get("project_id"), "version_id": d.get("version_id")}
+        for d in version.get("dependencies", []) if d.get("dependency_type") == "required"
+    ]
+    required_ids = [d["project_id"] for d in required if d["project_id"]]
+    titles: dict[str, str | None] = {}
+    try:
+        if required_ids:
+            titles = {item.get("id"): item.get("title") for item in await provider.projects(required_ids)}
+    except httpx.HTTPError as exc:
+        logger.warning("Could not fetch dependency titles for the preview: %s", exc)
+    return {
+        "compatible": True,
+        "version_name": version.get("name"),
+        "version_number": version.get("version_number"),
+        "required": [
+            {**d, "title": titles.get(d["project_id"]) or d["project_id"]}
+            for d in required
+        ],
+    }
+
+
 class InstallRequest(BaseModel):
-    version_id: str = Field(min_length=1, max_length=100)
+    version_id: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    project_id: Optional[str] = Field(default=None, min_length=1, max_length=100)
     confirm: bool = False
     skip_unsupported: bool = False
 
@@ -200,8 +245,18 @@ async def install_mod(profile_id: str, request: InstallRequest):
     state = db.get_runtime_state(profile_id)
     if state and state.status in (ProfileStatus.STARTING, ProfileStatus.STOPPING):
         raise HTTPException(409, "Mod sources cannot be changed while the server is starting or stopping.")
+    if not request.version_id and not request.project_id:
+        raise HTTPException(400, "Provide either a version_id or a project_id.")
     try:
-        version = await provider.version(request.version_id)
+        if request.version_id:
+            version = await provider.version(request.version_id)
+        else:
+            candidates = await provider.versions(request.project_id, profile.mc_version, profile.build.value)
+            if not candidates:
+                raise HTTPException(409, f"No compatible {profile.build.value} version is available for this mod.")
+            version = candidates[0]
+    except HTTPException:
+        raise
     except httpx.HTTPError as exc:
         raise HTTPException(502, "Could not load that Modrinth version.") from exc
     if profile.mc_version not in version.get("game_versions", []) or profile.build.value not in version.get("loaders", []):

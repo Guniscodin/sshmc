@@ -399,14 +399,75 @@
 }
 
 .mod-card {
+    position: relative;
     display: flex;
     gap: var(--space-3);
     background-color: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--radius);
     padding: var(--space-4);
+    padding-right: calc(var(--space-4) + 40px);
     cursor: pointer;
     transition: transform var(--transition-fast), border-color var(--transition-fast);
+}
+
+.mod-card-select {
+    position: absolute;
+    top: var(--space-2);
+    right: var(--space-2);
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: transparent;
+    cursor: pointer;
+    transition: background-color var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.mod-card-select:hover:not(:disabled) {
+    border-color: var(--primary);
+}
+
+.mod-card-select.is-selected {
+    background: var(--primary);
+    border-color: var(--primary);
+    color: #fff;
+}
+
+.mod-card-select:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+.bulk-install-bar {
+    position: sticky;
+    bottom: var(--space-3);
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+    max-width: 560px;
+    margin: var(--space-4) auto;
+    padding: var(--space-2) var(--space-3) var(--space-2) var(--space-4);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+}
+
+.bulk-install-count {
+    color: var(--text-secondary);
+    font-size: var(--font-sm);
+    white-space: nowrap;
+}
+
+.bulk-install-count strong {
+    color: var(--text-primary);
 }
 
 .mod-card:hover {

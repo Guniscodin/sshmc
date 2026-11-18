@@ -124,6 +124,14 @@
             <div class="mods-grid">
                 <template x-for="mod in results" :key="mod.project_id">
                     <article class="mod-card" @click="openProject(mod.project_id)">
+                        <button type="button" class="mod-card-select" :class="{ 'is-selected': selectedForInstall.includes(mod.project_id) }"
+                                @click.stop="toggleSelected(mod.project_id)"
+                                :aria-pressed="selectedForInstall.includes(mod.project_id).toString()"
+                                :aria-label="selectedForInstall.includes(mod.project_id) ? 'Deselect ' + mod.title : 'Select ' + mod.title + ' for bulk install'"
+                                :title="isInstalled(mod.project_id) ? 'Already installed' : (isQueued(mod.project_id) ? 'Queued' : 'Select for bulk install')"
+                                :disabled="isInstalled(mod.project_id) || isQueued(mod.project_id)">
+                            <i class="fa-solid fa-check"></i>
+                        </button>
                         <img class="mod-card-icon" :src="mod.icon_url || '/static/favicon.svg'" alt="" loading="lazy">
                         <div class="mod-card-content">
                             <h3 class="mod-card-title" x-text="mod.title"></h3>
@@ -131,7 +139,8 @@
                             <p class="mod-card-description" x-text="mod.description"></p>
                             <div class="mod-card-footer">
                                 <span class="text-xs text-muted capitalize" x-text="mod.server_side + ' server · ' + mod.client_side + ' client'"></span>
-                                <button type="button" class="btn btn-sm" :class="isInstalled(mod.project_id) ? 'btn-secondary' : 'btn-primary'" @click.stop="installProject(mod.project_id)" :disabled="transitioning || isInstalled(mod.project_id) || isQueued(mod.project_id)">
+                                <button type="button" class="btn btn-sm" :class="isInstalled(mod.project_id) ? 'btn-secondary' : 'btn-primary'" @click.stop="installProject(mod.project_id)" :disabled="transitioning || isInstalled(mod.project_id) || isQueued(mod.project_id)"
+                                        @pointerenter="loadPlan(mod.project_id)" :title="installPlanTooltip(mod.project_id)">
                                     <span x-text="isInstalled(mod.project_id) ? 'Installed' : (isQueued(mod.project_id) ? 'Queued…' : 'Install')"></span>
                                 </button>
                             </div>
@@ -144,6 +153,18 @@
                 <span x-show="!loading">Load more mods</span>
                 <span x-show="loading"><i class="fa-solid fa-spinner fa-spin"></i> Loading...</span>
             </button>
+
+            <!-- Bulk install bar (appears when cards are selected) -->
+            <div class="bulk-install-bar" x-show="selectedForInstall.length" x-cloak role="region" aria-label="Bulk install">
+                <span class="bulk-install-count"><strong x-text="selectedForInstall.length"></strong> selected</span>
+                <div class="flex gap-2">
+                    <button type="button" class="btn btn-ghost btn-sm" @click="clearSelection()">Clear</button>
+                    <button type="button" class="btn btn-primary btn-sm" @click="installSelected()" :disabled="bulkBusy">
+                        <i class="fa-solid fa-download"></i>
+                        <span x-text="bulkBusy ? 'Installing…' : 'Install selected'"></span>
+                    </button>
+                </div>
+            </div>
 
             <div class="empty-state" x-show="!loading && !results.length && !error">
                 <i class="fa-solid fa-cubes"></i>
@@ -186,6 +207,9 @@
                 <span class="form-hint self-center" x-show="installedQuery || installedSource !== 'all'" role="status">
                     Showing <span x-text="filteredInstalled.length"></span> of <span x-text="installed.length"></span>
                 </span>
+                <button type="button" class="btn btn-ghost btn-sm" @click="copyModList()" :disabled="!installed.length" title="Copy the installed mod list to the clipboard">
+                    <i class="fa-solid fa-clipboard"></i> Copy list
+                </button>
             </div>
 
             <div class="stack-sm">
