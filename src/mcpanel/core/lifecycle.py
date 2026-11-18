@@ -119,6 +119,11 @@ async def restart_profile(
     if should_wipe:
         _wipe_server_directory(profile)
     if version_change_pending:
+        # The backup_*_on_change flags are a one-shot selection consumed by the
+        # backup above, not persistent preferences. Resetting them to the
+        # worlds-only default here mirrors the edit modal, which also resets
+        # them every time it opens without a pending replacement. Without this
+        # reset, stale selections would silently apply to the next change.
         profile.backup_worlds_on_change = True
         profile.backup_mods_on_change = False
         profile.backup_config_on_change = False

@@ -109,7 +109,14 @@ def init_db() -> None:
         ):
             if column not in profile_columns:
                 cursor.execute(f"ALTER TABLE profiles ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0")
+        # Orphaned rows point at profiles that no longer exist; missing rows
+        # would make runtime-state updates silently no-op, so self-heal both.
         cursor.execute("DELETE FROM runtime_states WHERE profile_id NOT IN (SELECT id FROM profiles)")
+        cursor.execute("""
+            INSERT INTO runtime_states (profile_id, status)
+            SELECT id, 'stopped' FROM profiles
+            WHERE id NOT IN (SELECT profile_id FROM runtime_states)
+        """)
 
         # Resolve port collisions for stopped profiles created before automatic
         # port assignment existed. Keep active profiles' configured ports fixed.
@@ -248,17 +255,26 @@ def get_runtime_state(profile_id: str) -> Optional[RuntimeState]:
         return RuntimeState(**dict(row))
 
 def update_runtime_state(state: RuntimeState) -> None:
-    """Updates the runtime state (e.g., from stopped to running with a PID)."""
+    """Updates the runtime state (e.g., from stopped to running with a PID).
+
+    Upserts so a missing row (legacy DB, partial restore, manual deletion)
+    is recreated instead of silently dropping the update.
+    """
     logger.debug(f"Updating runtime state for {state.profile_id} -> {state.status.value}")
     with get_db() as conn:
         conn.execute("""
-            UPDATE runtime_states 
-            SET status = ?, pid = ?, pid_create_time = ?, started_at = ?, current_commit = ?
-            WHERE profile_id = ?
+            INSERT INTO runtime_states (profile_id, status, pid, pid_create_time, started_at, current_commit)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(profile_id) DO UPDATE SET
+                status = excluded.status,
+                pid = excluded.pid,
+                pid_create_time = excluded.pid_create_time,
+                started_at = excluded.started_at,
+                current_commit = excluded.current_commit
         """, (
-            state.status.value, state.pid, state.pid_create_time,
+            state.profile_id, state.status.value, state.pid, state.pid_create_time,
             state.started_at.isoformat() if state.started_at else None,
-            state.current_commit, state.profile_id
+            state.current_commit
         ))
 
 def claim_runtime_state(profile_id: str, expected: list[ProfileStatus], new_status: ProfileStatus) -> bool:

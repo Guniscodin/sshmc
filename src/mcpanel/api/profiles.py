@@ -845,7 +845,7 @@ async def upload_profile_icon(profile_id: str, icon: UploadFile = File(...)):
         raise HTTPException(status_code=404, detail="Profile not found")
     if backups.is_backup_running(profile_id):
         raise HTTPException(status_code=409, detail="Profile settings cannot be changed while a backup is running.")
-    data = await icon.read()
+    data = await icon.read(SERVER_ICON_MAX_BYTES + 1)
     if len(data) > SERVER_ICON_MAX_BYTES:
         raise HTTPException(status_code=422, detail="The server icon must be smaller than 256 KB.")
     _validate_server_icon(data)

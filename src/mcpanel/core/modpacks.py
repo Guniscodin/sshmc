@@ -137,8 +137,13 @@ def cleanup_temporary_data() -> None:
             except (OSError, ValueError):
                 continue
         elif upload.is_file() or upload.is_symlink():
+            # Only reap files old enough that no upload can still own them;
+            # in-flight ZIP/.part files are written before this function ever
+            # runs during normal operation, but stay defensive.
             try:
-                _ensure_in_data(upload).unlink(missing_ok=True)
+                age = datetime.now(timezone.utc).timestamp() - upload.stat().st_mtime
+                if age > UPLOAD_SESSION_MAX_AGE_SECONDS:
+                    _ensure_in_data(upload).unlink(missing_ok=True)
             except (OSError, ValueError):
                 logger.warning("Skipping unsafe temporary upload path %s", upload)
 
@@ -149,13 +154,20 @@ def cleanup_stale_upload_sessions() -> None:
         return
     now = datetime.now(timezone.utc).timestamp()
     for session in uploads.iterdir():
-        if not re.fullmatch(r"[0-9a-f]{32}", session.name) or session.is_symlink() or not session.is_dir():
+        try:
+            age = now - session.stat().st_mtime
+        except (OSError, ValueError):
             continue
         try:
-            if now - session.stat().st_mtime > UPLOAD_SESSION_MAX_AGE_SECONDS:
-                shutil.rmtree(_ensure_in_data(session))
+            if session.is_symlink() or session.is_file():
+                # Loose files: interrupted legacy ZIP uploads and .part files.
+                if age > UPLOAD_SESSION_MAX_AGE_SECONDS:
+                    _ensure_in_data(session).unlink(missing_ok=True)
+            elif re.fullmatch(r"[0-9a-f]{32}", session.name) and session.is_dir():
+                if age > UPLOAD_SESSION_MAX_AGE_SECONDS:
+                    shutil.rmtree(_ensure_in_data(session))
         except (OSError, ValueError):
-            logger.warning("Could not clean stale upload session %s", session.name)
+            logger.warning("Could not clean stale upload %s", session.name)
 
 
 async def upload_session_cleanup_loop() -> None:
