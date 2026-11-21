@@ -309,6 +309,11 @@
 .metric-bar-fill.amber-70-90 { background-color: var(--warning-text); }
 .metric-bar-fill.over-90 { background-color: var(--danger-text); }
 
+/* Threshold text colors (applied to current-val, core-pct, inline spans) */
+.under-70 { color: var(--success-text); }
+.amber-70-90 { color: var(--warning-text); }
+.over-90 { color: var(--danger-text); }
+
 /* Compact Per-Core CPU Grid */
 .core-grid {
     display: grid;
@@ -330,6 +335,25 @@
 .core-name { color: var(--text-muted); }
 .core-item .metric-bar-track { height: 5px; flex: 1; }
 .core-pct { font-weight: var(--fw-semibold); font-variant-numeric: tabular-nums; }
+
+/* Collapsible <details> for per-core section */
+.monitor-details > summary {
+    list-style: none;
+}
+.monitor-details > summary::-webkit-details-marker {
+    display: none;
+}
+.monitor-details-title {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+}
+.monitor-details > summary .fa-chevron-down {
+    transition: transform var(--transition-base);
+}
+.monitor-details[open] > summary .fa-chevron-down {
+    transform: rotate(180deg);
+}
 
 /* --- MODS PAGE --- */
 .mod-job-list {
@@ -779,6 +803,11 @@
     border-radius: var(--radius-sm);
 }
 
+/* Metric bars inside server cards need a lighter track so they're visible on the subtle bg */
+.monitor-server-card .metric-bar-track {
+    background-color: var(--surface);
+}
+
 /* Per-world stat cards inside each running server card. */
 .monitor-worlds {
     margin-top: var(--space-1);
@@ -786,8 +815,22 @@
     border-top: 1px solid var(--border-subtle);
 }
 
-.monitor-worlds h4 {
+.monitor-worlds-header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
     margin: 0 0 var(--space-2);
+    font-size: var(--font-xs);
+    font-weight: var(--fw-semibold);
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.monitor-worlds-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: var(--space-2);
 }
 
 .monitor-world-card {
@@ -798,10 +841,33 @@
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
+    transition: border-color var(--transition-fast), background-color var(--transition-fast);
 }
 
-.monitor-world-card .text-primary-color {
-    color: var(--primary);
+.monitor-world-card:hover {
+    border-color: var(--border-hover);
+    background-color: var(--surface-hover);
+}
+
+.monitor-world-name {
+    font-size: var(--font-xs);
+    font-weight: var(--fw-semibold);
+    color: var(--text-secondary);
+}
+
+.monitor-world-updated {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    margin-top: var(--space-1);
+    padding-top: var(--space-1);
+    border-top: 1px solid var(--border-subtle);
+}
+
+.monitor-worlds-hint {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    margin-top: var(--space-2);
+    margin-bottom: 0;
 }
 
 .monitor-server-grid {
