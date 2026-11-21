@@ -388,11 +388,12 @@ def test_gamerules_api(mock_profile, monkeypatch):
     assert resp.status_code == 200
     data = resp.json()
     assert data["server_running"] is False
-    assert len(data["rules"]) == 16
+    assert len(data["rules"]) == 17
     rule_map = {r["key"]: r for r in data["rules"]}
     assert rule_map["keepInventory"]["category"] == "player"
     assert rule_map["mobGriefing"]["category"] == "world"
     assert rule_map["doMobLoot"]["category"] == "drops"
+    assert rule_map["doMobSpawning"]["category"] == "world"
 
     # 2. PUT gamerules when server stopped -> 409
     resp = client.put(
@@ -418,15 +419,27 @@ def test_gamerules_api(mock_profile, monkeypatch):
     )
 
     # 3a. GET gamerules live via mock rcon.send_commands
+    # mc_version="1.20.4" -> legacy aliases first
     async def mock_send_commands(host, port, password, commands, timeout=5.0):
         responses = []
         for cmd in commands:
-            if "keepInventory" in cmd:
+            parts = cmd.split()
+            if len(parts) >= 2:
+                gname = parts[1]
+            else:
+                gname = cmd
+            if gname == "keepInventory":
                 responses.append("Gamerule keepInventory is currently set to: true")
-            elif "playersSleepingPercentage" in cmd:
+            elif gname == "keep_inventory":
+                responses.append("Gamerule keep_inventory is currently set to: true")
+            elif gname == "playersSleepingPercentage":
                 responses.append("Gamerule playersSleepingPercentage is currently set to: 50")
-            elif "mobGriefing" in cmd:
+            elif gname == "players_sleeping_percentage":
+                responses.append("Gamerule players_sleeping_percentage is currently set to: 50")
+            elif gname == "mobGriefing":
                 responses.append("Gamerule mobGriefing is currently set to: false")
+            elif gname == "mob_griefing":
+                responses.append("Gamerule mob_griefing is currently set to: false")
             else:
                 responses.append("Gamerule is currently set to: true")
         return responses
@@ -435,6 +448,8 @@ def test_gamerules_api(mock_profile, monkeypatch):
 
     resp = client.get(f"/api/profiles/{profile.id}/gamerules")
     assert resp.status_code == 200
+    body = resp.text
+    assert body, "Response body is empty"
     live_data = resp.json()
     assert live_data["server_running"] is True
     live_map = {r["key"]: r for r in live_data["rules"]}
@@ -445,7 +460,7 @@ def test_gamerules_api(mock_profile, monkeypatch):
     # 3b. PUT gamerules live via mock rcon.send_command
     sent_rcon = []
 
-    async def mock_send_command(host, port, password, command):
+    async def mock_send_command(host, port, password, command, timeout=5.0):
         sent_rcon.append(command)
         return "Gamerule updated"
 

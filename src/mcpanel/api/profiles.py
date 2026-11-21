@@ -239,34 +239,201 @@ def _has_control_chars(text: str) -> bool:
     return any(c in _CONTROL_CHARS for c in text)
 
 
-# Canonical gamerule name -> list of possible keys across Minecraft versions.
-# When reading or writing a gamerule, try each alias until one works.
-# Detect which one works by querying the server, not by guessing from version.
-GAME_RULE_ALIASES: dict[str, list[str]] = {
-    "keepInventory": ["keepInventory"],
-    "naturalRegeneration": ["naturalRegeneration"],
-    "playersSleepingPercentage": ["playersSleepingPercentage"],
-    "spawnRadius": ["spawnRadius"],
-    "showDeathMessages": ["showDeathMessages"],
-    "mobGriefing": ["mobGriefing"],
-    "doFireTick": ["doFireTick"],
-    "doDaylightCycle": ["doDaylightCycle"],
-    "doWeatherCycle": ["doWeatherCycle"],
-    "doPatrolSpawning": ["doPatrolSpawning"],
-    "doTraderSpawning": ["doTraderSpawning"],
-    "doInsomnia": ["doInsomnia"],
-    "doMobLoot": ["doMobLoot"],
-    "doTileDrops": ["doTileDrops"],
-    "doEntityDrops": ["doEntityDrops"],
-    # Renamed across versions: try each alias, detect which works via RCON.
-    "doMobSpawning": ["doMobSpawning", "doMonsterSpawning"],
-    "commandBlockEnabled": ["commandBlockEnabled", "commandBlocksEnabled"],
+# Canonical gamerule name -> spec with legacy/modern key mapping.
+# Minecraft snapshot 25w44a (1.21.11) renamed gamerules from camelCase to
+# snake_case (optionally namespaced as minecraft:<name>). The renames are NOT
+# mechanical — doFireTick has no modern equivalent, disableRaids→raids inverts
+# the value, and others change in non-obvious ways.
+#
+# Each spec includes:
+#   legacy_key:     the camelCase name used pre-1.21.11
+#   modern_keys:    list of possible snake_case names for 1.21.11+ (empty if none)
+#   invert:         whether the value is inverted between legacy and modern
+#   legacy_first:   for unconfirmed renames, try legacy first regardless of version
+#   unavailable_on_modern: no modern equivalent, hide on 1.21.11+
+GAMERULE_SPECS: dict[str, dict] = {
+    # Player & Death
+    "keepInventory": {
+        "category": "player", "type": "bool", "default": False,
+        "label": "Keep Inventory on Death",
+        "description": "Players retain items, weapons, armor, and XP in their inventory when they die.",
+        "legacy_key": "keepInventory",
+        "modern_keys": ["keep_inventory"],
+        "invert": False,
+    },
+    "naturalRegeneration": {
+        "category": "player", "type": "bool", "default": True,
+        "label": "Natural Health Regeneration",
+        "description": "Players naturally regenerate health when their hunger bar is sufficiently full.",
+        "legacy_key": "naturalRegeneration",
+        "modern_keys": ["natural_health_regeneration"],
+        "invert": False,
+    },
+    "playersSleepingPercentage": {
+        "category": "player", "type": "int", "default": 100, "min": 0, "max": 100,
+        "label": "Sleeping Percentage to Skip Night",
+        "description": "Percentage of online players in bed needed to skip the night (0 or 1 for single-player sleep).",
+        "legacy_key": "playersSleepingPercentage",
+        "modern_keys": ["players_sleeping_percentage"],
+        "invert": False,
+    },
+    "spawnRadius": {
+        "category": "player", "type": "int", "default": 10, "min": 0, "max": 100,
+        "label": "Spawn Radius around World Spawn",
+        "description": "Radius in blocks within which respawning players appear around world spawn (0 = exact block).",
+        "legacy_key": "spawnRadius",
+        "modern_keys": ["respawn_radius"],
+        "invert": False,
+    },
+    "showDeathMessages": {
+        "category": "player", "type": "bool", "default": True,
+        "label": "Show Death Messages in Chat",
+        "description": "Display death notifications in chat when a player dies or is slain.",
+        "legacy_key": "showDeathMessages",
+        "modern_keys": ["show_death_messages"],  # NOT CONFIRMED - try legacy first
+        "invert": False,
+        "legacy_first": True,
+    },
+    # World & Environment
+    "mobGriefing": {
+        "category": "world", "type": "bool", "default": True,
+        "label": "Mob Griefing (Creeper/Enderman Damage)",
+        "description": "Allow creepers, withers, ghasts, and endermen to destroy, explode, or pick up blocks in the world.",
+        "legacy_key": "mobGriefing",
+        "modern_keys": ["mob_griefing"],
+        "invert": False,
+    },
+    "doFireTick": {
+        "category": "world", "type": "bool", "default": True,
+        "label": "Fire Spread & Extinguish",
+        "description": "Allow fire to spread to nearby burnable blocks and extinguish over time. No modern equivalent — unavailable on 1.21.11+.",
+        "legacy_key": "doFireTick",
+        "modern_keys": [],  # No modern equivalent
+        "invert": False,
+        "unavailable_on_modern": True,
+    },
+    "doDaylightCycle": {
+        "category": "world", "type": "bool", "default": True,
+        "label": "Daylight Cycle (Sun & Moon Advance)",
+        "description": "Advance the time of day and cycle between day and night continuously.",
+        "legacy_key": "doDaylightCycle",
+        "modern_keys": ["advance_time"],
+        "invert": False,
+    },
+    "doWeatherCycle": {
+        "category": "world", "type": "bool", "default": True,
+        "label": "Weather Cycle (Rain & Thunder)",
+        "description": "Allow rain, snow, and thunderstorms to occur dynamically.",
+        "legacy_key": "doWeatherCycle",
+        "modern_keys": ["advance_weather"],  # NOT CONFIRMED - try legacy first
+        "invert": False,
+        "legacy_first": True,
+    },
+    "doPatrolSpawning": {
+        "category": "world", "type": "bool", "default": True,
+        "label": "Illager Patrol Spawning",
+        "description": "Spawn wandering illager raid patrols periodically in the world.",
+        "legacy_key": "doPatrolSpawning",
+        "modern_keys": ["spawn_patrols"],
+        "invert": False,
+    },
+    "doTraderSpawning": {
+        "category": "world", "type": "bool", "default": True,
+        "label": "Wandering Trader Spawning",
+        "description": "Spawn wandering traders with llamas near players.",
+        "legacy_key": "doTraderSpawning",
+        "modern_keys": ["spawn_wandering_traders"],
+        "invert": False,
+    },
+    "doInsomnia": {
+        "category": "world", "type": "bool", "default": True,
+        "label": "Phantom Spawning (Insomnia)",
+        "description": "Spawn flying phantoms who attack players that haven't slept in several days.",
+        "legacy_key": "doInsomnia",
+        "modern_keys": ["spawn_phantoms"],
+        "invert": False,
+    },
+    # Loot & Drops
+    "doMobLoot": {
+        "category": "drops", "type": "bool", "default": True,
+        "label": "Mob Item Drops",
+        "description": "Mobs drop loot items and equipment when killed.",
+        "legacy_key": "doMobLoot",
+        "modern_keys": ["mob_drops"],
+        "invert": False,
+    },
+    "doTileDrops": {
+        "category": "drops", "type": "bool", "default": True,
+        "label": "Block Item Drops",
+        "description": "Blocks drop items when broken or mined by players.",
+        "legacy_key": "doTileDrops",
+        "modern_keys": ["block_drops"],
+        "invert": False,
+    },
+    "doEntityDrops": {
+        "category": "drops", "type": "bool", "default": True,
+        "label": "Entity Item Drops",
+        "description": "Entities such as minecarts, boats, paintings, and item frames drop items when destroyed.",
+        "legacy_key": "doEntityDrops",
+        "modern_keys": ["entity_drops"],
+        "invert": False,
+    },
+    "doMobSpawning": {
+        "category": "world", "type": "bool", "default": True,
+        "label": "Mob Spawning",
+        "description": "Controls whether mobs can spawn naturally.",
+        "legacy_key": "doMobSpawning",
+        "modern_keys": ["spawn_mobs"],
+        "invert": False,
+    },
+    "disableRaids": {
+        "category": "world", "type": "bool", "default": True,
+        "label": "Disable Raids",
+        "description": "Controls whether illager raid patrols spawn. Value is inverted on modern versions (raids=true means raids enabled).",
+        "legacy_key": "disableRaids",
+        "modern_keys": ["raids"],
+        "invert": True,
+    },
 }
 
 
-def _gamerule_aliases(rule: str) -> list[str]:
-    """Return the alias list for a canonical gamerule name."""
-    return GAME_RULE_ALIASES.get(rule, [rule])
+def _parse_mc_version(version_str: str | None) -> tuple[int, ...]:
+    """Parse a Minecraft version string into a comparable tuple of ints."""
+    if not version_str:
+        return (0,)
+    parts: list[int] = []
+    for part in version_str.split("."):
+        try:
+            parts.append(int(part))
+        except ValueError:
+            parts.append(0)
+    return tuple(parts)
+
+
+def _is_modern_minecraft(mc_version: str | None) -> bool:
+    """Check if the Minecraft version is 1.21.11 or newer (snapshot 25w44a+),
+    when gamerules were renamed from camelCase to snake_case."""
+    return _parse_mc_version(mc_version) >= (1, 21, 11)
+
+
+def _gamerule_aliases(spec: dict, mc_version: str | None) -> list[str]:
+    """Return the ordered list of alias keys to try for a gamerule.
+
+    On modern versions (>= 1.21.11), try modern keys first.
+    On older versions, try legacy key first.
+    For rules with legacy_first=True, always try legacy first.
+    """
+    legacy_key = spec.get("legacy_key", "")
+    modern_keys = spec.get("modern_keys", [])
+    legacy_first = spec.get("legacy_first", False)
+
+    is_modern = _is_modern_minecraft(mc_version)
+
+    if legacy_first:
+        return [legacy_key] + [k for k in modern_keys if k != legacy_key]
+    if is_modern:
+        return [k for k in modern_keys if k != legacy_key] + [legacy_key]
+    return [legacy_key] + [k for k in modern_keys if k != legacy_key]
 
 
 def _validate_server_setting(key: str, spec: dict, value: str) -> str:
@@ -1173,79 +1340,6 @@ async def send_profile_broadcast(profile_id: str, payload: BroadcastPayload):
     }
 
 
-GAMERULE_SPECS: dict[str, dict] = {
-    # Player & Death
-    "keepInventory": {
-        "category": "player", "type": "bool", "default": False, "label": "Keep Inventory on Death",
-        "description": "Players retain items, weapons, armor, and XP in their inventory when they die.",
-    },
-    "naturalRegeneration": {
-        "category": "player", "type": "bool", "default": True, "label": "Natural Health Regeneration",
-        "description": "Players naturally regenerate health when their hunger bar is sufficiently full.",
-    },
-    "playersSleepingPercentage": {
-        "category": "player", "type": "int", "default": 100, "min": 0, "max": 100, "label": "Sleeping Percentage to Skip Night",
-        "description": "Percentage of online players in bed needed to skip the night (0 or 1 for single-player sleep).",
-    },
-    "spawnRadius": {
-        "category": "player", "type": "int", "default": 10, "min": 0, "max": 100, "label": "Spawn Radius around World Spawn",
-        "description": "Radius in blocks within which respawning players appear around world spawn (0 = exact block).",
-    },
-    "showDeathMessages": {
-        "category": "player", "type": "bool", "default": True, "label": "Show Death Messages in Chat",
-        "description": "Display death notifications in chat when a player dies or is slain.",
-    },
-
-    # World & Environment
-    "mobGriefing": {
-        "category": "world", "type": "bool", "default": True, "label": "Mob Griefing (Creeper/Enderman Damage)",
-        "description": "Allow creepers, withers, ghasts, and endermen to destroy, explode, or pick up blocks in the world.",
-    },
-    "doFireTick": {
-        "category": "world", "type": "bool", "default": True, "label": "Fire Spread & Extinguish",
-        "description": "Allow fire to spread to nearby burnable blocks and extinguish over time.",
-    },
-    "doDaylightCycle": {
-        "category": "world", "type": "bool", "default": True, "label": "Daylight Cycle (Sun & Moon Advance)",
-        "description": "Advance the time of day and cycle between day and night continuously.",
-    },
-    "doWeatherCycle": {
-        "category": "world", "type": "bool", "default": True, "label": "Weather Cycle (Rain & Thunder)",
-        "description": "Allow rain, snow, and thunderstorms to occur dynamically.",
-    },
-    "doPatrolSpawning": {
-        "category": "world", "type": "bool", "default": True, "label": "Illager Patrol Spawning",
-        "description": "Spawn wandering illager raid patrols periodically in the world.",
-    },
-    "doTraderSpawning": {
-        "category": "world", "type": "bool", "default": True, "label": "Wandering Trader Spawning",
-        "description": "Spawn wandering traders with llamas near players.",
-    },
-    "doInsomnia": {
-        "category": "world", "type": "bool", "default": True, "label": "Phantom Spawning (Insomnia)",
-        "description": "Spawn flying phantoms who attack players that haven't slept in several days.",
-    },
-
-    # Loot & Drops
-    "doMobLoot": {
-        "category": "drops", "type": "bool", "default": True, "label": "Mob Item Drops",
-        "description": "Mobs drop loot items and equipment when killed.",
-    },
-    "doTileDrops": {
-        "category": "drops", "type": "bool", "default": True, "label": "Block Item Drops",
-        "description": "Blocks drop items when broken or mined by players.",
-    },
-    "doEntityDrops": {
-        "category": "drops", "type": "bool", "default": True, "label": "Entity Item Drops",
-        "description": "Entities such as minecarts, boats, paintings, and item frames drop items when destroyed.",
-    },
-    "doMobSpawning": {
-        "category": "world", "type": "bool", "default": True, "label": "Mob Spawning",
-        "description": "Controls whether mobs can spawn naturally (renamed to doMonsterSpawning in newer versions).",
-    },
-}
-
-
 def _parse_gamerule_value(response: str, rule_type: str):
     m = re.search(r'(?:is currently set to:?\s*|[:=]\s*)(true|false|\d+)', response, re.IGNORECASE)
     if not m:
@@ -1262,6 +1356,23 @@ def _parse_gamerule_value(response: str, rule_type: str):
     return None
 
 
+# Per-profile cache of resolved gamerule alias keys: (profile_id, canonical_key) -> working_alias
+_gamerule_alias_cache: dict[tuple[str, str], str] = {}
+
+
+def _cached_alias_for_rule(profile_id: str, canonical: str, spec: dict, mc_version: str | None) -> str | None:
+    """Return a cached working alias for a gamerule, or resolve and cache it."""
+    cache_key = (profile_id, canonical)
+    if cache_key in _gamerule_alias_cache:
+        return _gamerule_alias_cache[cache_key]
+
+    for alias in _gamerule_aliases(spec, mc_version):
+        _gamerule_alias_cache[cache_key] = alias
+        return alias
+
+    return None
+
+
 @router.get("/{profile_id}/gamerules")
 async def get_profile_gamerules(profile_id: str):
     """Fetches in-game gamerules via RCON when the server is running."""
@@ -1274,6 +1385,7 @@ async def get_profile_gamerules(profile_id: str):
     rule_items = []
     if not server_running:
         for key, spec in GAMERULE_SPECS.items():
+            unavailable = spec.get("unavailable_on_modern", False) and _is_modern_minecraft(profile.mc_version)
             rule_items.append({
                 "key": key,
                 "label": spec["label"],
@@ -1284,7 +1396,7 @@ async def get_profile_gamerules(profile_id: str):
                 "value": spec["default"],
                 "min": spec.get("min"),
                 "max": spec.get("max"),
-                "available": False,
+                "available": not unavailable,
             })
         return {
             "profile_id": profile_id,
@@ -1293,14 +1405,19 @@ async def get_profile_gamerules(profile_id: str):
         }
 
     # Server is running -> query live gamerules via RCON batch.
-    # Resolve aliases: for each canonical gamerule, try each alias key.
-    # Detect which one works by querying the server, not by guessing version.
+    # Resolve aliases per rule based on version. Detect which alias works by
+    # querying the server, not by guessing from version.
     alias_commands: list[str] = []
-    alias_to_canonical: dict[str, str] = {}
-    for canonical, aliases in GAME_RULE_ALIASES.items():
+    cmd_to_canonical: dict[str, str] = {}
+    for canonical, spec in GAMERULE_SPECS.items():
+        # Skip rules unavailable on modern versions
+        if spec.get("unavailable_on_modern", False) and _is_modern_minecraft(profile.mc_version):
+            continue
+        aliases = _gamerule_aliases(spec, profile.mc_version)
         for alias in aliases:
-            alias_commands.append(f"gamerule {alias}")
-            alias_to_canonical[alias] = canonical
+            cmd = f"gamerule {alias}"
+            alias_commands.append(cmd)
+            cmd_to_canonical[cmd] = canonical
 
     try:
         responses = await rcon.send_commands(
@@ -1320,8 +1437,26 @@ async def get_profile_gamerules(profile_id: str):
     for canonical, spec in GAMERULE_SPECS.items():
         value = None
         available = False
-        for alias in GAME_RULE_ALIASES.get(canonical, [canonical]):
-            idx = cmd_to_index.get(f"gamerule {alias}")
+
+        # Rules unavailable on modern versions
+        if spec.get("unavailable_on_modern", False) and _is_modern_minecraft(profile.mc_version):
+            rule_items.append({
+                "key": canonical,
+                "label": spec["label"],
+                "category": spec["category"],
+                "description": spec["description"],
+                "type": spec["type"],
+                "default": spec["default"],
+                "value": spec["default"],
+                "min": spec.get("min"),
+                "max": spec.get("max"),
+                "available": False,
+            })
+            continue
+
+        for alias in _gamerule_aliases(spec, profile.mc_version):
+            cmd = f"gamerule {alias}"
+            idx = cmd_to_index.get(cmd)
             if idx is None:
                 continue
             resp = responses[idx]
@@ -1329,7 +1464,18 @@ async def get_profile_gamerules(profile_id: str):
             if parsed is not None:
                 value = parsed
                 available = True
+                # Cache the working alias for this profile + rule
+                _gamerule_alias_cache[(profile_id, canonical)] = alias
                 break
+
+        # Apply invert flag when reading
+        if available and spec.get("invert", False):
+            if spec["type"] == "bool":
+                value = not value
+            elif spec["type"] == "int":
+                int_value = value if isinstance(value, int) else 0
+                value = spec["max"] - int_value if spec.get("max") is not None else -int_value
+
         rule_items.append({
             "key": canonical,
             "label": spec["label"],
@@ -1356,7 +1502,12 @@ class GameruleUpdate(BaseModel):
 
 @router.put("/{profile_id}/gamerules/{rule}")
 async def update_profile_gamerule(profile_id: str, rule: str, payload: GameruleUpdate):
-    """Updates an in-game gamerule in real time over RCON without requiring a restart."""
+    """Updates an in-game gamerule in real time over RCON without requiring a restart.
+
+    Resolves the correct alias key for the server's version, applies the
+    invert flag when needed, and reads the value back after writing to confirm
+    it stuck.
+    """
     profile = db.get_profile(profile_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
@@ -1372,11 +1523,16 @@ async def update_profile_gamerule(profile_id: str, rule: str, payload: GameruleU
         raise HTTPException(status_code=404, detail=f"'{rule}' is not a recognized gamerule.")
 
     val_str = payload.value.strip()
+    typed_val: bool | int | str
     if spec["type"] == "bool":
         if val_str.lower() not in ("true", "false"):
             raise HTTPException(status_code=422, detail=f"Gamerule '{rule}' must be true or false.")
-        send_val = val_str.lower()
-        typed_val = send_val == "true"
+        typed_val = val_str.lower() == "true"
+        # Apply invert flag when sending: disableRaids=true means raids=false
+        if spec.get("invert", False):
+            send_val = "true" if not typed_val else "false"
+        else:
+            send_val = val_str.lower()
     elif spec["type"] == "int":
         try:
             num = int(val_str)
@@ -1387,16 +1543,20 @@ async def update_profile_gamerule(profile_id: str, rule: str, payload: GameruleU
                 status_code=422,
                 detail=f"Gamerule '{rule}' must be between {spec['min']} and {spec['max']}.",
             )
-        send_val = str(num)
-        typed_val = num  # type: ignore[assignment]
+        typed_val = num
+        if spec.get("invert", False) and spec.get("max") is not None:
+            send_val = str(spec["max"] - num)
+        else:
+            send_val = str(num)
     else:
         send_val = val_str
-        typed_val = val_str  # type: ignore[assignment]
+        typed_val = val_str
 
-    # Try each alias until one is accepted by the server. Detect success by
-    # checking the response does not indicate an unknown gamerule.
-    aliases = GAME_RULE_ALIASES.get(rule, [rule])
+    # Resolve aliases for this rule based on version
+    aliases = _gamerule_aliases(spec, profile.mc_version)
     last_response = ""
+    accepted_alias: str | None = None
+
     for alias in aliases:
         try:
             response = await rcon.send_command(
@@ -1409,25 +1569,79 @@ async def update_profile_gamerule(profile_id: str, rule: str, payload: GameruleU
             # Minecraft responds with the gamerule name when successful;
             # unknown gamerules produce "Unknown gamerule" or similar.
             if "unknown gamerule" not in response.lower() and "does not exist" not in response.lower():
-                logger.info(
-                    "Updated live gamerule '%s' (alias '%s') to '%s' on profile '%s'",
-                    rule, alias, send_val, profile.name,
-                )
-                return {
-                    "success": True,
-                    "rule": rule,
-                    "applied_alias": alias,
-                    "value": typed_val,
-                    "response": response,
-                }
+                accepted_alias = alias
+                break
         except rcon.RCONError as exc:
             logger.warning("RCON error setting gamerule %s via alias %s on %s: %s", rule, alias, profile.name, exc)
             last_response = str(exc)
 
-    # No alias was accepted by the server.
-    raise HTTPException(
-        status_code=502,
-        detail=f"Could not apply gamerule '{rule}' to server. Last response: {last_response}",
+    if accepted_alias is None:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not apply gamerule '{rule}' to server. Last response: {last_response}",
+        )
+
+    # Read back the value using each alias to confirm it stuck.
+    # Try all aliases because the server may have renamed the gamerule
+    # internally and only responds to a specific name.
+    read_back_value = None
+    read_back_alias: str | None = None
+    for alias in aliases:
+        try:
+            read_response = await rcon.send_command(
+                "127.0.0.1",
+                profile.rcon_port,
+                profile.rcon_password,
+                f"gamerule {alias}",
+                timeout=5.0,
+            )
+            read_parsed = _parse_gamerule_value(read_response, spec["type"])
+            if read_parsed is not None:
+                # Apply invert flag when reading back
+                if spec.get("invert", False):
+                    if spec["type"] == "bool":
+                        read_parsed = not read_parsed
+                    elif spec["type"] == "int" and spec.get("max") is not None:
+                        read_parsed = spec["max"] - read_parsed
+                if read_parsed == typed_val:
+                    read_back_value = read_parsed
+                    read_back_alias = alias
+                    break
+        except rcon.RCONError as exc:
+            logger.warning("RCON error reading back gamerule %s via alias %s on %s: %s", rule, alias, profile.name, exc)
+
+    if read_back_value is None:
+        # The command may have been accepted but we couldn't verify it stuck.
+        # Still report success if the set command was accepted, but flag it.
+        logger.warning(
+            "Gamerule '%s' set via alias '%s' but read-back verification failed",
+            rule, accepted_alias,
+        )
+        return {
+            "success": True,
+            "rule": rule,
+            "applied_alias": accepted_alias,
+            "value": typed_val,
+            "response": last_response,
+            "read_back_verified": False,
+        }
+
+    # Cache the working alias for this profile + rule
+    if read_back_alias is not None:
+        _gamerule_alias_cache[(profile_id, rule)] = read_back_alias
+
+    logger.info(
+        "Updated live gamerule '%s' (alias '%s', read-back '%s') to '%s' on profile '%s'",
+        rule, accepted_alias, read_back_alias, send_val, profile.name,
     )
+    return {
+        "success": True,
+        "rule": rule,
+        "applied_alias": accepted_alias,
+        "read_back_alias": read_back_alias,
+        "value": typed_val,
+        "response": last_response,
+        "read_back_verified": True,
+    }
 
 
