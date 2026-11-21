@@ -13,6 +13,7 @@ window.serverSettingsApp = function serverSettingsApp() {
         error: '',
         dirty: false,
         settingsToken: 0,
+        originalValues: {},
         searchQuery: '',
         broadcastMessage: '',
         broadcastPrefix: '[Server]',
@@ -205,6 +206,8 @@ window.serverSettingsApp = function serverSettingsApp() {
                 else value = String(value ?? '');
                 return { ...field, value };
             });
+            // Snapshot original values so saveSettings only sends changed fields.
+            this.originalValues = Object.fromEntries(this.fields.map(f => [f.key, f.value]));
         },
 
         clearPendingIcon() {
@@ -322,6 +325,11 @@ window.serverSettingsApp = function serverSettingsApp() {
             if (!this.profileId || this.saving) return;
             const properties = {};
             for (const field of this.fields) {
+                // Only send fields the user actually changed. This prevents
+                // stale or invalid values (e.g. an empty level-type carried
+                // over from saved_settings) from breaking an otherwise valid
+                // save of a different setting like view-distance.
+                if (field.value === this.originalValues[field.key]) continue;
                 if (field.type === 'bool') properties[field.key] = field.value ? 'true' : 'false';
                 else if (field.type === 'int') properties[field.key] = String(parseInt(field.value, 10));
                 else properties[field.key] = String(field.value ?? '').trim();
@@ -337,6 +345,9 @@ window.serverSettingsApp = function serverSettingsApp() {
                 const data = await this.readJson(response, 'Could not save server settings.');
                 if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Could not save server settings.');
                 this.dirty = false;
+                // Refresh the snapshot so subsequent saves only send newly
+                // changed fields rather than re-sending everything just saved.
+                this.originalValues = Object.fromEntries(this.fields.map(f => [f.key, f.value]));
                 this.serverRunning = !!data.applies_after_restart;
                 showToast(
                     data.applies_after_restart
