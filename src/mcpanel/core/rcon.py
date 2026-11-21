@@ -176,16 +176,20 @@ async def send_commands(
         if auth_id != 1 or auth_type != SERVERDATA_EXECCOMMAND:
             raise RCONError("Unexpected RCON authentication response.")
 
-        # 2. Sequential Execution Phase
-        responses = []
+        # 2. Sequential Execution Phase — per-command failures are captured
+        # individually so one slow/failed query doesn't invalidate the whole batch.
+        responses: list[str] = []
         for idx, command in enumerate(commands):
             req_id = idx + 2
             cmd_packet = _pack_packet(req_id=req_id, req_type=SERVERDATA_EXECCOMMAND, payload=command)
-            writer.write(cmd_packet)
-            await writer.drain()
-
-            _, _, response = await asyncio.wait_for(_read_packet(reader), timeout=timeout)
-            responses.append(response)
+            try:
+                writer.write(cmd_packet)
+                await writer.drain()
+                _, _, response = await asyncio.wait_for(_read_packet(reader), timeout=timeout)
+                responses.append(response)
+            except (asyncio.TimeoutError, RCONError) as exc:
+                logger.warning("RCON command %r failed: %s", command, exc)
+                responses.append("")
 
         return responses
     except asyncio.TimeoutError as e:

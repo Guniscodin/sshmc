@@ -1,14 +1,14 @@
-import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+import pytest
 
 from mcpanel.api.profiles import (
-    router,
     SERVER_SETTING_SPECS,
     _validate_server_setting,
+    router,
 )
 from mcpanel.core import server_properties
-from mcpanel.models import Profile, BuildType
+from mcpanel.models import BuildType, Profile
 
 
 def test_validate_server_setting_world_options():
@@ -170,7 +170,6 @@ def mock_profile(tmp_path, monkeypatch):
         rcon_password="secretpassword",
     )
 
-    from mcpanel import db
     from mcpanel.api import profiles
     monkeypatch.setattr(profiles.mod_storage, "profile_root", lambda pid: profile_dir)
     monkeypatch.setattr(profiles.db, "get_profile", lambda pid: profile if pid == profile_id else None)
@@ -271,9 +270,9 @@ def test_get_and_update_server_settings_api(mock_profile):
 
 def test_send_profile_broadcast(mock_profile, monkeypatch):
     from fastapi import FastAPI
-    from mcpanel.models import RuntimeState, ProfileStatus
+
     from mcpanel.api import profiles
-    from mcpanel.core import rcon
+    from mcpanel.models import ProfileStatus, RuntimeState
 
     app = FastAPI()
     app.include_router(router)
@@ -374,9 +373,9 @@ def test_send_profile_broadcast(mock_profile, monkeypatch):
 
 def test_gamerules_api(mock_profile, monkeypatch):
     from fastapi import FastAPI
-    from mcpanel.models import RuntimeState, ProfileStatus
+
     from mcpanel.api import profiles
-    from mcpanel.core import rcon
+    from mcpanel.models import ProfileStatus, RuntimeState
 
     app = FastAPI()
     app.include_router(router)
@@ -491,4 +490,204 @@ def test_gamerules_api(mock_profile, monkeypatch):
         json={"value": "200"},
     )
     assert resp.status_code == 422
+
+
+# ========================================================================
+# _parse_gamerule_value unit tests — realistic Minecraft RCON responses
+# ========================================================================
+def test_parse_gamerule_value_int_formats():
+    from mcpanel.api.profiles import _parse_gamerule_value
+
+    spec_int = {"type": "int", "min": 0, "max": 100}
+
+    # Vanilla "name is set to: value"
+    assert _parse_gamerule_value("playersSleepingPercentage is set to: 1", "int") == 1
+    assert _parse_gamerule_value("playersSleepingPercentage is set to: 100", "int") == 100
+    assert _parse_gamerule_value("playersSleepingPercentage is set to: 0", "int") == 0
+
+    # Vanilla "name = value"
+    assert _parse_gamerule_value("playersSleepingPercentage = 1", "int") == 1
+    assert _parse_gamerule_value("playersSleepingPercentage = 50", "int") == 50
+
+    # Bare value only
+    assert _parse_gamerule_value("1", "int") == 1
+    assert _parse_gamerule_value("100", "int") == 100
+
+    # "Gamerule name is currently set to: value" (used in existing tests)
+    assert _parse_gamerule_value("Gamerule playersSleepingPercentage is currently set to: 25", "int") == 25
+
+    # Response with extra text after value
+    assert _parse_gamerule_value("playersSleepingPercentage is set to: 1 (players in bed)", "int") == 1
+
+    # Zero is valid
+    assert _parse_gamerule_value("playersSleepingPercentage is set to: 0", "int") == 0
+
+
+def test_parse_gamerule_value_bool_formats():
+    from mcpanel.api.profiles import _parse_gamerule_value
+
+    # Bool responses
+    assert _parse_gamerule_value("keepInventory is set to: true", "bool") is True
+    assert _parse_gamerule_value("keepInventory is set to: false", "bool") is False
+    assert _parse_gamerule_value("keepInventory = true", "bool") is True
+    assert _parse_gamerule_value("true", "bool") is True
+    assert _parse_gamerule_value("false", "bool") is False
+    assert _parse_gamerule_value("Gamerule keepInventory is currently set to: false", "bool") is False
+
+
+def test_parse_gamerule_value_fallback_to_default():
+    from mcpanel.api.profiles import _parse_gamerule_value
+
+    # Unparseable responses return None (caller falls back to spec default)
+    assert _parse_gamerule_value("", "int") is None
+    assert _parse_gamerule_value("Unknown gamerule", "int") is None
+    assert _parse_gamerule_value("Command failed", "int") is None
+    assert _parse_gamerule_value("", "bool") is None
+
+
+# ========================================================================
+# Integration: full gamerule set + get pipeline (simulates refresh)
+# ========================================================================
+def test_gamerule_set_then_get_returns_updated_value(mock_profile, monkeypatch):
+    """Simulates: set gamerule, then refresh page (GET gamerules) — value must persist."""
+    from fastapi import FastAPI
+
+    from mcpanel.api import profiles
+    from mcpanel.core import rcon
+    from mcpanel.models import ProfileStatus, RuntimeState
+
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    profile, _ = mock_profile
+
+    # Simulate running server
+    monkeypatch.setattr(
+        profiles.db,
+        "get_runtime_state",
+        lambda pid: RuntimeState(
+            profile_id=pid,
+            status=ProfileStatus.RUNNING,
+            pid=99999,
+            started_at=None,
+            stopped_at=None,
+            crash_count=0,
+            last_exit_code=None,
+        ),
+    )
+
+    # Track the "in-memory" gamerule state on the mock server
+    server_state = {"playersSleepingPercentage": 100, "keepInventory": True}
+
+    # Mock send_command (SET) — updates server_state
+    async def mock_send_command(host, port, password, command, timeout=5.0):
+        parts = command.split()
+        if parts[0] == "gamerule" and len(parts) == 3:
+            rule_name = parts[1]
+            rule_val = parts[2]
+            if rule_name in server_state:
+                if isinstance(server_state[rule_name], bool):
+                    server_state[rule_name] = rule_val.lower() == "true"
+                else:
+                    server_state[rule_name] = int(rule_val)
+            return f"Gamerule {rule_name} is now {rule_val}"
+        raise rcon.RCONError(f"Unknown command: {command}")
+
+    # Mock send_commands (GET) — queries server_state
+    async def mock_send_commands(host, port, password, commands, timeout=5.0):
+        responses = []
+        for cmd in commands:
+            parts = cmd.split()
+            if parts[0] == "gamerule" and len(parts) == 2:
+                rule_name = parts[1]
+                if rule_name in server_state:
+                    val = server_state[rule_name]
+                    responses.append(f"{rule_name} is set to: {val}")
+                else:
+                    responses.append("Unknown gamerule")
+            else:
+                responses.append("Unknown command")
+        return responses
+
+    monkeypatch.setattr(profiles.rcon, "send_command", mock_send_command)
+    monkeypatch.setattr(profiles.rcon, "send_commands", mock_send_commands)
+
+    # Initial GET — should show default 100
+    resp = client.get(f"/api/profiles/{profile.id}/gamerules")
+    assert resp.status_code == 200
+    rules = {r["key"]: r for r in resp.json()["rules"]}
+    assert rules["playersSleepingPercentage"]["value"] == 100
+
+    # PUT — set sleeping percentage to 1
+    resp = client.put(
+        f"/api/profiles/{profile.id}/gamerules/playersSleepingPercentage",
+        json={"value": "1"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["value"] == 1
+
+    # GET again (simulates page refresh) — value must still be 1
+    resp = client.get(f"/api/profiles/{profile.id}/gamerules")
+    assert resp.status_code == 200
+    rules = {r["key"]: r for r in resp.json()["rules"]}
+    assert rules["playersSleepingPercentage"]["value"] == 1, (
+        f"Expected playersSleepingPercentage=1 after refresh, got {rules['playersSleepingPercentage']['value']}"
+    )
+
+
+# ========================================================================
+# send_commands resilience: one failing query must not invalidate the batch
+# ========================================================================
+def test_send_commands_per_command_failure_resilience(mock_profile, monkeypatch):
+    """One slow/failed RCON query in a batch must not invalidate other commands."""
+    from fastapi import FastAPI
+
+    from mcpanel.api import profiles
+    from mcpanel.models import ProfileStatus, RuntimeState
+
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    profile, _ = mock_profile
+
+    monkeypatch.setattr(
+        profiles.db,
+        "get_runtime_state",
+        lambda pid: RuntimeState(
+            profile_id=pid,
+            status=ProfileStatus.RUNNING,
+            pid=99999,
+            started_at=None,
+            stopped_at=None,
+            crash_count=0,
+            last_exit_code=None,
+        ),
+    )
+
+    # One command returns empty (simulating timeout caught by send_commands), others succeed
+    async def mock_send_commands_partial(host, port, password, commands, timeout=5.0):
+        responses = []
+        for cmd in commands:
+            if "doMobLoot" in cmd:
+                responses.append("")  # simulated timeout -> empty response
+            elif "playersSleepingPercentage" in cmd:
+                responses.append("playersSleepingPercentage is set to: 1")
+            else:
+                responses.append("OK")
+        return responses
+
+    monkeypatch.setattr(profiles.rcon, "send_commands", mock_send_commands_partial)
+
+    resp = client.get(f"/api/profiles/{profile.id}/gamerules")
+    assert resp.status_code == 200
+    rules = {r["key"]: r for r in resp.json()["rules"]}
+
+    # doMobLoot fell back to default (True) because its query timed out
+    assert rules["doMobLoot"]["value"] is True
+    # playersSleepingPercentage was NOT affected by the sibling failure
+    assert rules["playersSleepingPercentage"]["value"] == 1
+
+
 
