@@ -179,7 +179,7 @@ def same_origin(origin: str | None, host: str | None) -> bool:
 
 class PanelAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        if request.url.path in {"/login", "/auth/login"} or request.url.path.startswith("/static/"):
+        if request.url.path in {"/login", "/auth/login", "/api/health"} or request.url.path.startswith("/static/"):
             return await call_next(request)
         if not credentials_configured():
             return JSONResponse(

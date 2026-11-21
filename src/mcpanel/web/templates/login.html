@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign in &middot; SSHMC</title>
+    <link rel="icon" type="image/svg+xml" href="{{ static_url('favicon.svg') }}">
+    <link rel="stylesheet" href="{{ static_url('vendor/fontawesome/css/all.min.css') }}">
+    <link rel="stylesheet" href="{{ static_url('css/tokens.css') }}">
+    <link rel="stylesheet" href="{{ static_url('css/layout.css') }}">
+    <link rel="stylesheet" href="{{ static_url('css/components.css') }}">
+    <link rel="stylesheet" href="{{ static_url('css/pages.css') }}">
+</head>
+<body class="login-page">
+    <div class="login-bg">
+        <div class="login-blob login-blob-1"></div>
+        <div class="login-blob login-blob-2"></div>
+        <div class="login-blob login-blob-3"></div>
+        <div class="login-vignette"></div>
+    </div>
+
+    <main class="login-shell">
+        <div class="login-card">
+            <div class="login-brand">
+                <div class="login-mark">
+                    <i class="fa-solid fa-server"></i>
+                </div>
+                <div class="login-identity">
+                    <h1 class="login-title">SSHMC</h1>
+                    <p class="login-subtitle">Minecraft Server Panel</p>
+                </div>
+            </div>
+
+            <h2 class="login-heading">Sign in to your panel</h2>
+            <p class="login-hint">Enter the panel password you created on first launch.</p>
+
+            {% if error %}
+            <div class="login-alert login-alert-error">
+                <i class="fa-solid fa-circle-exclamation"></i>
+                {{ error }}
+            </div>
+            {% endif %}
+
+            <form method="post" action="/auth/login" class="login-form">
+                <div class="form-group">
+                    <label for="password">Panel password</label>
+                    <input id="password" name="password" type="password" autocomplete="current-password" required autofocus placeholder="&hellip;">
+                </div>
+                <button type="submit" class="btn btn-primary btn-lg">Sign in</button>
+            </form>
+
+            <footer class="login-footer">
+                <span class="login-credit">&mdash; A project by <strong>gunornot</strong> &mdash;</span>
+            </footer>
+        </div>
+    </main>
+</body>
+</html>

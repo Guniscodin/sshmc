@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mcpanel"
+name = "sshmc"
 version = "0.1.0"
-description = "Minecraft Server Panel"
+description = "SSHMC Panel - local web panel for Minecraft server profiles"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi",
@@ -20,5 +20,41 @@ dependencies = [
     "websockets",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.8",
+    "mypy>=1.11",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "httpx",
+    "types-psutil",
+    "types-aiofiles",
+]
+
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src"]
+lint.select = ["E", "F", "I", "B", "S", "BLE", "C4", "UP", "DTZ", "TRY", "G", "ANN", "ARG", "RET", "N"]
+lint.ignore = ["E501", "B008", "S101", "S105", "S106", "S107", "S113", "S603", "S607", "S608"]
+lint.isort.force-sort-within-sections = true
+lint.isort.known-first-party = ["mcpanel"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_ignores = true
+ignore_missing_imports = true
+follow_imports = "normal"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]

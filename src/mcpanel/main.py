@@ -189,23 +189,17 @@ app = FastAPI(title="SSHMC Panel", lifespan=lifespan)
 app.add_middleware(PanelAuthMiddleware)
 
 @app.get("/login", response_class=HTMLResponse)
-async def login_page():
+async def login_page(request: Request):
     if not credentials_configured():
         return HTMLResponse(
             "<h1>SSHMC password is not configured</h1><p>Stop the panel and start it from an interactive terminal to set a local password.</p>",
             status_code=503,
         )
-    return HTMLResponse(f"""
-        <!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>Sign in · SSHMC</title><link rel="icon" type="image/svg+xml" href="{static_url('favicon.svg')}"><link rel="stylesheet" href="{static_url('css/style.css')}">
-        <body style="display:grid;place-items:center;overflow:auto;height:100vh">
-          <form method="post" action="/auth/login" style="width:min(420px,92vw);padding:2rem;background:var(--surface);border:1px solid var(--border);border-radius:12px">
-            <h1>Sign in to SSHMC</h1>
-            <label for="password">Panel password</label><input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
-            <button type="submit" style="width:100%;margin-top:1rem">Sign in</button>
-          </form>
-        </body></html>
-    """)
+    return templates.TemplateResponse(
+        request=request,
+        name="login.html",
+        context={},
+    )
 
 @app.post("/auth/login")
 async def login(request: Request, password: str = Form(...)):
@@ -215,8 +209,10 @@ async def login(request: Request, password: str = Form(...)):
     if origin and not same_origin(origin, request.headers.get("host")):
         return HTMLResponse("Cross-origin login denied.", status_code=403)
     if not valid_login(password):
-        return HTMLResponse(
-            "<p>Incorrect password.</p><p><a href='/login'>Try again</a></p>",
+        return templates.TemplateResponse(
+            request=request,
+            name="login.html",
+            context={"error": "Incorrect password. Try again."},
             status_code=401,
         )
     response = RedirectResponse("/", status_code=303)
@@ -237,6 +233,12 @@ async def logout():
     response = RedirectResponse("/login", status_code=303)
     response.delete_cookie(SESSION_COOKIE, path="/")
     return response
+
+
+@app.get("/api/health")
+async def health() -> dict[str, str]:
+    """Unauthenticated health check for load balancers and monitoring."""
+    return {"status": "ok"}
 
 
 @app.post("/api/panel/shutdown")
