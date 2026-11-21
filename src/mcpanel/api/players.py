@@ -18,16 +18,16 @@ router = APIRouter(prefix="/api/profiles/{profile_id}/players", tags=["players"]
 
 
 class PlayerName(BaseModel):
-    name: str = Field(min_length=1, max_length=32)
+    name: str = Field(min_length=3, max_length=16)
 
 
 class WhitelistSettings(BaseModel):
     enabled: bool | None = None
-    name: str | None = Field(default=None, min_length=1, max_length=32)
+    name: str | None = Field(default=None, min_length=3, max_length=16)
 
 
 class OperatorCreate(PlayerName):
-    level: int = Field(default=4, ge=1, le=4)
+    level: int = Field(ge=1, le=4)
 
 
 class OperatorUpdate(BaseModel):

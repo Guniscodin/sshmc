@@ -80,7 +80,9 @@ def _generate_server_properties(profile: Profile, server_dir: Path) -> None:
         "enable-rcon": "true",
         "rcon.port": str(profile.rcon_port),
         "rcon.password": profile.rcon_password,
-        "motd": motd_value
+        "motd": motd_value,
+        "white-list": "true",
+        "enforce-whitelist": "true",
     })
 
     server_properties.write_properties(props_path, properties)

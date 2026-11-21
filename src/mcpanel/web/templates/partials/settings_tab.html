@@ -35,6 +35,10 @@
     </div>
 
     <div x-show="profileId && profile" class="stack-md">
+        <div class="form-hint callout-box" role="alert" x-show="onlineMode === false">
+            <i class="fa-solid fa-triangle-exclamation text-destructive"></i>
+            <span><strong>Offline mode is on.</strong> Anyone can join using any player\'s name, so name-based whitelist and operator entries can be impersonated. Turn on Online Mode below to require Mojang-verified accounts.</span>
+        </div>
         <!-- SERVER IDENTITY: icon + description -->
         <div class="card identity-card" x-show="!loading">
             <h3 class="identity-heading"><i class="fa-solid fa-fingerprint text-primary-color"></i> Server Identity</h3>

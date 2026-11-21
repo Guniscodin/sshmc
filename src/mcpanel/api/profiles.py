@@ -78,8 +78,8 @@ SERVER_SETTING_SPECS: dict[str, dict] = {
         "description": "Generate structures like villages, dungeons, temples, and strongholds in new chunks.",
     },
     "max-world-size": {
-        "type": "int", "default": "29999984", "min": 1, "max": 29999984, "category": "world", "label": "World Border Radius",
-        "description": "Maximum radius in blocks for the world border (1 to 29,999,984). Default is 29,999,984.",
+        "type": "int", "default": "29999984", "min": 1, "max": 29999984, "category": "world", "label": "World Border Max Radius",
+        "description": "Caps the maximum radius the world border can expand to. Does not set the border itself — use /worldborder set in-game to set the current border (1 to 29,999,984). Default is 29,999,984.",
     },
     "allow-nether": {
         "type": "bool", "default": "true", "category": "world", "label": "Allow Nether",
@@ -820,6 +820,26 @@ def get_profile_server_settings(profile_id: str):
             "max": spec.get("max"),
             "placeholder": spec.get("placeholder", ""),
         })
+    # Include any dynamic keys from the actual server.properties that aren't
+    # in the curated spec, so settings added by mods or other loaders are
+    # visible and editable for any version/build.
+    known = set(SERVER_SETTING_SPECS) | set(MANAGED_SERVER_PROPERTIES)
+    for key in sorted(values):
+        if key not in known:
+            text = str(values[key])
+            field_type = "bool" if text.lower() in ("true", "false") else "int" if text.lstrip("-").isdigit() else "text"
+            fields.append({
+                "key": key,
+                "category": "custom",
+                "label": key,
+                "description": "Setting read from server.properties (not part of the curated spec).",
+                "type": field_type,
+                "value": text,
+                "options": None,
+                "min": None,
+                "max": None,
+                "placeholder": "",
+            })
     return {
         "profile_id": profile_id,
         "profile_name": profile.name,
@@ -845,9 +865,18 @@ async def update_profile_server_settings(profile_id: str, payload: ServerSetting
     updates: dict[str, str] = {}
     for key, value in payload.properties.items():
         spec = SERVER_SETTING_SPECS.get(key)
-        if spec is None:
-            raise HTTPException(status_code=422, detail=f"'{key}' is not an editable server setting.")
-        updates[key] = _validate_server_setting(key, spec, value)
+        if spec is not None:
+            updates[key] = _validate_server_setting(key, spec, value)
+        else:
+            # Dynamic key: not in the curated spec, but accept it so settings
+            # added by mods or other loaders work for any version/build.
+            text = (value or "").strip()
+            if text.lower() in ("true", "false"):
+                updates[key] = text.lower()
+            elif text.lstrip("-").isdigit():
+                updates[key] = str(int(text))
+            else:
+                updates[key] = text
 
     # Persist the saved settings so they survive a wiped or not-yet-installed
     # server folder; the panel re-applies them whenever it writes server.properties.

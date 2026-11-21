@@ -22,7 +22,7 @@ window.playersApp = function playersApp() {
         error: '',
         whitelistName: '',
         opName: '',
-        opLevel: 4,
+        opLevel: null,
         editingWhitelist: null,
         whitelistEditName: '',
         editingOperator: null,
@@ -203,8 +203,8 @@ window.playersApp = function playersApp() {
         validName(name) {
             const text = (name || '').trim();
             if (!text) return false;
-            if (!/^[A-Za-z0-9_.+*-]{1,32}$/.test(text)) {
-                const message = 'Player names may only contain letters, numbers, ".", "_", "+", "*" and "-" (up to 32 characters).';
+            if (!/^[A-Za-z0-9_]{3,16}$/.test(text)) {
+                const message = 'Player names may only contain letters, numbers and underscore (3-16 characters).';
                 this.error = message;
                 showToast(message, 'error');
                 return false;
@@ -339,10 +339,33 @@ window.playersApp = function playersApp() {
         async addOperator() {
             const name = this.opName.trim();
             if (!this.validName(name)) return;
-            const level = Number(this.opLevel) || 4;
+            const level = Number(this.opLevel);
+            if (!level || level < 1 || level > 4) {
+                const message = 'Choose an operator level before adding.';
+                this.error = message;
+                showToast(message, 'error');
+                return;
+            }
+            // Require explicit confirmation for high levels, and always when
+            // the server is offline (name-based ops can be impersonated).
+            let needsConfirm = level >= 3 || !this.state.online_mode;
+            if (needsConfirm) {
+                const confirmed = await window.sshmcConfirm({
+                    title: 'Add operator at level ' + level + '?',
+                    message: level >= 4
+                        ? 'Level 4 operators can run every server command, including /stop and /reload.'
+                        : level === 3
+                        ? 'Level 3 operators can manage other players (/kick, /ban, /op, /deop).'
+                        : 'This server is in offline mode. Anyone can join using this player\'s name, so ops can be impersonated.',
+                    confirmLabel: 'Add operator',
+                    danger: level >= 4,
+                });
+                if (!confirmed) return;
+            }
             await this.mutate(async () => {
                 await this.send('POST', this.basePath('/ops'), { name, level });
                 this.opName = '';
+                this.opLevel = null;
             }, `${name} is now an operator (level ${level}).`);
         },
 

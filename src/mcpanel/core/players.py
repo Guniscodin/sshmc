@@ -25,9 +25,9 @@ from mcpanel.models import Profile, ProfileStatus
 
 logger = logging.getLogger(__name__)
 
-# Java usernames are up to 16 chars; Geyser prefixes add a character or two.
+# Java usernames are 3-16 chars: letters, digits, underscore only.
 # Spaces are excluded because the name is interpolated into an RCON command.
-PLAYER_NAME_RE = re.compile(r"^[A-Za-z0-9_.+*-]{1,32}\Z")
+PLAYER_NAME_RE = re.compile(r"^[A-Za-z0-9_]{3,16}\Z")
 OP_LEVEL_MIN, OP_LEVEL_MAX = 1, 4
 MAX_PLAYER_FILE_BYTES = 2 * 1024 * 1024
 WHITELIST_FILE = "whitelist.json"
@@ -47,14 +47,16 @@ def parse_name(name: str) -> str:
     if not PLAYER_NAME_RE.fullmatch(text):
         raise HTTPException(
             status_code=422,
-            detail="Player names may only contain letters, numbers, '.', '_', '+', '*' and '-' (up to 32 characters).",
+            detail="Player names may only contain letters, numbers and underscore (3-16 characters).",
         )
     return text
 
 
 def parse_level(level: int | None) -> int:
+    if level is None:
+        raise HTTPException(status_code=422, detail="Operator level must be a whole number from 1 to 4.")
     try:
-        value = int(level if level is not None else 4)
+        value = int(level)
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail="Operator level must be a whole number from 1 to 4.") from exc
     if not OP_LEVEL_MIN <= value <= OP_LEVEL_MAX:

@@ -28,6 +28,7 @@ window.serverSettingsApp = function serverSettingsApp() {
         gameruleCategory: 'all',
         gameruleSearch: '',
         gamerulesLoaded: false,
+        onlineMode: true,
 
         categories: [
             {
@@ -206,6 +207,7 @@ window.serverSettingsApp = function serverSettingsApp() {
                 else value = String(value ?? '');
                 return { ...field, value };
             });
+            this.onlineMode = this.fields.some(f => f.key === 'online-mode' && (f.value === true || f.value === 'true'));
             // Snapshot original values so saveSettings only sends changed fields.
             this.originalValues = Object.fromEntries(this.fields.map(f => [f.key, f.value]));
         },
@@ -333,6 +335,25 @@ window.serverSettingsApp = function serverSettingsApp() {
                 if (field.type === 'bool') properties[field.key] = field.value ? 'true' : 'false';
                 else if (field.type === 'int') properties[field.key] = String(parseInt(field.value, 10));
                 else properties[field.key] = String(field.value ?? '').trim();
+            }
+            if (!properties || Object.keys(properties).length === 0) {
+                showToast('No changes to save.', 'info');
+                return;
+            }
+            // Warn before flipping online-mode: existing whitelist/ops entries
+            // use UUIDs that match the old mode and may go stale.
+            const onlineMode = properties['online-mode'];
+            if (onlineMode !== undefined && onlineMode !== String(this.onlineMode === true)) {
+                const goingOffline = onlineMode === 'false';
+                const confirmed = await window.sshmcConfirm({
+                    title: 'Change Online Mode?',
+                    message: goingOffline
+                        ? 'Switching to offline mode means anyone can join using any player\'s name. Existing whitelist and operator entries keep their current UUIDs, which may not match offline-mode UUIDs. Review the Players page after the next restart.'
+                        : 'Switching to online mode requires Mojang-verified accounts. Existing offline-mode UUIDs will not match Mojang UUIDs — remove and re-add whitelisted players and operators after the next restart.',
+                    confirmLabel: goingOffline ? 'Switch to offline mode' : 'Switch to online mode',
+                    danger: true,
+                });
+                if (!confirmed) return;
             }
             this.saving = true;
             try {
