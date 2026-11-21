@@ -99,34 +99,72 @@
 
         <div x-show="loading" class="form-hint"><i class="fa-solid fa-spinner fa-spin"></i> Loading server settings…</div>
 
-        <div class="grid-2" x-show="!loading && fields.length">
-            <template x-for="field in fields" :key="field.key">
-                <div class="form-group">
-                    <template x-if="field.type === 'bool'">
-                        <label class="checkbox-item" :for="'ss-' + field.key">
-                            <input type="checkbox" :id="'ss-' + field.key" x-model="field.value" @change="dirty = true">
-                            <span x-text="field.label"></span>
-                        </label>
-                    </template>
-                    <template x-if="field.type !== 'bool'">
-                        <label :for="'ss-' + field.key" x-text="field.label"></label>
-                    </template>
+        <!-- Settings Search / Filter -->
+        <div class="settings-search-row" x-show="!loading && fields.length">
+            <div class="settings-search-input">
+                <input type="search" x-model="searchQuery"
+                       placeholder="Filter settings by name, property key, or description…"
+                       aria-label="Filter settings">
+            </div>
+            <span class="form-hint m-0 self-center" x-show="searchQuery">
+                <span x-text="matchingCount()"></span> matching setting<span x-text="matchingCount() === 1 ? '' : 's'"></span>
+            </span>
+        </div>
 
-                    <template x-if="field.type === 'choice'">
-                        <select :id="'ss-' + field.key" x-model="field.value" @change="dirty = true">
-                            <template x-for="option in field.options" :key="option">
-                                <option :value="option" x-text="option" :selected="option === field.value"></option>
-                            </template>
-                        </select>
-                    </template>
-
-                    <template x-if="field.type === 'int'">
-                        <input type="number" :id="'ss-' + field.key" x-model.number="field.value" :min="field.min" :max="field.max" @input="dirty = true">
-                    </template>
-
-                    <p class="form-hint" x-text="field.description"></p>
+        <!-- Grouped Category Cards -->
+        <template x-for="cat in categories" :key="cat.id">
+            <div class="card settings-section-card" x-show="!loading && categoryVisible(cat.id)">
+                <div class="settings-section-header">
+                    <h3 class="m-0">
+                        <i class="fa-solid text-primary-color" :class="cat.icon"></i>
+                        <span x-text="cat.label"></span>
+                    </h3>
+                    <p class="form-hint m-0" x-text="cat.description"></p>
                 </div>
-            </template>
+                <div class="grid-2 mt-4">
+                    <template x-for="field in fieldsByCategory(cat.id)" :key="field.key">
+                        <div class="form-group mb-0">
+                            <template x-if="field.type === 'bool'">
+                                <label class="checkbox-item" :for="'ss-' + field.key">
+                                    <input type="checkbox" :id="'ss-' + field.key" x-model="field.value" @change="dirty = true">
+                                    <span x-text="field.label"></span>
+                                </label>
+                            </template>
+                            <template x-if="field.type !== 'bool'">
+                                <label :for="'ss-' + field.key" x-text="field.label"></label>
+                            </template>
+
+                            <template x-if="field.type === 'choice'">
+                                <select :id="'ss-' + field.key" x-model="field.value" @change="dirty = true">
+                                    <template x-for="option in field.options" :key="option">
+                                        <option :value="option" x-text="option" :selected="option === field.value"></option>
+                                    </template>
+                                </select>
+                            </template>
+
+                            <template x-if="field.type === 'int'">
+                                <input type="number" :id="'ss-' + field.key" x-model.number="field.value" :min="field.min" :max="field.max" @input="dirty = true">
+                            </template>
+
+                            <template x-if="field.type === 'text'">
+                                <input type="text" :id="'ss-' + field.key" x-model="field.value" :placeholder="field.placeholder || ''" @input="dirty = true" autocomplete="off" spellcheck="false">
+                            </template>
+
+                            <p class="form-hint" x-text="field.description"></p>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </template>
+
+        <!-- No search matches -->
+        <div class="card empty-state" x-show="!loading && fields.length && searchQuery && matchingCount() === 0">
+            <i class="fa-solid fa-filter-circle-xmark empty-state-hero-icon text-muted"></i>
+            <h3 class="mt-2">No matching settings</h3>
+            <p class="text-muted">No settings matched "<span x-text="searchQuery"></span>".</p>
+            <button type="button" class="btn btn-ghost btn-sm mt-2" @click="searchQuery = ''">
+                Clear filter
+            </button>
         </div>
 
         <div class="form-hint" x-show="!loading && fields.length">

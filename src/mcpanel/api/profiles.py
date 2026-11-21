@@ -2,6 +2,7 @@ import asyncio
 from contextlib import AsyncExitStack
 import logging
 import os
+import re
 import shutil
 import json
 import struct
@@ -52,79 +53,115 @@ def _parse_mod_downloads(raw: str) -> list[dict]:
 # Editable server.properties keys. The panel always manages the keys in
 # MANAGED_SERVER_PROPERTIES itself; they cannot be changed here.
 SERVER_SETTING_SPECS: dict[str, dict] = {
-    "online-mode": {
-        "type": "bool", "default": "true", "label": "Online Mode",
-        "description": "Verify players against Mojang's session servers. Turn off to allow offline-mode clients.",
+    # World & Generation
+    "level-name": {
+        "type": "text", "default": "world", "category": "world", "label": "World Folder Name",
+        "description": "Name of the world save directory. Change this to switch between different worlds on disk.",
+        "pattern": r"^[A-Za-z0-9_.-]+$",
+        "pattern_error": "World name may only contain letters, numbers, '.', '_' and '-'.",
+        "max_length": 64,
+        "placeholder": "world",
     },
-    "enforce-secure-profile": {
-        "type": "bool", "default": "true", "label": "Enforce Secure Profiles",
-        "description": "Require signed player chat and profiles. Keep off for offline-mode servers.",
+    "level-seed": {
+        "type": "text", "default": "", "category": "world", "allow_empty": True, "label": "World Seed",
+        "description": "Seed used to generate a new world. Leave empty for a random seed.",
+        "max_length": 128,
+        "placeholder": "e.g. -123456789 or custom text",
     },
+    "level-type": {
+        "type": "choice", "default": "minecraft:normal", "category": "world", "label": "World Preset Type",
+        "options": ["minecraft:normal", "minecraft:flat", "minecraft:large_biomes", "minecraft:amplified", "minecraft:single_biome_surface"],
+        "description": "World generator preset. Only affects newly generated worlds.",
+    },
+    "generate-structures": {
+        "type": "bool", "default": "true", "category": "world", "label": "Generate Structures",
+        "description": "Generate structures like villages, dungeons, temples, and strongholds in new chunks.",
+    },
+    "max-world-size": {
+        "type": "int", "default": "29999984", "min": 1, "max": 29999984, "category": "world", "label": "World Border Radius",
+        "description": "Maximum radius in blocks for the world border (1 to 29,999,984). Default is 29,999,984.",
+    },
+    "allow-nether": {
+        "type": "bool", "default": "true", "category": "world", "label": "Allow Nether",
+        "description": "Let players travel to the Nether dimension through portals.",
+    },
+
+    # Gameplay & Rules
     "difficulty": {
-        "type": "choice", "default": "easy", "label": "Difficulty",
+        "type": "choice", "default": "easy", "category": "gameplay", "label": "Difficulty",
         "options": ["peaceful", "easy", "normal", "hard"],
         "description": "Server difficulty applied to loaded worlds.",
     },
     "gamemode": {
-        "type": "choice", "default": "survival", "label": "Default Game Mode",
+        "type": "choice", "default": "survival", "category": "gameplay", "label": "Default Game Mode",
         "options": ["survival", "creative", "adventure", "spectator"],
-        "description": "Game mode for new players.",
+        "description": "Game mode for new players joining the server.",
     },
     "force-gamemode": {
-        "type": "bool", "default": "false", "label": "Force Game Mode",
-        "description": "Put joining players back into the default game mode.",
+        "type": "bool", "default": "false", "category": "gameplay", "label": "Force Game Mode",
+        "description": "Put joining players back into the default game mode even if they changed it.",
     },
     "hardcore": {
-        "type": "bool", "default": "false", "label": "Hardcore",
-        "description": "Spectator mode on death instead of respawn. Only affects new worlds.",
+        "type": "bool", "default": "false", "category": "gameplay", "label": "Hardcore",
+        "description": "Locks difficulty to hard and puts players into spectator mode on death.",
     },
     "pvp": {
-        "type": "bool", "default": "true", "label": "PvP",
-        "description": "Allow players to fight each other.",
+        "type": "bool", "default": "true", "category": "gameplay", "label": "PvP",
+        "description": "Allow players to attack and deal damage to each other.",
     },
     "allow-flight": {
-        "type": "bool", "default": "false", "label": "Allow Flight",
-        "description": "Permit flying without false movement kicks (useful for some modded clients).",
-    },
-    "allow-nether": {
-        "type": "bool", "default": "true", "label": "Allow Nether",
-        "description": "Let players travel to the Nether.",
+        "type": "bool", "default": "false", "category": "gameplay", "label": "Allow Flight",
+        "description": "Permit flying in survival without false-positive kicks (useful for flight mods).",
     },
     "enable-command-block": {
-        "type": "bool", "default": "false", "label": "Command Blocks",
-        "description": "Enable command blocks in loaded worlds.",
+        "type": "bool", "default": "false", "category": "gameplay", "label": "Command Blocks",
+        "description": "Enable execution of command blocks in loaded worlds.",
     },
+
+    # Mobs & Spawning
     "spawn-monsters": {
-        "type": "bool", "default": "true", "label": "Spawn Monsters",
-        "description": "Spawn hostile mobs.",
+        "type": "bool", "default": "true", "category": "spawns", "label": "Spawn Monsters",
+        "description": "Spawn hostile mobs (creepers, zombies, skeletons, etc.).",
     },
     "spawn-animals": {
-        "type": "bool", "default": "true", "label": "Spawn Animals",
-        "description": "Spawn passive animals.",
+        "type": "bool", "default": "true", "category": "spawns", "label": "Spawn Animals",
+        "description": "Spawn passive animals (cows, pigs, sheep, etc.).",
     },
     "spawn-npcs": {
-        "type": "bool", "default": "true", "label": "Spawn Villagers",
-        "description": "Spawn villagers (NPCs).",
-    },
-    "max-players": {
-        "type": "int", "default": "20", "min": 1, "max": 100000, "label": "Max Players",
-        "description": "Maximum number of players connected at the same time.",
-    },
-    "view-distance": {
-        "type": "int", "default": "10", "min": 3, "max": 32, "label": "View Distance",
-        "description": "Chunks sent to each player. Lower values reduce load.",
-    },
-    "simulation-distance": {
-        "type": "int", "default": "10", "min": 5, "max": 32, "label": "Simulation Distance",
-        "description": "Chunks that tick entities and blocks. Lower values reduce load.",
+        "type": "bool", "default": "true", "category": "spawns", "label": "Spawn Villagers",
+        "description": "Spawn villagers (NPCs) in villages and structures.",
     },
     "spawn-protection": {
-        "type": "int", "default": "16", "min": 0, "max": 256, "label": "Spawn Protection Radius",
-        "description": "Blocks around world spawn only operators may edit. 0 disables protection.",
+        "type": "int", "default": "16", "min": 0, "max": 256, "category": "spawns", "label": "Spawn Protection Radius",
+        "description": "Radius in blocks around world spawn only operators may edit. 0 disables protection.",
+    },
+
+    # Multiplayer & Access
+    "online-mode": {
+        "type": "bool", "default": "true", "category": "multiplayer", "label": "Online Mode",
+        "description": "Verify players against Mojang's session servers. Turn off to allow offline-mode clients.",
+    },
+    "enforce-secure-profile": {
+        "type": "bool", "default": "true", "category": "multiplayer", "label": "Enforce Secure Profiles",
+        "description": "Require signed player chat and profiles. Keep off for offline-mode servers.",
+    },
+    "max-players": {
+        "type": "int", "default": "20", "min": 1, "max": 100000, "category": "multiplayer", "label": "Max Players",
+        "description": "Maximum number of players connected at the same time.",
     },
     "op-permission-level": {
-        "type": "int", "default": "4", "min": 0, "max": 4, "label": "OP Permission Level",
-        "description": "Default permission level granted to operators.",
+        "type": "int", "default": "4", "min": 0, "max": 4, "category": "multiplayer", "label": "OP Permission Level",
+        "description": "Default permission level granted to operators (1 = spawn protection, 4 = full admin).",
+    },
+
+    # Performance & View
+    "view-distance": {
+        "type": "int", "default": "10", "min": 3, "max": 32, "category": "performance", "label": "View Distance",
+        "description": "Chunks sent to each player. Lower values significantly reduce network and RAM load.",
+    },
+    "simulation-distance": {
+        "type": "int", "default": "10", "min": 5, "max": 32, "category": "performance", "label": "Simulation Distance",
+        "description": "Chunks that tick entities and blocks around players. Lower values reduce CPU load.",
     },
 }
 
@@ -133,6 +170,15 @@ MANAGED_SERVER_PROPERTIES = {"server-port", "enable-rcon", "rcon.port", "rcon.pa
 
 def _validate_server_setting(key: str, spec: dict, value: str) -> str:
     text = (value or "").strip()
+    if spec["type"] == "text":
+        if not text and not spec.get("allow_empty", False):
+            raise HTTPException(status_code=422, detail=f"'{key}' cannot be empty.")
+        if spec.get("pattern") and text:
+            if not re.fullmatch(spec["pattern"], text):
+                raise HTTPException(status_code=422, detail=spec.get("pattern_error", f"'{key}' format is invalid."))
+        if spec.get("max_length") and len(text) > spec["max_length"]:
+            raise HTTPException(status_code=422, detail=f"'{key}' cannot be longer than {spec['max_length']} characters.")
+        return text
     if not text:
         raise HTTPException(status_code=422, detail=f"'{key}' cannot be empty.")
     if spec["type"] == "bool":
@@ -718,6 +764,7 @@ def get_profile_server_settings(profile_id: str):
     for key, spec in SERVER_SETTING_SPECS.items():
         fields.append({
             "key": key,
+            "category": spec.get("category", "gameplay"),
             "label": spec["label"],
             "description": spec.get("description", ""),
             "type": spec["type"],
@@ -725,6 +772,7 @@ def get_profile_server_settings(profile_id: str):
             "options": spec.get("options"),
             "min": spec.get("min"),
             "max": spec.get("max"),
+            "placeholder": spec.get("placeholder", ""),
         })
     return {
         "profile_id": profile_id,

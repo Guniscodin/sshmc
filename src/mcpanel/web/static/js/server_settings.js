@@ -13,6 +13,67 @@ window.serverSettingsApp = function serverSettingsApp() {
         error: '',
         dirty: false,
         settingsToken: 0,
+        searchQuery: '',
+
+        categories: [
+            {
+                id: 'world',
+                label: 'World & Generation',
+                icon: 'fa-earth-americas',
+                description: 'World directory, seed, generator preset, world border, and Nether travel.'
+            },
+            {
+                id: 'gameplay',
+                label: 'Gameplay & Rules',
+                icon: 'fa-gamepad',
+                description: 'Difficulty, default game mode, PvP, hardcore, flight, and command blocks.'
+            },
+            {
+                id: 'spawns',
+                label: 'Mobs & Spawning',
+                icon: 'fa-paw',
+                description: 'Hostile monsters, passive animals, villagers, and spawn protection.'
+            },
+            {
+                id: 'multiplayer',
+                label: 'Multiplayer & Access',
+                icon: 'fa-users',
+                description: 'Online mode, signed chat profiles, max players, and operator level.'
+            },
+            {
+                id: 'performance',
+                label: 'Performance & View',
+                icon: 'fa-gauge-high',
+                description: 'Chunk rendering distance and entity simulation distance.'
+            }
+        ],
+
+        fieldsByCategory(catId) {
+            const query = (this.searchQuery || '').trim().toLowerCase();
+            return this.fields.filter(f => {
+                if ((f.category || 'gameplay') !== catId) return false;
+                if (!query) return true;
+                return (
+                    (f.label && f.label.toLowerCase().includes(query)) ||
+                    (f.key && f.key.toLowerCase().includes(query)) ||
+                    (f.description && f.description.toLowerCase().includes(query))
+                );
+            });
+        },
+
+        categoryVisible(catId) {
+            return this.fieldsByCategory(catId).length > 0;
+        },
+
+        matchingCount() {
+            const query = (this.searchQuery || '').trim().toLowerCase();
+            if (!query) return this.fields.length;
+            return this.fields.filter(f => (
+                (f.label && f.label.toLowerCase().includes(query)) ||
+                (f.key && f.key.toLowerCase().includes(query)) ||
+                (f.description && f.description.toLowerCase().includes(query))
+            )).length;
+        },
 
         // Server identity (icon + description)
         description: '',
@@ -69,8 +130,9 @@ window.serverSettingsApp = function serverSettingsApp() {
         },
 
         async selectProfile() {
-            if (!this.profileId) { this.profile = null; this.fields = []; return; }
+            if (!this.profileId) { this.profile = null; this.fields = []; this.searchQuery = ''; return; }
             this.syncSelectedProfile();
+            this.searchQuery = '';
             // Reset identity state from the previous profile so the icon
             // preview can't fetch the new profile's icon before settings load.
             this.hasIcon = false;
