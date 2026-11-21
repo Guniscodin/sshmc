@@ -102,9 +102,9 @@
         <div class="form-error" x-show="error" x-text="error" role="alert"></div>
 
         <!-- LIVE GAME RULES CARD -->
-        <div class="card settings-section-card gamerules-card" x-show="!loading">
-            <div class="settings-section-header flex-between flex-wrap gap-2">
-                <div>
+        <div class="card settings-section-card gamerules-card" x-show="!loading" x-data="{ sectionOpen: true }">
+            <button type="button" class="settings-section-header settings-section-toggle flex-between flex-wrap gap-2" @click="sectionOpen = !sectionOpen" :aria-expanded="sectionOpen">
+                <div class="settings-section-toggle-left">
                     <h3 class="m-0">
                         <i class="fa-solid fa-bolt text-warning"></i>
                         <span>Live Game Rules</span>
@@ -112,12 +112,15 @@
                     </h3>
                     <p class="form-hint m-0">Tweak world mechanics, player death rules, and mob behavior in real time.</p>
                 </div>
-                <div class="flex items-center gap-2">
+                <div class="flex items-center gap-2" @click.stop>
                     <button type="button" class="btn btn-ghost btn-sm" @click="loadGamerules()" :disabled="loadingGamerules || !serverRunning" title="Refresh live gamerules from server">
                         <i class="fa-solid fa-rotate" :class="{ 'fa-spin': loadingGamerules }"></i> Refresh
                     </button>
+                    <i class="fa-solid fa-chevron-down settings-section-chevron" :class="{ 'is-open': sectionOpen }"></i>
                 </div>
-            </div>
+            </button>
+
+            <div x-show="sectionOpen">
 
             <!-- Offline warning when server is stopped -->
             <div x-show="!serverRunning" class="form-hint callout-box m-0">
@@ -189,7 +192,8 @@
                 <div x-show="filteredGamerules().length === 0" class="empty-state p-4 text-center">
                     <p class="text-muted m-0">No gamerules matched your filter.</p>
                 </div>
-            </div>
+            </div> <!-- /serverRunning -->
+            </div> <!-- /sectionOpen -->
         </div>
 
         <div x-show="loading" class="form-hint"><i class="fa-solid fa-spinner fa-spin"></i> Loading server settings…</div>
@@ -208,14 +212,18 @@
 
         <!-- Grouped Category Cards -->
         <template x-for="cat in categories" :key="cat.id">
-            <div class="card settings-section-card" x-show="!loading && categoryVisible(cat.id)">
-                <div class="settings-section-header">
-                    <h3 class="m-0">
-                        <i class="fa-solid text-primary-color" :class="cat.icon"></i>
-                        <span x-text="cat.label"></span>
-                    </h3>
-                    <p class="form-hint m-0" x-text="cat.description"></p>
-                </div>
+            <div class="card settings-section-card" x-show="!loading && categoryVisible(cat.id)" x-data="{ sectionOpen: true }">
+                <button type="button" class="settings-section-header settings-section-toggle" @click="sectionOpen = !sectionOpen" :aria-expanded="sectionOpen">
+                    <div class="settings-section-toggle-left">
+                        <h3 class="m-0">
+                            <i class="fa-solid text-primary-color" :class="cat.icon"></i>
+                            <span x-text="cat.label"></span>
+                        </h3>
+                        <p class="form-hint m-0" x-text="cat.description"></p>
+                    </div>
+                    <i class="fa-solid fa-chevron-down settings-section-chevron" :class="{ 'is-open': sectionOpen }"></i>
+                </button>
+                <div x-show="sectionOpen">
                 <div class="grid-2 mt-4">
                     <template x-for="field in fieldsByCategory(cat.id)" :key="field.key">
                         <div class="form-group mb-0">
@@ -348,6 +356,7 @@
                         </div>
                     </div>
                 </div>
+                </div> <!-- /sectionOpen -->
             </div>
         </template>
 

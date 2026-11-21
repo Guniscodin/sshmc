@@ -180,12 +180,15 @@
                     </div>
 
                     <!-- Per-World Stats -->
-                    <div class="monitor-worlds" x-show="Object.keys(server.worlds || {}).length > 0">
-                        <h4 class="monitor-worlds-header">
-                            <i class="fa-solid fa-earth-americas text-primary-color"></i>
-                            <span>Worlds &amp; Dimensions</span>
-                        </h4>
-                        <div class="monitor-worlds-grid">
+                    <div class="monitor-worlds" x-show="Object.keys(server.worlds || {}).length > 0" x-data="{ worldsOpen: true }">
+                        <button type="button" class="monitor-worlds-header monitor-worlds-toggle" @click="worldsOpen = !worldsOpen" :aria-expanded="worldsOpen">
+                            <span class="monitor-worlds-toggle-left">
+                                <i class="fa-solid fa-earth-americas text-primary-color"></i>
+                                <span>Worlds &amp; Dimensions</span>
+                            </span>
+                            <i class="fa-solid fa-chevron-down monitor-worlds-chevron" :class="{ 'is-open': worldsOpen }"></i>
+                        </button>
+                        <div class="monitor-worlds-grid" x-show="worldsOpen">
                             <template x-for="entry in Object.entries(server.worlds || {})" :key="entry[0]">
                                 <article class="monitor-world-card" :data-world="entry[0]">
                                     <div class="flex-between mb-1">

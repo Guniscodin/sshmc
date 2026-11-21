@@ -827,6 +827,42 @@
     letter-spacing: 0.05em;
 }
 
+/* Collapsible worlds toggle button — replaces the static h4 */
+.monitor-worlds-toggle {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    margin: 0 0 var(--space-2);
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    color: inherit;
+}
+
+.monitor-worlds-toggle:hover .monitor-worlds-chevron {
+    opacity: 1;
+}
+
+.monitor-worlds-toggle-left {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+}
+
+.monitor-worlds-chevron {
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    opacity: 0.7;
+    transition: transform var(--transition-base), opacity var(--transition-fast);
+}
+
+.monitor-worlds-chevron.is-open {
+    transform: rotate(180deg);
+}
+
 .monitor-worlds-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -955,6 +991,46 @@
     display: flex;
     align-items: center;
     gap: var(--space-2);
+}
+
+/* Collapsible section toggle — replaces the static header div */
+.settings-section-toggle {
+    width: 100%;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-3);
+    background: none;
+    border: none;
+    border-bottom: 1px solid var(--border-subtle);
+    padding: 0 0 var(--space-3);
+    cursor: pointer;
+    text-align: left;
+    color: inherit;
+    transition: opacity var(--transition-fast);
+}
+
+.settings-section-toggle:hover {
+    opacity: 0.85;
+}
+
+.settings-section-toggle-left {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+    min-width: 0;
+}
+
+.settings-section-chevron {
+    flex-shrink: 0;
+    margin-top: var(--space-1);
+    color: var(--text-muted);
+    transition: transform var(--transition-base);
+}
+
+.settings-section-chevron.is-open {
+    transform: rotate(180deg);
 }
 
 /* Storage helpers */
