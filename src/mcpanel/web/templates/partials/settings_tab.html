@@ -167,7 +167,7 @@
                                 </template>
                                 <template x-if="rule.type === 'int'">
                                     <div class="flex items-center gap-1">
-                                        <input type="number" class="gamerule-int-input" x-model.number="rule.value" :min="rule.min" :max="rule.max">
+                                        <input type="number" class="gamerule-int-input" x-model.number="rule.value" :min="rule.min" :max="rule.max" @keydown.enter.prevent="saveIntGamerule(rule)">
                                         <button type="button" class="btn btn-primary btn-sm btn-icon"
                                                 @click="saveIntGamerule(rule)"
                                                 :disabled="savingGameruleKey === rule.key"

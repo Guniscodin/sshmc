@@ -406,19 +406,27 @@ window.serverSettingsApp = function serverSettingsApp() {
 
         async loadGamerules() {
             if (!this.profileId) { this.gamerules = []; return; }
+            const currentProfileId = this.profileId;
             this.loadingGamerules = true;
             try {
-                const response = await fetch(`/api/profiles/${encodeURIComponent(this.profileId)}/gamerules`);
+                const response = await fetch(`/api/profiles/${encodeURIComponent(currentProfileId)}/gamerules`);
                 if (response.status === 401) { window.location.assign('/login'); return; }
                 const data = await this.readJson(response, 'Could not load gamerules.');
+                // Ignore response if user switched profiles while loading
+                if (currentProfileId !== this.profileId) return;
                 if (response.ok && Array.isArray(data.rules)) {
                     this.gamerules = data.rules;
                     this.gamerulesLoaded = true;
+                    if (data.server_running !== undefined) {
+                        this.serverRunning = !!data.server_running;
+                    }
                 }
             } catch (err) {
                 console.error('Failed to load gamerules:', err);
             } finally {
-                this.loadingGamerules = false;
+                if (currentProfileId === this.profileId) {
+                    this.loadingGamerules = false;
+                }
             }
         },
 
