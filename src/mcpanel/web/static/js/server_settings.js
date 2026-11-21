@@ -490,9 +490,13 @@ window.serverSettingsApp = function serverSettingsApp() {
                 const data = await this.readJson(response, 'Could not update gamerule.');
                 if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Could not update gamerule.');
                 // Sync the UI with the server-confirmed value so the change
-                // persists across refreshes instead of showing a stale value.
+                // reflects immediately instead of showing a stale value.
                 rule.value = data.value;
                 showToast(`Gamerule ${rule.key} updated to ${data.value}!`, 'success');
+                // Re-sync all gamerules from the live server so the UI
+                // reflects the actual in-game state (confirming Minecraft
+                // applied the change and that it persists across refresh).
+                await this.loadGamerules();
             } catch (err) {
                 showToast(err.message || 'Could not update gamerule.', 'error');
             } finally {
