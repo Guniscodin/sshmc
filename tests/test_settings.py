@@ -63,6 +63,41 @@ def test_validate_server_setting_world_options():
         _validate_server_setting("max-world-size", border_spec, "30000000")
     assert exc.value.status_code == 422
 
+    # Performance & Crash Prevention validation
+    tick_spec = SERVER_SETTING_SPECS["max-tick-time"]
+    assert _validate_server_setting("max-tick-time", tick_spec, "-1") == "-1"
+    assert _validate_server_setting("max-tick-time", tick_spec, "60000") == "60000"
+    with pytest.raises(HTTPException) as exc:
+        _validate_server_setting("max-tick-time", tick_spec, "-2")
+    assert exc.value.status_code == 422
+
+    entity_spec = SERVER_SETTING_SPECS["entity-broadcast-range-percentage"]
+    assert _validate_server_setting("entity-broadcast-range-percentage", entity_spec, "100") == "100"
+    assert _validate_server_setting("entity-broadcast-range-percentage", entity_spec, "50") == "50"
+    with pytest.raises(HTTPException) as exc:
+        _validate_server_setting("entity-broadcast-range-percentage", entity_spec, "5")
+    assert exc.value.status_code == 422
+
+    compress_spec = SERVER_SETTING_SPECS["network-compression-threshold"]
+    assert _validate_server_setting("network-compression-threshold", compress_spec, "-1") == "-1"
+    assert _validate_server_setting("network-compression-threshold", compress_spec, "256") == "256"
+    with pytest.raises(HTTPException) as exc:
+        _validate_server_setting("network-compression-threshold", compress_spec, "-5")
+    assert exc.value.status_code == 422
+
+    neighbor_spec = SERVER_SETTING_SPECS["max-chained-neighbor-updates"]
+    assert _validate_server_setting("max-chained-neighbor-updates", neighbor_spec, "1000000") == "1000000"
+    with pytest.raises(HTTPException) as exc:
+        _validate_server_setting("max-chained-neighbor-updates", neighbor_spec, "0")
+    assert exc.value.status_code == 422
+
+    sync_spec = SERVER_SETTING_SPECS["sync-chunk-writes"]
+    assert _validate_server_setting("sync-chunk-writes", sync_spec, "true") == "true"
+    assert _validate_server_setting("sync-chunk-writes", sync_spec, "false") == "false"
+    with pytest.raises(HTTPException) as exc:
+        _validate_server_setting("sync-chunk-writes", sync_spec, "maybe")
+    assert exc.value.status_code == 422
+
 
 def test_categories_assigned_to_all_specs():
     valid_categories = {"world", "gameplay", "spawns", "multiplayer", "performance"}
@@ -119,9 +154,9 @@ def test_get_and_update_server_settings_api(mock_profile):
     data = resp.json()
     assert data["profile_id"] == profile.id
     fields = data["fields"]
-    assert len(fields) >= 23
+    assert len(fields) >= 28
 
-    # Check that world settings exist and have category 'world'
+    # Check that world and performance settings exist and have correct categories
     field_map = {f["key"]: f for f in fields}
     assert field_map["level-name"]["category"] == "world"
     assert field_map["level-name"]["value"] == "world"
@@ -130,7 +165,13 @@ def test_get_and_update_server_settings_api(mock_profile):
     assert field_map["generate-structures"]["category"] == "world"
     assert field_map["level-type"]["category"] == "world"
 
-    # 2. PUT server-settings with custom world settings
+    assert field_map["max-tick-time"]["category"] == "performance"
+    assert field_map["entity-broadcast-range-percentage"]["category"] == "performance"
+    assert field_map["network-compression-threshold"]["category"] == "performance"
+    assert field_map["max-chained-neighbor-updates"]["category"] == "performance"
+    assert field_map["sync-chunk-writes"]["category"] == "performance"
+
+    # 2. PUT server-settings with custom world & performance settings
     payload = {
         "properties": {
             "level-name": "skyblock_world",
@@ -139,6 +180,11 @@ def test_get_and_update_server_settings_api(mock_profile):
             "generate-structures": "false",
             "max-world-size": "5000",
             "difficulty": "hard",
+            "max-tick-time": "-1",
+            "entity-broadcast-range-percentage": "75",
+            "network-compression-threshold": "-1",
+            "max-chained-neighbor-updates": "500000",
+            "sync-chunk-writes": "false",
         }
     }
     update_resp = client.put(f"/api/profiles/{profile.id}/server-settings", json=payload)
@@ -152,3 +198,8 @@ def test_get_and_update_server_settings_api(mock_profile):
     assert props["generate-structures"] == "false"
     assert props["max-world-size"] == "5000"
     assert props["difficulty"] == "hard"
+    assert props["max-tick-time"] == "-1"
+    assert props["entity-broadcast-range-percentage"] == "75"
+    assert props["network-compression-threshold"] == "-1"
+    assert props["max-chained-neighbor-updates"] == "500000"
+    assert props["sync-chunk-writes"] == "false"

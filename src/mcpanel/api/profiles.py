@@ -154,7 +154,7 @@ SERVER_SETTING_SPECS: dict[str, dict] = {
         "description": "Default permission level granted to operators (1 = spawn protection, 4 = full admin).",
     },
 
-    # Performance & View
+    # Performance & Optimization / Crash Prevention
     "view-distance": {
         "type": "int", "default": "10", "min": 3, "max": 32, "category": "performance", "label": "View Distance",
         "description": "Chunks sent to each player. Lower values significantly reduce network and RAM load.",
@@ -162,6 +162,26 @@ SERVER_SETTING_SPECS: dict[str, dict] = {
     "simulation-distance": {
         "type": "int", "default": "10", "min": 5, "max": 32, "category": "performance", "label": "Simulation Distance",
         "description": "Chunks that tick entities and blocks around players. Lower values reduce CPU load.",
+    },
+    "max-tick-time": {
+        "type": "int", "default": "60000", "min": -1, "max": 2147483647, "category": "performance", "label": "Watchdog Max Tick Time (ms)",
+        "description": "Max milliseconds a single tick may take before the watchdog stops the server. Set to -1 to disable watchdog (recommended for heavy modpacks).",
+    },
+    "entity-broadcast-range-percentage": {
+        "type": "int", "default": "100", "min": 10, "max": 1000, "category": "performance", "label": "Entity Broadcast Range (%)",
+        "description": "Percentage of entity tracking distance sent to clients (10% to 1000%). Lowering to 50%–75% reduces server & client lag with high mob counts.",
+    },
+    "network-compression-threshold": {
+        "type": "int", "default": "256", "min": -1, "max": 65535, "category": "performance", "label": "Network Compression Threshold",
+        "description": "Packet size in bytes before compressing data. Set to -1 to disable compression (reduces CPU usage on fast networks). 0 compresses everything.",
+    },
+    "max-chained-neighbor-updates": {
+        "type": "int", "default": "1000000", "min": 1, "max": 10000000, "category": "performance", "label": "Max Chained Neighbor Updates",
+        "description": "Caps consecutive block updates (e.g. redstone, gravity blocks) before skipping. Prevents lag machines and freeze cascades.",
+    },
+    "sync-chunk-writes": {
+        "type": "bool", "default": "true", "category": "performance", "label": "Sync Chunk Writes",
+        "description": "Save chunk data synchronously to disk. Disabling can reduce I/O stutter on slower hard drives or heavily loaded disks.",
     },
 }
 

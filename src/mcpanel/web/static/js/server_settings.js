@@ -42,9 +42,9 @@ window.serverSettingsApp = function serverSettingsApp() {
             },
             {
                 id: 'performance',
-                label: 'Performance & View',
+                label: 'Performance & Crash Prevention',
                 icon: 'fa-gauge-high',
-                description: 'Chunk rendering distance and entity simulation distance.'
+                description: 'Render & simulation distances, watchdog tick limit, network compression, and chunk saving.'
             }
         ],
 
@@ -176,7 +176,10 @@ window.serverSettingsApp = function serverSettingsApp() {
             this.fields = (data.fields || []).map(field => {
                 let value = field.value;
                 if (field.type === 'bool') value = String(value).toLowerCase() === 'true';
-                else if (field.type === 'int') value = parseInt(value, 10) || 0;
+                else if (field.type === 'int') {
+                    const parsed = parseInt(value, 10);
+                    value = Number.isNaN(parsed) ? 0 : parsed;
+                }
                 else value = String(value ?? '');
                 return { ...field, value };
             });
