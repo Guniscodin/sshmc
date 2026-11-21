@@ -225,12 +225,9 @@ def _resolve_uuid(profile_id: str, name: str, online_mode: bool) -> tuple[str, s
 def _match(entries: list[dict], name: str, online_mode: bool = True) -> dict | None:
     for entry in entries:
         entry_name = str(entry.get("name", ""))
-        if online_mode:
-            if entry_name.lower() == name.lower():
-                return entry
-        else:
-            if entry_name == name:
-                return entry
+        matches = (entry_name.lower() == name.lower()) if online_mode else (entry_name == name)
+        if matches:
+            return entry
     return None
 
 
@@ -274,8 +271,9 @@ async def _rcon(profile: Profile, command: str) -> str:
 async def _wait_for_entry(profile_id: str, filename: str, name: str) -> dict | None:
     """The server writes player files synchronously with the command, but give
     slow disks a short window before calling the command failed."""
+    online = _online_mode(profile_id)
     for _ in range(6):
-        entry = _match(await asyncio.to_thread(_read_entries, profile_id, filename), name)
+        entry = _match(await asyncio.to_thread(_read_entries, profile_id, filename), name, online)
         if entry is not None:
             return entry
         await asyncio.sleep(0.1)

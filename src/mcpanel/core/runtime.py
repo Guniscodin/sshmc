@@ -87,7 +87,7 @@ def _generate_server_properties(profile: Profile, server_dir: Path) -> None:
     # enforce-whitelist stays consistent with whether white-list is active.
     if "white-list" not in properties:
         properties["white-list"] = "true"
-    white_list_enabled = (properties.get("white-list", "true") or "true").strip().lower() == "true"
+    white_list_enabled = properties["white-list"].strip().lower() == "true"
     if "enforce-whitelist" not in properties:
         properties["enforce-whitelist"] = "true" if white_list_enabled else "false"
 

@@ -1335,6 +1335,7 @@ def test_broadcast_pre_1_8_falls_back_to_chat(mock_profile, monkeypatch):
         json={"message": "Hello", "display_type": "title"},
     )
     assert resp.status_code == 200, resp.text
+    assert resp.json()["display_type"] == "chat"
     # /title doesn't exist pre-1.8, should fall back to tellraw/chat
     assert any("tellraw" in cmd for cmd in rcon_commands), f"Expected tellraw command, got: {rcon_commands}"
 
@@ -1381,6 +1382,7 @@ def test_broadcast_pre_1_11_actionbar_falls_back(mock_profile, monkeypatch):
         json={"message": "Hello", "display_type": "actionbar"},
     )
     assert resp.status_code == 200, resp.text
+    assert resp.json()["display_type"] == "title"
     # actionbar doesn't exist pre-1.11, should fall back to title/tellraw
     assert any("tellraw" in cmd or "title" in cmd for cmd in rcon_commands), f"Expected title/tellraw command, got: {rcon_commands}"
     assert not any("actionbar" in cmd for cmd in rcon_commands), f"Should not send actionbar pre-1.11, got: {rcon_commands}"

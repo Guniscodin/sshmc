@@ -9,12 +9,10 @@ import struct
 from typing import Optional
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, status, Form, Request, File, UploadFile
-from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from mcpanel.models import Profile, BuildType, ProfileStatus, ModDownload
 from mcpanel.config import PROFILES_DIR
@@ -473,12 +471,11 @@ def _validate_server_setting(key: str, spec: dict, value: str) -> str:
                 detail=f"'{key}' must be between {spec['min']} and {spec['max']}.",
             )
         return str(number)
-    if text not in spec["options"]:
-        legacy_map = spec.get("legacy_map", {})
-        if text in legacy_map:
-            mapped = legacy_map[text]
-            return str(mapped)
-        raise HTTPException(status_code=422, detail=f"'{key}' must be one of: {', '.join(spec['options'])}.")
+    options = spec["options"]
+    if text not in options:
+        if text in spec.get("legacy_map", {}):
+            return str(spec["legacy_map"][text])
+        raise HTTPException(status_code=422, detail=f"'{key}' must be one of: {', '.join(options)}.")
     return text
 
 
@@ -1146,27 +1143,22 @@ async def update_profile_server_settings(profile_id: str, payload: ServerSetting
     applied: dict[str, str] = {}
     rejected: dict[str, str] = {}
     for key, value in payload.properties.items():
-        clean_key = key.strip()
-        raw_value = value or ""
-        clean_value = raw_value.strip()
-        spec = SERVER_SETTING_SPECS.get(clean_key)
+        clean_value = (value or "").strip()
+        spec = SERVER_SETTING_SPECS.get(key)
         if spec is not None:
             try:
-                applied[clean_key] = _validate_server_setting(clean_key, spec, clean_value)
+                applied[key] = _validate_server_setting(key, spec, clean_value)
             except HTTPException as exc:
-                rejected[clean_key] = exc.detail
+                rejected[key] = exc.detail
         else:
             # Dynamic key: not in the curated spec, but accept it so settings
             # added by mods or other loaders work for any version/build.
-            if _has_control_chars(raw_value) or _has_control_chars(clean_value):
-                rejected[clean_key] = f"'{clean_key}' contains invalid control characters in its value."
-                continue
             if clean_value.lower() in ("true", "false"):
-                applied[clean_key] = clean_value.lower()
+                applied[key] = clean_value.lower()
             elif clean_value.lstrip("-").isdigit():
-                applied[clean_key] = str(int(clean_value))
+                applied[key] = str(int(clean_value))
             else:
-                applied[clean_key] = clean_value
+                applied[key] = clean_value
 
     if not applied:
         raise HTTPException(
@@ -1367,10 +1359,10 @@ async def send_profile_broadcast(profile_id: str, payload: BroadcastPayload):
         logger.warning("Broadcast failed for profile '%s': %s", profile.name, exc)
         raise HTTPException(status_code=502, detail=f"Could not deliver broadcast to server: {exc}") from exc
 
-    logger.info("Broadcast sent on profile '%s' (%s): %s", profile.name, payload.display_type, msg_text)
+    logger.info("Broadcast sent on profile '%s' (%s): %s", profile.name, display_type, msg_text)
     return {
         "success": True,
-        "display_type": payload.display_type,
+        "display_type": display_type,
         "message": msg_text,
         "response": response,
     }
