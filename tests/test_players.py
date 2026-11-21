@@ -11,8 +11,6 @@ from mcpanel.models import Profile
 def test_parse_name():
     assert players.parse_name("Steve") == "Steve"
     assert players.parse_name("  alex_123  ") == "alex_123"
-    assert players.parse_name(".Notch*") == ".Notch*"
-    assert players.parse_name("+Player-1") == "+Player-1"
 
     with pytest.raises(HTTPException) as exc:
         players.parse_name("")
@@ -26,14 +24,29 @@ def test_parse_name():
         players.parse_name("a" * 33)
     assert exc.value.status_code == 422
 
+    with pytest.raises(HTTPException) as exc:
+        players.parse_name("ab")
+    assert exc.value.status_code == 422
+
+    with pytest.raises(HTTPException) as exc:
+        players.parse_name("Notch*")
+    assert exc.value.status_code == 422
+
+    with pytest.raises(HTTPException) as exc:
+        players.parse_name("+Player")
+    assert exc.value.status_code == 422
+
 
 def test_parse_level():
-    assert players.parse_level(None) == 4
     assert players.parse_level(1) == 1
     assert players.parse_level(2) == 2
     assert players.parse_level(3) == 3
     assert players.parse_level(4) == 4
     assert players.parse_level("3") == 3
+
+    with pytest.raises(HTTPException) as exc:
+        players.parse_level(None)
+    assert exc.value.status_code == 422
 
     with pytest.raises(HTTPException) as exc:
         players.parse_level(0)

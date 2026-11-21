@@ -388,7 +388,7 @@ def test_gamerules_api(mock_profile, monkeypatch):
     assert resp.status_code == 200
     data = resp.json()
     assert data["server_running"] is False
-    assert len(data["rules"]) == 15
+    assert len(data["rules"]) == 16
     rule_map = {r["key"]: r for r in data["rules"]}
     assert rule_map["keepInventory"]["category"] == "player"
     assert rule_map["mobGriefing"]["category"] == "world"
@@ -688,6 +688,413 @@ def test_send_commands_per_command_failure_resilience(mock_profile, monkeypatch)
     assert rules["doMobLoot"]["value"] is True
     # playersSleepingPercentage was NOT affected by the sibling failure
     assert rules["playersSleepingPercentage"]["value"] == 1
+
+
+# ========================================================================
+# Version-aware settings tests — fixtures for MC 1.21.1 and MC 26.3
+# ========================================================================
+
+@pytest.fixture
+def profile_v1_21_1(tmp_path, monkeypatch):
+    """Profile running Minecraft 1.21.1 with a realistic server.properties."""
+    profile_id = "1211test0000000000000000000000"
+    profile_dir = tmp_path / profile_id
+    server_dir = profile_dir / "server"
+    server_dir.mkdir(parents=True)
+
+    profile = Profile(
+        id=profile_id,
+        name="Test 1.21.1",
+        build=BuildType.VANILLA,
+        mc_version="1.21.1",
+        loader_version="latest",
+        java_path="java",
+        ram_mb=2048,
+        port=25565,
+        rcon_port=25575,
+        rcon_password="testpassword",
+    )
+
+    from mcpanel.api import profiles
+    monkeypatch.setattr(profiles.mod_storage, "profile_root", lambda pid: profile_dir)
+    monkeypatch.setattr(profiles.db, "get_profile", lambda pid: profile if pid == profile_id else None)
+    monkeypatch.setattr(profiles.db, "get_runtime_state", lambda pid: None)
+    monkeypatch.setattr(server_properties, "properties_path", lambda pid: server_dir / "server.properties")
+    monkeypatch.setattr(server_properties, "saved_settings_path", lambda pid: profile_dir / "server_settings.json")
+
+    props_file = server_dir / "server.properties"
+    props_file.write_text(
+        "online-mode=true\n"
+        "level-name=world\n"
+        "max-world-size=29999984\n"
+        "enable-rcon=true\n"
+        "rcon.port=25575\n"
+        "rcon.password=testpassword\n"
+        "server-port=25565\n"
+        "motd=A 1.21.1 Server\n"
+        "difficulty=normal\n"
+        "gamemode=survival\n"
+        "enable-command-block=false\n"
+        "allow-flight=false\n"
+        "view-distance=10\n"
+        "simulation-distance=8\n"
+        "spawn-protection=16\n"
+        "max-players=20\n"
+        "network-compression-threshold=256\n"
+        "max-chained-neighbor-updates=1000000\n"
+        "enable-jmx-monitoring=false\n"
+        "use-native-transport=true\n"
+        "enable-status=true\n"
+        "allow-flight=false\n"
+        "broadcast-console-to-ops=true\n"
+        "broadcast-rcon-to-ops=true\n"
+        "prevent-proxy-connections=false\n"
+        "enable-query=false\n"
+        "query.port=25565\n"
+        "player-idle-timeout=0\n"
+        "max-tick-time=60000\n"
+        "enforce-whitelist=false\n"
+        "white-list=false\n"
+        "difficulty=normal\n"
+        "generator-settings={}\n"
+        "level-seed=\n"
+        "level-type=minecraft:normal\n"
+        "generate-structures=true\n"
+        "hardcore=false\n"
+        "allow-nether=true\n"
+        "announce-player-achievements=true\n"
+        "enable-jmx-monitoring=false\n"
+        "force-gamemode=false\n"
+        "function-permission-level=2\n"
+        "player-idle-timeout=0\n"
+        "rate-limit=0\n"
+        "server-ip=\n"
+        "spawn-protection=16\n"
+        "sync-chunk-writes=true\n"
+        "texture-packs=\n"
+        "use-native-transport=true\n"
+        "white-list=false\n"
+        "view-distance=10\n"
+        "world-guid=\"\"\n"
+        "text-filtering-config=\n"
+    , encoding="utf-8")
+
+    return profile, server_dir
+
+
+@pytest.fixture
+def profile_v26_3(tmp_path, monkeypatch):
+    """Profile running Minecraft 26.3 with renamed/removed settings."""
+    profile_id = "263test000000000000000000000"
+    profile_dir = tmp_path / profile_id
+    server_dir = profile_dir / "server"
+    server_dir.mkdir(parents=True)
+
+    profile = Profile(
+        id=profile_id,
+        name="Test 26.3",
+        build=BuildType.FABRIC,
+        mc_version="26.3",
+        loader_version="latest",
+        java_path="java",
+        ram_mb=4096,
+        port=25565,
+        rcon_port=25575,
+        rcon_password="testpassword",
+    )
+
+    from mcpanel.api import profiles
+    monkeypatch.setattr(profiles.mod_storage, "profile_root", lambda pid: profile_dir)
+    monkeypatch.setattr(profiles.db, "get_profile", lambda pid: profile if pid == profile_id else None)
+    monkeypatch.setattr(profiles.db, "get_runtime_state", lambda pid: None)
+    monkeypatch.setattr(server_properties, "properties_path", lambda pid: server_dir / "server.properties")
+    monkeypatch.setattr(server_properties, "saved_settings_path", lambda pid: profile_dir / "server_settings.json")
+
+    props_file = server_dir / "server.properties"
+    props_file.write_text(
+        "online-mode=true\n"
+        "level-name=world\n"
+        "max-world-size=29999984\n"
+        "enable-rcon=true\n"
+        "rcon.port=25575\n"
+        "rcon.password=testpassword\n"
+        "server-port=25565\n"
+        "motd=A 26.3 Server\n"
+        "difficulty=normal\n"
+        "gamemode=survival\n"
+        "enable-command-block=false\n"
+        "allow-flight=false\n"
+        "view-distance=10\n"
+        "simulation-distance=8\n"
+        "spawn-protection=16\n"
+        "max-players=20\n"
+        "network-compression-threshold=256\n"
+        "max-chained-neighbor-updates=1000000\n"
+        "enable-jmx-monitoring=false\n"
+        "use-native-transport=true\n"
+        "enable-status=true\n"
+        "allow-flight=false\n"
+        "broadcast-console-to-ops=true\n"
+        "broadcast-rcon-to-ops=true\n"
+        "prevent-proxy-connections=false\n"
+        "enable-query=false\n"
+        "query.port=25565\n"
+        "player-idle-timeout=0\n"
+        "max-tick-time=60000\n"
+        "enforce-whitelist=true\n"
+        "white-list=true\n"
+        "difficulty=normal\n"
+        "generator-settings={}\n"
+        "level-seed=\n"
+        "level-type=minecraft:normal\n"
+        "generate-structures=true\n"
+        "hardcore=false\n"
+        "allow-nether=true\n"
+        "announce-player-achievements=true\n"
+        "enable-jmx-monitoring=false\n"
+        "force-gamemode=false\n"
+        "function-permission-level=2\n"
+        "player-idle-timeout=0\n"
+        "rate-limit=0\n"
+        "server-ip=\n"
+        "spawn-protection=16\n"
+        "sync-chunk-writes=true\n"
+        "texture-packs=\n"
+        "use-native-transport=true\n"
+        "white-list=true\n"
+        "view-distance=10\n"
+        "world-guid=\"\"\n"
+        "text-filtering-config=\n"
+        # Mod-added setting not in curated spec
+        "custom-mod-setting=42\n"
+        "another-mod-bool=true\n"
+    , encoding="utf-8")
+
+    return profile, server_dir
+
+
+def test_settings_load_from_real_server_properties_1_21_1(profile_v1_21_1, monkeypatch):
+    """Settings load from the real server.properties for MC 1.21.1."""
+    from fastapi import FastAPI
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    profile, server_dir = profile_v1_21_1
+
+    resp = client.get(f"/api/profiles/{profile.id}/server-settings")
+    assert resp.status_code == 200
+    data = resp.json()
+    fields = {f["key"]: f for f in data["fields"]}
+
+    # Curated settings present in server.properties should be available
+    assert fields["level-name"]["value"] == "world"
+    assert fields["level-name"]["available"] is True
+    assert fields["difficulty"]["value"] == "normal"
+    assert fields["difficulty"]["available"] is True
+    assert fields["gamemode"]["value"] == "survival"
+    assert fields["max-players"]["value"] == "20"
+    assert fields["enable-status"]["value"] == "true"
+
+    # Dynamic keys from server.properties should show up
+    assert fields["generator-settings"]["value"] == "{}"
+    assert fields["world-guid"]['value'] == '""'
+    assert fields["text-filtering-config"]["value"] == ""
+
+    # Managed keys should NOT be in the fields list (they're managed by panel)
+    managed = data["managed_keys"]
+    assert "server-port" in managed
+    assert "enable-rcon" in managed
+    assert "rcon.port" in managed
+    assert "rcon.password" in managed
+    assert "motd" in managed
+    for mk in managed:
+        assert mk not in fields, f"Managed key {mk} should not appear in fields"
+
+
+def test_settings_load_from_real_server_properties_26_3(profile_v26_3, monkeypatch):
+    """Settings load from the real server.properties for MC 26.3."""
+    from fastapi import FastAPI
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    profile, server_dir = profile_v26_3
+
+    resp = client.get(f"/api/profiles/{profile.id}/server-settings")
+    assert resp.status_code == 200
+    data = resp.json()
+    fields = {f["key"]: f for f in data["fields"]}
+
+    # 26.3 should have enforce-whitelist=true and white-list=true
+    assert fields["enforce-whitelist"]["value"] == "true"
+    assert fields["white-list"]["value"] == "true"
+    assert fields["enforce-whitelist"]["available"] is True
+    assert fields["white-list"]["available"] is True
+
+    # Mod-added keys should show up as dynamic
+    assert fields["custom-mod-setting"]["value"] == "42"
+    assert fields["another-mod-bool"]["value"] == "true"
+
+
+def test_settings_put_blocked_keys_rejected(profile_v1_21_1, monkeypatch):
+    """Blocked keys (server-port, rcon.*, etc.) are rejected from settings PUT."""
+    from fastapi import FastAPI
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    profile, _ = profile_v1_21_1
+
+    blocked_keys = [
+        "server-port", "enable-rcon", "rcon.port", "rcon.password", "motd",
+        "server-ip", "query.port", "enable-query",
+    ]
+    for key in blocked_keys:
+        resp = client.put(
+            f"/api/profiles/{profile.id}/server-settings",
+            json={"properties": {key: "evil"}},
+        )
+        assert resp.status_code == 422, f"Key {key} should be blocked, got {resp.status_code}"
+
+
+def test_settings_put_control_chars_rejected(profile_v1_21_1, monkeypatch):
+    """Keys or values with control characters are rejected."""
+    from fastapi import FastAPI
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    profile, _ = profile_v1_21_1
+
+    # Key with newline
+    resp = client.put(
+        f"/api/profiles/{profile.id}/server-settings",
+        json={"properties": {"level-name\n": "value"}},
+    )
+    assert resp.status_code == 422
+
+    # Value with carriage return
+    resp = client.put(
+        f"/api/profiles/{profile.id}/server-settings",
+        json={"properties": {"level-name": "value\r"}},
+    )
+    assert resp.status_code == 422
+
+    # Key with '='
+    resp = client.put(
+        f"/api/profiles/{profile.id}/server-settings",
+        json={"properties": {"level=name": "value"}},
+    )
+    assert resp.status_code == 422
+
+
+def test_settings_put_isolation_one_invalid_does_not_block_others(profile_v1_21_1, monkeypatch):
+    """One invalid key does not block valid keys from being saved."""
+    from fastapi import FastAPI
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    profile, server_dir = profile_v1_21_1
+
+    resp = client.put(
+        f"/api/profiles/{profile.id}/server-settings",
+        json={
+            "properties": {
+                "level-name": "new_world",      # valid
+                "difficulty": "not-a-valid-difficulty",  # invalid choice
+                "max-players": "999999",         # out of range
+            }
+        },
+    )
+    assert resp.status_code == 200  # Should succeed with at least one applied
+    data = resp.json()
+    assert data["saved"] is True
+    assert "level-name" in data["applied"]
+    assert "difficulty" in data["rejected"]
+    assert "max-players" in data["rejected"]
+
+    # Verify level-name was actually saved
+    props = server_properties.read_properties(server_dir / "server.properties")
+    assert props["level-name"] == "new_world"
+    assert props.get("difficulty") != "not-a-valid-difficulty"
+
+
+def test_settings_put_blocked_key_with_valid_key_still_applies_valid(profile_v1_21_1, monkeypatch):
+    """A blocked key in a mixed payload causes 422, but valid keys are not applied."""
+    from fastapi import FastAPI
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    profile, server_dir = profile_v1_21_1
+
+    resp = client.put(
+        f"/api/profiles/{profile.id}/server-settings",
+        json={
+            "properties": {
+                "level-name": "should_not_save",
+                "server-port": "9999",  # blocked
+            }
+        },
+    )
+    assert resp.status_code == 422
+
+    # level-name should NOT have been saved because the whole request was rejected
+    props = server_properties.read_properties(server_dir / "server.properties")
+    assert props["level-name"] != "should_not_save"
+
+
+def test_gamerule_alias_resolution(profile_v1_21_1, monkeypatch):
+    """Renamed gamerules resolve to the correct key via alias detection."""
+    from fastapi import FastAPI
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    profile, _ = profile_v1_21_1
+
+    from mcpanel.api import profiles
+    from mcpanel.models import ProfileStatus, RuntimeState
+    # Simulate running server
+    monkeypatch.setattr(
+        profiles.db,
+        "get_runtime_state",
+        lambda pid: RuntimeState(
+            profile_id=pid,
+            status=ProfileStatus.RUNNING,
+            pid=99999,
+            started_at=None,
+            stopped_at=None,
+            crash_count=0,
+            last_exit_code=None,
+        ),
+    )
+
+    # Mock RCON: doMobSpawning alias returns value, doMonsterSpawning does not respond
+    async def mock_send_commands(host, port, password, commands, timeout=5.0):
+        responses = []
+        for cmd in commands:
+            if "doMobSpawning" in cmd:
+                responses.append("Gamerule doMobSpawning is currently set to: true")
+            elif "doMonsterSpawning" in cmd:
+                responses.append("")  # no response for this alias
+            elif "keepInventory" in cmd:
+                responses.append("Gamerule keepInventory is currently set to: false")
+            else:
+                responses.append("Gamerule is currently set to: true")
+        return responses
+
+    monkeypatch.setattr(profiles.rcon, "send_commands", mock_send_commands)
+
+    resp = client.get(f"/api/profiles/{profile.id}/gamerules")
+    assert resp.status_code == 200
+    rules = {r["key"]: r for r in resp.json()["rules"]}
+
+    # doMobSpawning should resolve via its first alias
+    assert rules["doMobSpawning"]["available"] is True
+    assert rules["doMobSpawning"]["value"] is True
 
 
 

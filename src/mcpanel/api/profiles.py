@@ -213,6 +213,61 @@ SERVER_SETTING_SPECS: dict[str, dict] = {
 
 MANAGED_SERVER_PROPERTIES = {"server-port", "enable-rcon", "rcon.port", "rcon.password", "motd"}
 
+# Keys that the panel manages itself and must never be changed via settings PUT.
+PANEL_MANAGED_KEYS = {"server-port", "enable-rcon", "rcon.port", "rcon.password", "motd"}
+
+# Keys that change who can reach or administer the server. Blocked from the
+# settings PUT endpoint unless they have a dedicated validated field.
+SECURITY_SENSITIVE_KEYS = {
+    "server-ip", "server-port", "query.port", "enable-query", "enable-rcon",
+}
+
+
+def _is_rcon_key(key: str) -> bool:
+    return key.startswith("rcon.")
+
+
+def _is_blocked_setting_key(key: str) -> bool:
+    return key in PANEL_MANAGED_KEYS or key in SECURITY_SENSITIVE_KEYS or _is_rcon_key(key)
+
+
+# Control characters (0x00-0x1F) that must never appear in setting keys or values.
+_CONTROL_CHARS = frozenset(chr(i) for i in range(32))
+
+
+def _has_control_chars(text: str) -> bool:
+    return any(c in _CONTROL_CHARS for c in text)
+
+
+# Canonical gamerule name -> list of possible keys across Minecraft versions.
+# When reading or writing a gamerule, try each alias until one works.
+# Detect which one works by querying the server, not by guessing from version.
+GAME_RULE_ALIASES: dict[str, list[str]] = {
+    "keepInventory": ["keepInventory"],
+    "naturalRegeneration": ["naturalRegeneration"],
+    "playersSleepingPercentage": ["playersSleepingPercentage"],
+    "spawnRadius": ["spawnRadius"],
+    "showDeathMessages": ["showDeathMessages"],
+    "mobGriefing": ["mobGriefing"],
+    "doFireTick": ["doFireTick"],
+    "doDaylightCycle": ["doDaylightCycle"],
+    "doWeatherCycle": ["doWeatherCycle"],
+    "doPatrolSpawning": ["doPatrolSpawning"],
+    "doTraderSpawning": ["doTraderSpawning"],
+    "doInsomnia": ["doInsomnia"],
+    "doMobLoot": ["doMobLoot"],
+    "doTileDrops": ["doTileDrops"],
+    "doEntityDrops": ["doEntityDrops"],
+    # Renamed across versions: try each alias, detect which works via RCON.
+    "doMobSpawning": ["doMobSpawning", "doMonsterSpawning"],
+    "commandBlockEnabled": ["commandBlockEnabled", "commandBlocksEnabled"],
+}
+
+
+def _gamerule_aliases(rule: str) -> list[str]:
+    """Return the alias list for a canonical gamerule name."""
+    return GAME_RULE_ALIASES.get(rule, [rule])
+
 
 def _validate_server_setting(key: str, spec: dict, value: str) -> str:
     text = (value or "").strip()
@@ -808,6 +863,10 @@ def get_profile_server_settings(profile_id: str):
     state = db.get_runtime_state(profile_id)
     fields = []
     for key, spec in SERVER_SETTING_SPECS.items():
+        # A curated setting is only "available" if it actually exists in the
+        # running server's server.properties. Otherwise it is greyed out as
+        # "not available on this version" instead of failing saves.
+        available = server_installed and key in values
         fields.append({
             "key": key,
             "category": spec.get("category", "gameplay"),
@@ -819,6 +878,7 @@ def get_profile_server_settings(profile_id: str):
             "min": spec.get("min"),
             "max": spec.get("max"),
             "placeholder": spec.get("placeholder", ""),
+            "available": available,
         })
     # Include any dynamic keys from the actual server.properties that aren't
     # in the curated spec, so settings added by mods or other loaders are
@@ -839,6 +899,7 @@ def get_profile_server_settings(profile_id: str):
                 "min": None,
                 "max": None,
                 "placeholder": "",
+                "available": True,
             })
     return {
         "profile_id": profile_id,
@@ -862,37 +923,84 @@ async def update_profile_server_settings(profile_id: str, payload: ServerSetting
         raise HTTPException(status_code=409, detail="Server settings cannot be changed while a backup is running.")
     if not isinstance(payload.properties, dict) or not payload.properties:
         raise HTTPException(status_code=422, detail="Provide at least one server setting to save.")
-    updates: dict[str, str] = {}
+
+    # Reject blocked keys and malformed keys/values before touching anything.
+    for key, value in payload.properties.items():
+        if _is_blocked_setting_key(key):
+            raise HTTPException(
+                status_code=422,
+                detail=f"'{key}' is a reserved or security-sensitive key and cannot be changed via settings.",
+            )
+        if "=" in key:
+            raise HTTPException(
+                status_code=422,
+                detail=f"'{key}' contains invalid character '='.",
+            )
+        if _has_control_chars(key):
+            raise HTTPException(
+                status_code=422,
+                detail=f"'{key}' contains invalid control characters.",
+            )
+        raw_value = value or ""
+        if _has_control_chars(raw_value):
+            raise HTTPException(
+                status_code=422,
+                detail=f"'{key}' contains invalid control characters in its value.",
+            )
+        text = raw_value.strip()
+
+    # Validate each key independently so one invalid key never blocks or
+    # reverts the others.
+    applied: dict[str, str] = {}
+    rejected: dict[str, str] = {}
     for key, value in payload.properties.items():
         spec = SERVER_SETTING_SPECS.get(key)
         if spec is not None:
-            updates[key] = _validate_server_setting(key, spec, value)
+            try:
+                applied[key] = _validate_server_setting(key, spec, value)
+            except HTTPException as exc:
+                rejected[key] = exc.detail
         else:
             # Dynamic key: not in the curated spec, but accept it so settings
             # added by mods or other loaders work for any version/build.
-            text = (value or "").strip()
+            raw_text = value or ""
+            if _has_control_chars(raw_text):
+                rejected[key] = f"'{key}' contains invalid control characters in its value."
+                continue
+            text = raw_text.strip()
             if text.lower() in ("true", "false"):
-                updates[key] = text.lower()
+                applied[key] = text.lower()
             elif text.lstrip("-").isdigit():
-                updates[key] = str(int(text))
+                applied[key] = str(int(text))
             else:
-                updates[key] = text
+                applied[key] = text
+
+    if not applied:
+        raise HTTPException(
+            status_code=422,
+            detail=f"No valid settings to save. Rejected: {rejected}",
+        )
 
     # Persist the saved settings so they survive a wiped or not-yet-installed
     # server folder; the panel re-applies them whenever it writes server.properties.
-    server_properties.merge_saved_settings(profile_id, updates)
+    server_properties.merge_saved_settings(profile_id, applied)
 
     # Also merge into the existing server.properties so the file on disk matches
     # what the panel will apply on the next start.
     props_path = server_properties.properties_path(profile_id)
     if props_path.is_file() and not props_path.is_symlink():
         existing = server_properties.read_properties(props_path)
-        existing.update(updates)
+        existing.update(applied)
         server_properties.write_properties(props_path, existing)
 
     state = db.get_runtime_state(profile_id)
-    logger.info("API: Saved %d server settings for profile '%s'", len(updates), profile.name)
-    return {"saved": True, "applies_after_restart": _profile_server_running(state)}
+    logger.info("API: Saved %d server settings for profile '%s'", len(applied), profile.name)
+    return {
+        "saved": True,
+        "applied": list(applied.keys()),
+        "rejected": rejected,
+        "applies_after_restart": _profile_server_running(state),
+    }
 
 
 class ServerIdentityUpdate(BaseModel):
@@ -1131,6 +1239,10 @@ GAMERULE_SPECS: dict[str, dict] = {
         "category": "drops", "type": "bool", "default": True, "label": "Entity Item Drops",
         "description": "Entities such as minecarts, boats, paintings, and item frames drop items when destroyed.",
     },
+    "doMobSpawning": {
+        "category": "world", "type": "bool", "default": True, "label": "Mob Spawning",
+        "description": "Controls whether mobs can spawn naturally (renamed to doMonsterSpawning in newer versions).",
+    },
 }
 
 
@@ -1172,6 +1284,7 @@ async def get_profile_gamerules(profile_id: str):
                 "value": spec["default"],
                 "min": spec.get("min"),
                 "max": spec.get("max"),
+                "available": False,
             })
         return {
             "profile_id": profile_id,
@@ -1179,33 +1292,55 @@ async def get_profile_gamerules(profile_id: str):
             "rules": rule_items,
         }
 
-    # Server is running -> query live gamerules via RCON batch
-    commands = [f"gamerule {key}" for key in GAMERULE_SPECS.keys()]
+    # Server is running -> query live gamerules via RCON batch.
+    # Resolve aliases: for each canonical gamerule, try each alias key.
+    # Detect which one works by querying the server, not by guessing version.
+    alias_commands: list[str] = []
+    alias_to_canonical: dict[str, str] = {}
+    for canonical, aliases in GAME_RULE_ALIASES.items():
+        for alias in aliases:
+            alias_commands.append(f"gamerule {alias}")
+            alias_to_canonical[alias] = canonical
+
     try:
         responses = await rcon.send_commands(
             "127.0.0.1",
             profile.rcon_port,
             profile.rcon_password,
-            commands,
+            alias_commands,
             timeout=5.0,
         )
     except rcon.RCONError as exc:
         logger.warning("Failed to fetch gamerules for %s: %s", profile.name, exc)
-        responses = [""] * len(commands)
+        responses = [""] * len(alias_commands)
 
-    for (key, spec), resp in zip(GAMERULE_SPECS.items(), responses):
-        parsed = _parse_gamerule_value(resp, spec["type"])
-        value = parsed if parsed is not None else spec["default"]
+    # Command string -> index in responses
+    cmd_to_index = {cmd: i for i, cmd in enumerate(alias_commands)}
+
+    for canonical, spec in GAMERULE_SPECS.items():
+        value = None
+        available = False
+        for alias in GAME_RULE_ALIASES.get(canonical, [canonical]):
+            idx = cmd_to_index.get(f"gamerule {alias}")
+            if idx is None:
+                continue
+            resp = responses[idx]
+            parsed = _parse_gamerule_value(resp, spec["type"])
+            if parsed is not None:
+                value = parsed
+                available = True
+                break
         rule_items.append({
-            "key": key,
+            "key": canonical,
             "label": spec["label"],
             "category": spec["category"],
             "description": spec["description"],
             "type": spec["type"],
             "default": spec["default"],
-            "value": value,
+            "value": value if value is not None else spec["default"],
             "min": spec.get("min"),
             "max": spec.get("max"),
+            "available": available,
         })
 
     return {
@@ -1253,28 +1388,46 @@ async def update_profile_gamerule(profile_id: str, rule: str, payload: GameruleU
                 detail=f"Gamerule '{rule}' must be between {spec['min']} and {spec['max']}.",
             )
         send_val = str(num)
-        typed_val = num
+        typed_val = num  # type: ignore[assignment]
     else:
         send_val = val_str
-        typed_val = val_str
+        typed_val = val_str  # type: ignore[assignment]
 
-    try:
-        response = await rcon.send_command(
-            "127.0.0.1",
-            profile.rcon_port,
-            profile.rcon_password,
-            f"gamerule {rule} {send_val}",
-        )
-    except rcon.RCONError as exc:
-        logger.warning("Failed to update gamerule %s on %s: %s", rule, profile.name, exc)
-        raise HTTPException(status_code=502, detail=f"Could not apply gamerule to server: {exc}") from exc
+    # Try each alias until one is accepted by the server. Detect success by
+    # checking the response does not indicate an unknown gamerule.
+    aliases = GAME_RULE_ALIASES.get(rule, [rule])
+    last_response = ""
+    for alias in aliases:
+        try:
+            response = await rcon.send_command(
+                "127.0.0.1",
+                profile.rcon_port,
+                profile.rcon_password,
+                f"gamerule {alias} {send_val}",
+            )
+            last_response = response
+            # Minecraft responds with the gamerule name when successful;
+            # unknown gamerules produce "Unknown gamerule" or similar.
+            if "unknown gamerule" not in response.lower() and "does not exist" not in response.lower():
+                logger.info(
+                    "Updated live gamerule '%s' (alias '%s') to '%s' on profile '%s'",
+                    rule, alias, send_val, profile.name,
+                )
+                return {
+                    "success": True,
+                    "rule": rule,
+                    "applied_alias": alias,
+                    "value": typed_val,
+                    "response": response,
+                }
+        except rcon.RCONError as exc:
+            logger.warning("RCON error setting gamerule %s via alias %s on %s: %s", rule, alias, profile.name, exc)
+            last_response = str(exc)
 
-    logger.info("Updated live gamerule '%s' to '%s' on profile '%s'", rule, send_val, profile.name)
-    return {
-        "success": True,
-        "rule": rule,
-        "value": typed_val,
-        "response": response,
-    }
+    # No alias was accepted by the server.
+    raise HTTPException(
+        status_code=502,
+        detail=f"Could not apply gamerule '{rule}' to server. Last response: {last_response}",
+    )
 
 
