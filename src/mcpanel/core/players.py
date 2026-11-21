@@ -534,10 +534,18 @@ async def add_operator(profile: Profile, name: str, level: int | None) -> dict:
         if phase in ("starting", "stopping"):
             raise HTTPException(status_code=409, detail=f"The server is {phase}. Try again when it has finished.")
         if phase == "running":
-            response = await _rcon(profile, f"op {name} {level}")
+            response = await _rcon(profile, f"op {name}")
             entry = await _wait_for_entry(profile.id, OPS_FILE, name)
             if entry is None:
                 raise _command_error(response, name, "op")
+            # Patch the desired level directly into ops.json (vanilla /op uses server default)
+            def _patch_add_level() -> None:
+                entries = _read_entries(profile.id, OPS_FILE)
+                target = _match(entries, name)
+                if target is not None:
+                    target["level"] = level
+                    _write_entries(profile.id, OPS_FILE, entries)
+            await asyncio.to_thread(_patch_add_level)
             entry["level"] = level
             logger.info("Players: made '%s' an operator (level %d) on '%s' (live)", name, level, profile.name)
             return _operator_view(entry)
@@ -592,10 +600,18 @@ async def update_operator(
                     status_code=409,
                     detail="Minecraft has no command for the bypass limit, so stop the server to change it.",
                 )
-            response = await _rcon(profile, f"op {name} {level}")
+            response = await _rcon(profile, f"op {name}")
             entry = await _wait_for_entry(profile.id, OPS_FILE, name)
             if entry is None:
                 raise _command_error(response, name, "op")
+            # Patch the desired level directly into ops.json (vanilla /op uses server default)
+            def _patch_update_level() -> None:
+                entries = _read_entries(profile.id, OPS_FILE)
+                target = _match(entries, name)
+                if target is not None and level is not None:
+                    target["level"] = level
+                    _write_entries(profile.id, OPS_FILE, entries)
+            await asyncio.to_thread(_patch_update_level)
             entry["level"] = level
             return _operator_view(entry)
 
@@ -647,10 +663,18 @@ async def rename_operator(profile: Profile, name: str, new_name: str) -> dict:
                     detail="Stop the server to rename this operator. The bypass-limit setting cannot be carried over the console.",
                 )
             level = _operator_level(target)
-            response = await _rcon(profile, f"op {new_name} {level}")
+            response = await _rcon(profile, f"op {new_name}")
             entry = await _wait_for_rename(profile.id, OPS_FILE, new_name, name, target.get("uuid"))
             if entry is None:
                 raise _command_error(response, new_name, "op")
+            # Patch the preserved level directly into ops.json
+            def _patch_rename_level() -> None:
+                entries = _read_entries(profile.id, OPS_FILE)
+                t = _match(entries, new_name)
+                if t is not None:
+                    t["level"] = level
+                    _write_entries(profile.id, OPS_FILE, entries)
+            await asyncio.to_thread(_patch_rename_level)
             entry["level"] = level
             if _dashed(entry.get("uuid")) != _dashed(target.get("uuid")):
                 response = await _rcon(profile, f"deop {name}")

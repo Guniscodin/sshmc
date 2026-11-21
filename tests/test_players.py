@@ -322,15 +322,16 @@ async def test_live_server_rcon_and_rollback(mock_profile, monkeypatch):
     assert "whitelist add LiveRenamed" in rcon_commands
     assert "whitelist remove LivePlayer" in rcon_commands
 
-    # 3. Add operator live
+    # 3. Add operator live (vanilla /op takes no level arg; level is patched into ops.json after)
     op = await players.add_operator(profile, "LiveOp", 3)
     assert op["name"] == "LiveOp"
     assert op["level"] == 3
+    assert "op LiveOp" in rcon_commands  # no level suffix in the RCON command
 
     # 4. Rename operator live
     op_renamed = await players.rename_operator(profile, "LiveOp", "LiveOpBoss")
     assert op_renamed["name"] == "LiveOpBoss"
-    assert "op LiveOpBoss 3" in rcon_commands
+    assert "op LiveOpBoss" in rcon_commands  # no level suffix in the RCON command
     assert "deop LiveOp" in rcon_commands
 
     # 5. Live operator cannot change bypass limit
