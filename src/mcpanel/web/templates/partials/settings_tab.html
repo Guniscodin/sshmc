@@ -82,7 +82,7 @@
         <div class="form-hint callout-box" x-show="serverRunning" role="status">
             <i class="fa-solid fa-rotate text-primary-color"></i>
             <span><strong><span x-text="profile ? profile.name : ''"></span> is currently running.</strong>
-            Saved changes are written to disk but the running server keeps its current settings until you stop and start it (or use Restart &amp; sync). SSHMC will not restart the server for you.</span>
+            Saved changes to server.properties are written to disk but the server keeps its current values until restarted.</span>
         </div>
 
         <div class="form-hint callout-box" x-show="!serverRunning && serverInstalled" role="status">
@@ -96,6 +96,96 @@
         </div>
 
         <div class="form-error" x-show="error" x-text="error" role="alert"></div>
+
+        <!-- LIVE GAME RULES CARD -->
+        <div class="card settings-section-card gamerules-card" x-show="!loading">
+            <div class="settings-section-header flex-between flex-wrap gap-2">
+                <div>
+                    <h3 class="m-0">
+                        <i class="fa-solid fa-bolt text-warning"></i>
+                        <span>Live Game Rules</span>
+                        <span class="badge badge-success text-xs">Instant • No Restart Needed</span>
+                    </h3>
+                    <p class="form-hint m-0">Tweak world mechanics, player death rules, and mob behavior in real time.</p>
+                </div>
+                <div class="flex items-center gap-2">
+                    <button type="button" class="btn btn-ghost btn-sm" @click="loadGamerules()" :disabled="loadingGamerules || !serverRunning" title="Refresh live gamerules from server">
+                        <i class="fa-solid fa-rotate" :class="{ 'fa-spin': loadingGamerules }"></i> Refresh
+                    </button>
+                </div>
+            </div>
+
+            <!-- Offline warning when server is stopped -->
+            <div x-show="!serverRunning" class="form-hint callout-box m-0">
+                <i class="fa-solid fa-circle-info text-warning"></i>
+                <span>The server is stopped. Start <strong x-text="profile ? profile.name : 'the server'"></strong> to inspect and toggle live gamerules in real time.</span>
+            </div>
+
+            <!-- Gamerules content when server is running -->
+            <div x-show="serverRunning" class="stack-sm">
+                <!-- Filter bar: Category pills + text filter -->
+                <div class="gamerules-toolbar flex items-center justify-between flex-wrap gap-2">
+                    <div class="pill-group">
+                        <button type="button" class="pill-btn" :class="{ 'is-active': gameruleCategory === 'all' }" @click="gameruleCategory = 'all'">
+                            All (<span x-text="gamerules.length"></span>)
+                        </button>
+                        <button type="button" class="pill-btn" :class="{ 'is-active': gameruleCategory === 'player' }" @click="gameruleCategory = 'player'">
+                            Player &amp; Death
+                        </button>
+                        <button type="button" class="pill-btn" :class="{ 'is-active': gameruleCategory === 'world' }" @click="gameruleCategory = 'world'">
+                            World &amp; Environment
+                        </button>
+                        <button type="button" class="pill-btn" :class="{ 'is-active': gameruleCategory === 'drops' }" @click="gameruleCategory = 'drops'">
+                            Loot &amp; Drops
+                        </button>
+                    </div>
+                    <div class="gamerules-search">
+                        <input type="search" x-model="gameruleSearch" placeholder="Filter gamerules…" aria-label="Filter gamerules" class="input-sm">
+                    </div>
+                </div>
+
+                <!-- Rules Grid -->
+                <div class="grid-2 mt-2">
+                    <template x-for="rule in filteredGamerules()" :key="rule.key">
+                        <div class="gamerule-item-card">
+                            <div class="gamerule-item-info">
+                                <div class="flex items-center justify-between gap-2">
+                                    <span class="gamerule-name" x-text="rule.label"></span>
+                                    <code class="gamerule-code text-xs text-muted" x-text="rule.key"></code>
+                                </div>
+                                <p class="form-hint m-0 text-xs" x-text="rule.description"></p>
+                            </div>
+                            <div class="gamerule-item-control">
+                                <template x-if="rule.type === 'bool'">
+                                    <button type="button" class="btn btn-sm"
+                                            :class="rule.value ? 'btn-success' : 'btn-secondary'"
+                                            @click="toggleGamerule(rule)"
+                                            :disabled="savingGameruleKey === rule.key">
+                                        <i class="fa-solid" :class="savingGameruleKey === rule.key ? 'fa-spinner fa-spin' : (rule.value ? 'fa-check' : 'fa-xmark')"></i>
+                                        <span x-text="rule.value ? 'Enabled' : 'Disabled'"></span>
+                                    </button>
+                                </template>
+                                <template x-if="rule.type === 'int'">
+                                    <div class="flex items-center gap-1">
+                                        <input type="number" class="gamerule-int-input" x-model.number="rule.value" :min="rule.min" :max="rule.max">
+                                        <button type="button" class="btn btn-primary btn-sm btn-icon"
+                                                @click="saveIntGamerule(rule)"
+                                                :disabled="savingGameruleKey === rule.key"
+                                                title="Apply value">
+                                            <i class="fa-solid" :class="savingGameruleKey === rule.key ? 'fa-spinner fa-spin' : 'fa-check'"></i>
+                                        </button>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+
+                <div x-show="filteredGamerules().length === 0" class="empty-state p-4 text-center">
+                    <p class="text-muted m-0">No gamerules matched your filter.</p>
+                </div>
+            </div>
+        </div>
 
         <div x-show="loading" class="form-hint"><i class="fa-solid fa-spinner fa-spin"></i> Loading server settings…</div>
 

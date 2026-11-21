@@ -370,3 +370,125 @@ def test_send_profile_broadcast(mock_profile, monkeypatch):
         json={"message": "   "},
     )
     assert resp.status_code == 422
+
+
+def test_gamerules_api(mock_profile, monkeypatch):
+    from fastapi import FastAPI
+    from mcpanel.models import RuntimeState, ProfileStatus
+    from mcpanel.api import profiles
+    from mcpanel.core import rcon
+
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    profile, _ = mock_profile
+
+    # 1. GET gamerules when server stopped
+    resp = client.get(f"/api/profiles/{profile.id}/gamerules")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["server_running"] is False
+    assert len(data["rules"]) == 15
+    rule_map = {r["key"]: r for r in data["rules"]}
+    assert rule_map["keepInventory"]["category"] == "player"
+    assert rule_map["mobGriefing"]["category"] == "world"
+    assert rule_map["doMobLoot"]["category"] == "drops"
+
+    # 2. PUT gamerules when server stopped -> 409
+    resp = client.put(
+        f"/api/profiles/{profile.id}/gamerules/keepInventory",
+        json={"value": "true"},
+    )
+    assert resp.status_code == 409
+    assert "running" in resp.json()["detail"].lower()
+
+    # 3. Simulate running server
+    monkeypatch.setattr(
+        profiles.db,
+        "get_runtime_state",
+        lambda pid: RuntimeState(
+            profile_id=pid,
+            status=ProfileStatus.RUNNING,
+            pid=99999,
+            started_at=None,
+            stopped_at=None,
+            crash_count=0,
+            last_exit_code=None,
+        ),
+    )
+
+    # 3a. GET gamerules live via mock rcon.send_commands
+    async def mock_send_commands(host, port, password, commands, timeout=5.0):
+        responses = []
+        for cmd in commands:
+            if "keepInventory" in cmd:
+                responses.append("Gamerule keepInventory is currently set to: true")
+            elif "playersSleepingPercentage" in cmd:
+                responses.append("Gamerule playersSleepingPercentage is currently set to: 50")
+            elif "mobGriefing" in cmd:
+                responses.append("Gamerule mobGriefing is currently set to: false")
+            else:
+                responses.append("Gamerule is currently set to: true")
+        return responses
+
+    monkeypatch.setattr(profiles.rcon, "send_commands", mock_send_commands)
+
+    resp = client.get(f"/api/profiles/{profile.id}/gamerules")
+    assert resp.status_code == 200
+    live_data = resp.json()
+    assert live_data["server_running"] is True
+    live_map = {r["key"]: r for r in live_data["rules"]}
+    assert live_map["keepInventory"]["value"] is True
+    assert live_map["playersSleepingPercentage"]["value"] == 50
+    assert live_map["mobGriefing"]["value"] is False
+
+    # 3b. PUT gamerules live via mock rcon.send_command
+    sent_rcon = []
+
+    async def mock_send_command(host, port, password, command):
+        sent_rcon.append(command)
+        return "Gamerule updated"
+
+    monkeypatch.setattr(profiles.rcon, "send_command", mock_send_command)
+
+    # Valid bool update
+    resp = client.put(
+        f"/api/profiles/{profile.id}/gamerules/keepInventory",
+        json={"value": "false"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["success"] is True
+    assert resp.json()["value"] is False
+    assert "gamerule keepInventory false" in sent_rcon
+
+    # Valid int update
+    resp = client.put(
+        f"/api/profiles/{profile.id}/gamerules/playersSleepingPercentage",
+        json={"value": "25"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["value"] == 25
+    assert "gamerule playersSleepingPercentage 25" in sent_rcon
+
+    # 4. Unknown gamerule -> 404
+    resp = client.put(
+        f"/api/profiles/{profile.id}/gamerules/unknownGamerule123",
+        json={"value": "true"},
+    )
+    assert resp.status_code == 404
+
+    # 5. Invalid value -> 422
+    resp = client.put(
+        f"/api/profiles/{profile.id}/gamerules/keepInventory",
+        json={"value": "not_a_bool"},
+    )
+    assert resp.status_code == 422
+
+    # Integer out of range -> 422
+    resp = client.put(
+        f"/api/profiles/{profile.id}/gamerules/playersSleepingPercentage",
+        json={"value": "200"},
+    )
+    assert resp.status_code == 422
+

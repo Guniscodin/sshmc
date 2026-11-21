@@ -21,6 +21,12 @@ window.serverSettingsApp = function serverSettingsApp() {
         broadcastBold: false,
         broadcastItalic: false,
         sendingBroadcast: false,
+        gamerules: [],
+        loadingGamerules: false,
+        savingGameruleKey: null,
+        gameruleCategory: 'all',
+        gameruleSearch: '',
+        gamerulesLoaded: false,
 
         categories: [
             {
@@ -143,7 +149,7 @@ window.serverSettingsApp = function serverSettingsApp() {
         },
 
         async selectProfile() {
-            if (!this.profileId) { this.profile = null; this.fields = []; this.searchQuery = ''; return; }
+            if (!this.profileId) { this.profile = null; this.fields = []; this.gamerules = []; this.searchQuery = ''; return; }
             this.syncSelectedProfile();
             this.searchQuery = '';
             // Reset identity state from the previous profile so the icon
@@ -151,7 +157,10 @@ window.serverSettingsApp = function serverSettingsApp() {
             this.hasIcon = false;
             this.identityDirty = false;
             this.clearPendingIcon();
-            await this.loadSettings();
+            await Promise.all([
+                this.loadSettings(),
+                this.loadGamerules(),
+            ]);
         },
 
         syncSelectedProfile() {
@@ -392,6 +401,80 @@ window.serverSettingsApp = function serverSettingsApp() {
                 showToast(err.message || 'Could not send broadcast.', 'error');
             } finally {
                 this.sendingBroadcast = false;
+            }
+        },
+
+        async loadGamerules() {
+            if (!this.profileId) { this.gamerules = []; return; }
+            this.loadingGamerules = true;
+            try {
+                const response = await fetch(`/api/profiles/${encodeURIComponent(this.profileId)}/gamerules`);
+                if (response.status === 401) { window.location.assign('/login'); return; }
+                const data = await this.readJson(response, 'Could not load gamerules.');
+                if (response.ok && Array.isArray(data.rules)) {
+                    this.gamerules = data.rules;
+                    this.gamerulesLoaded = true;
+                }
+            } catch (err) {
+                console.error('Failed to load gamerules:', err);
+            } finally {
+                this.loadingGamerules = false;
+            }
+        },
+
+        filteredGamerules() {
+            const cat = this.gameruleCategory;
+            const query = (this.gameruleSearch || '').trim().toLowerCase();
+            return this.gamerules.filter(r => {
+                if (cat !== 'all' && r.category !== cat) return false;
+                if (!query) return true;
+                return (
+                    (r.label && r.label.toLowerCase().includes(query)) ||
+                    (r.key && r.key.toLowerCase().includes(query)) ||
+                    (r.description && r.description.toLowerCase().includes(query))
+                );
+            });
+        },
+
+        async toggleGamerule(rule) {
+            if (!this.profileId || this.savingGameruleKey || !this.serverRunning) return;
+            const nextVal = !rule.value;
+            this.savingGameruleKey = rule.key;
+            try {
+                const response = await fetch(`/api/profiles/${encodeURIComponent(this.profileId)}/gamerules/${encodeURIComponent(rule.key)}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ value: String(nextVal) }),
+                });
+                if (response.status === 401) { window.location.assign('/login'); return; }
+                const data = await this.readJson(response, 'Could not update gamerule.');
+                if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Could not update gamerule.');
+                rule.value = nextVal;
+                showToast(`Gamerule ${rule.key} set to ${nextVal}!`, 'success');
+            } catch (err) {
+                showToast(err.message || 'Could not update gamerule.', 'error');
+            } finally {
+                this.savingGameruleKey = null;
+            }
+        },
+
+        async saveIntGamerule(rule) {
+            if (!this.profileId || this.savingGameruleKey || !this.serverRunning) return;
+            this.savingGameruleKey = rule.key;
+            try {
+                const response = await fetch(`/api/profiles/${encodeURIComponent(this.profileId)}/gamerules/${encodeURIComponent(rule.key)}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ value: String(rule.value) }),
+                });
+                if (response.status === 401) { window.location.assign('/login'); return; }
+                const data = await this.readJson(response, 'Could not update gamerule.');
+                if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Could not update gamerule.');
+                showToast(`Gamerule ${rule.key} updated to ${rule.value}!`, 'success');
+            } catch (err) {
+                showToast(err.message || 'Could not update gamerule.', 'error');
+            } finally {
+                this.savingGameruleKey = null;
             }
         },
     };

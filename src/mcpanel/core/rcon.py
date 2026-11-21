@@ -136,3 +136,65 @@ async def send_command(
             await writer.wait_closed()
         except Exception:
             logger.debug("RCON connection closed with a socket error.")
+
+
+async def send_commands(
+    host: str, port: int, password: str, commands: list[str], timeout: float = 5.0
+) -> list[str]:
+    """Connects to an RCON server, authenticates once, executes multiple commands, and returns their responses."""
+    if not commands:
+        return []
+    logger.debug(f"Connecting to RCON at {host}:{port} for {len(commands)} commands")
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port), timeout=timeout
+        )
+    except (OSError, asyncio.TimeoutError) as e:
+        logger.error(f"RCON connection failed to {host}:{port}: {e}")
+        raise RCONError(f"Could not connect to RCON: {e}") from e
+
+    try:
+        # 1. Authentication Phase
+        auth_packet = _pack_packet(req_id=1, req_type=SERVERDATA_AUTH, payload=password)
+        writer.write(auth_packet)
+        await writer.drain()
+
+        auth_packet_resp = None
+        for _ in range(3):
+            candidate = await asyncio.wait_for(_read_packet(reader), timeout=timeout)
+            cand_id, cand_type, _ = candidate
+            if cand_id == -1 or cand_type != 0:
+                auth_packet_resp = candidate
+                break
+        if auth_packet_resp is None:
+            raise RCONError("Unexpected RCON authentication response.")
+        auth_id, auth_type, _ = auth_packet_resp
+
+        if auth_id == -1:
+            logger.error("RCON authentication failed: Bad password.")
+            raise RCONAuthError("Authentication failed: incorrect RCON password.")
+        if auth_id != 1 or auth_type != SERVERDATA_EXECCOMMAND:
+            raise RCONError("Unexpected RCON authentication response.")
+
+        # 2. Sequential Execution Phase
+        responses = []
+        for idx, command in enumerate(commands):
+            req_id = idx + 2
+            cmd_packet = _pack_packet(req_id=req_id, req_type=SERVERDATA_EXECCOMMAND, payload=command)
+            writer.write(cmd_packet)
+            await writer.drain()
+
+            _, _, response = await asyncio.wait_for(_read_packet(reader), timeout=timeout)
+            responses.append(response)
+
+        return responses
+    except asyncio.TimeoutError as e:
+        logger.error("RCON timeout while executing batch commands.")
+        raise RCONError("RCON operation timed out.") from e
+    finally:
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
+

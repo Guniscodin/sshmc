@@ -1035,3 +1035,217 @@ async def send_profile_broadcast(profile_id: str, payload: BroadcastPayload):
         "response": response,
     }
 
+
+GAMERULE_SPECS: dict[str, dict] = {
+    # Player & Death
+    "keepInventory": {
+        "category": "player", "type": "bool", "default": False, "label": "Keep Inventory on Death",
+        "description": "Players retain items, weapons, armor, and XP in their inventory when they die.",
+    },
+    "naturalRegeneration": {
+        "category": "player", "type": "bool", "default": True, "label": "Natural Health Regeneration",
+        "description": "Players naturally regenerate health when their hunger bar is sufficiently full.",
+    },
+    "playersSleepingPercentage": {
+        "category": "player", "type": "int", "default": 100, "min": 0, "max": 100, "label": "Sleeping Percentage to Skip Night",
+        "description": "Percentage of online players in bed needed to skip the night (0 or 1 for single-player sleep).",
+    },
+    "spawnRadius": {
+        "category": "player", "type": "int", "default": 10, "min": 0, "max": 100, "label": "Spawn Radius around World Spawn",
+        "description": "Radius in blocks within which respawning players appear around world spawn (0 = exact block).",
+    },
+    "showDeathMessages": {
+        "category": "player", "type": "bool", "default": True, "label": "Show Death Messages in Chat",
+        "description": "Display death notifications in chat when a player dies or is slain.",
+    },
+
+    # World & Environment
+    "mobGriefing": {
+        "category": "world", "type": "bool", "default": True, "label": "Mob Griefing (Creeper/Enderman Damage)",
+        "description": "Allow creepers, withers, ghasts, and endermen to destroy, explode, or pick up blocks in the world.",
+    },
+    "doFireTick": {
+        "category": "world", "type": "bool", "default": True, "label": "Fire Spread & Extinguish",
+        "description": "Allow fire to spread to nearby burnable blocks and extinguish over time.",
+    },
+    "doDaylightCycle": {
+        "category": "world", "type": "bool", "default": True, "label": "Daylight Cycle (Sun & Moon Advance)",
+        "description": "Advance the time of day and cycle between day and night continuously.",
+    },
+    "doWeatherCycle": {
+        "category": "world", "type": "bool", "default": True, "label": "Weather Cycle (Rain & Thunder)",
+        "description": "Allow rain, snow, and thunderstorms to occur dynamically.",
+    },
+    "doPatrolSpawning": {
+        "category": "world", "type": "bool", "default": True, "label": "Illager Patrol Spawning",
+        "description": "Spawn wandering illager raid patrols periodically in the world.",
+    },
+    "doTraderSpawning": {
+        "category": "world", "type": "bool", "default": True, "label": "Wandering Trader Spawning",
+        "description": "Spawn wandering traders with llamas near players.",
+    },
+    "doInsomnia": {
+        "category": "world", "type": "bool", "default": True, "label": "Phantom Spawning (Insomnia)",
+        "description": "Spawn flying phantoms who attack players that haven't slept in several days.",
+    },
+
+    # Loot & Drops
+    "doMobLoot": {
+        "category": "drops", "type": "bool", "default": True, "label": "Mob Item Drops",
+        "description": "Mobs drop loot items and equipment when killed.",
+    },
+    "doTileDrops": {
+        "category": "drops", "type": "bool", "default": True, "label": "Block Item Drops",
+        "description": "Blocks drop items when broken or mined by players.",
+    },
+    "doEntityDrops": {
+        "category": "drops", "type": "bool", "default": True, "label": "Entity Item Drops",
+        "description": "Entities such as minecarts, boats, paintings, and item frames drop items when destroyed.",
+    },
+}
+
+
+def _parse_gamerule_value(response: str, rule_type: str):
+    m = re.search(r'(?:is currently set to:?\s*|[:=]\s*)(true|false|\d+)', response, re.IGNORECASE)
+    if not m:
+        m = re.search(r'\b(true|false|\d+)\b', response, re.IGNORECASE)
+    if m:
+        raw = m.group(1).lower()
+        if rule_type == "bool":
+            return raw == "true"
+        elif rule_type == "int":
+            try:
+                return int(raw)
+            except ValueError:
+                return None
+    return None
+
+
+@router.get("/{profile_id}/gamerules")
+async def get_profile_gamerules(profile_id: str):
+    """Fetches in-game gamerules via RCON when the server is running."""
+    profile = db.get_profile(profile_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    state = db.get_runtime_state(profile_id)
+    server_running = bool(state and state.status == ProfileStatus.RUNNING)
+
+    rule_items = []
+    if not server_running:
+        for key, spec in GAMERULE_SPECS.items():
+            rule_items.append({
+                "key": key,
+                "label": spec["label"],
+                "category": spec["category"],
+                "description": spec["description"],
+                "type": spec["type"],
+                "default": spec["default"],
+                "value": spec["default"],
+                "min": spec.get("min"),
+                "max": spec.get("max"),
+            })
+        return {
+            "profile_id": profile_id,
+            "server_running": False,
+            "rules": rule_items,
+        }
+
+    # Server is running -> query live gamerules via RCON batch
+    commands = [f"gamerule {key}" for key in GAMERULE_SPECS.keys()]
+    try:
+        responses = await rcon.send_commands(
+            "127.0.0.1",
+            profile.rcon_port,
+            profile.rcon_password,
+            commands,
+            timeout=5.0,
+        )
+    except rcon.RCONError as exc:
+        logger.warning("Failed to fetch gamerules for %s: %s", profile.name, exc)
+        responses = [""] * len(commands)
+
+    for (key, spec), resp in zip(GAMERULE_SPECS.items(), responses):
+        parsed = _parse_gamerule_value(resp, spec["type"])
+        value = parsed if parsed is not None else spec["default"]
+        rule_items.append({
+            "key": key,
+            "label": spec["label"],
+            "category": spec["category"],
+            "description": spec["description"],
+            "type": spec["type"],
+            "default": spec["default"],
+            "value": value,
+            "min": spec.get("min"),
+            "max": spec.get("max"),
+        })
+
+    return {
+        "profile_id": profile_id,
+        "server_running": True,
+        "rules": rule_items,
+    }
+
+
+class GameruleUpdate(BaseModel):
+    value: str = Field(..., max_length=50)
+
+
+@router.put("/{profile_id}/gamerules/{rule}")
+async def update_profile_gamerule(profile_id: str, rule: str, payload: GameruleUpdate):
+    """Updates an in-game gamerule in real time over RCON without requiring a restart."""
+    profile = db.get_profile(profile_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    state = db.get_runtime_state(profile_id)
+    if not state or state.status != ProfileStatus.RUNNING:
+        raise HTTPException(
+            status_code=409,
+            detail="The server must be running to update gamerules. Changes apply in-game immediately without restart.",
+        )
+
+    spec = GAMERULE_SPECS.get(rule)
+    if not spec:
+        raise HTTPException(status_code=404, detail=f"'{rule}' is not a recognized gamerule.")
+
+    val_str = payload.value.strip()
+    if spec["type"] == "bool":
+        if val_str.lower() not in ("true", "false"):
+            raise HTTPException(status_code=422, detail=f"Gamerule '{rule}' must be true or false.")
+        send_val = val_str.lower()
+        typed_val = send_val == "true"
+    elif spec["type"] == "int":
+        try:
+            num = int(val_str)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"Gamerule '{rule}' must be a whole number.") from exc
+        if not (spec["min"] <= num <= spec["max"]):
+            raise HTTPException(
+                status_code=422,
+                detail=f"Gamerule '{rule}' must be between {spec['min']} and {spec['max']}.",
+            )
+        send_val = str(num)
+        typed_val = num
+    else:
+        send_val = val_str
+        typed_val = val_str
+
+    try:
+        response = await rcon.send_command(
+            "127.0.0.1",
+            profile.rcon_port,
+            profile.rcon_password,
+            f"gamerule {rule} {send_val}",
+        )
+    except rcon.RCONError as exc:
+        logger.warning("Failed to update gamerule %s on %s: %s", rule, profile.name, exc)
+        raise HTTPException(status_code=502, detail=f"Could not apply gamerule to server: {exc}") from exc
+
+    logger.info("Updated live gamerule '%s' to '%s' on profile '%s'", rule, send_val, profile.name)
+    return {
+        "success": True,
+        "rule": rule,
+        "value": typed_val,
+        "response": response,
+    }
+
+

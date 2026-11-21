@@ -1696,3 +1696,88 @@
     margin-right: 4px;
 }
 
+/* Live Gamerules Card */
+.gamerules-card {
+    border-left: 3px solid var(--warning);
+}
+
+.gamerules-toolbar {
+    padding-bottom: var(--space-2);
+    border-bottom: 1px solid var(--border-subtle);
+}
+
+.pill-group {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    flex-wrap: wrap;
+}
+
+.pill-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    padding: 3px 10px;
+    border-radius: var(--radius-full);
+    font-size: var(--font-xs);
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.pill-btn:hover {
+    color: var(--text-primary);
+    border-color: var(--border-focus);
+}
+
+.pill-btn.is-active {
+    background-color: var(--primary-color);
+    border-color: var(--primary-color);
+    color: #ffffff;
+    font-weight: var(--fw-semibold);
+}
+
+.gamerule-item-card {
+    background-color: var(--surface-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    padding: var(--space-3);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+}
+
+.gamerule-item-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.gamerule-name {
+    font-size: var(--font-sm);
+    font-weight: var(--fw-semibold);
+    color: var(--text-primary);
+}
+
+.gamerule-code {
+    font-family: var(--font-mono, monospace);
+    background-color: var(--surface-active);
+    padding: 1px 5px;
+    border-radius: 3px;
+}
+
+.gamerule-item-control {
+    flex-shrink: 0;
+}
+
+.gamerule-int-input {
+    width: 68px;
+    padding: 4px 6px;
+    font-size: var(--font-xs);
+    border-radius: var(--radius-sm);
+    text-align: center;
+}
+
+
