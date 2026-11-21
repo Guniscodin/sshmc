@@ -213,13 +213,12 @@ SERVER_SETTING_SPECS: dict[str, dict] = {
 
 MANAGED_SERVER_PROPERTIES = {"server-port", "enable-rcon", "rcon.port", "rcon.password", "motd"}
 
-# Keys that the panel manages itself and must never be changed via settings PUT.
-PANEL_MANAGED_KEYS = {"server-port", "enable-rcon", "rcon.port", "rcon.password", "motd"}
-
 # Keys that change who can reach or administer the server. Blocked from the
 # settings PUT endpoint unless they have a dedicated validated field.
+# server-port and enable-rcon are already covered by MANAGED_SERVER_PROPERTIES;
+# they are listed here for clarity but the blocked-key check unions both sets.
 SECURITY_SENSITIVE_KEYS = {
-    "server-ip", "server-port", "query.port", "enable-query", "enable-rcon",
+    "server-ip", "query.port", "enable-query",
 }
 
 
@@ -228,7 +227,7 @@ def _is_rcon_key(key: str) -> bool:
 
 
 def _is_blocked_setting_key(key: str) -> bool:
-    return key in PANEL_MANAGED_KEYS or key in SECURITY_SENSITIVE_KEYS or _is_rcon_key(key)
+    return key in MANAGED_SERVER_PROPERTIES or key in SECURITY_SENSITIVE_KEYS or _is_rcon_key(key)
 
 
 # Control characters (0x00-0x1F) that must never appear in setting keys or values.
@@ -1114,7 +1113,6 @@ async def update_profile_server_settings(profile_id: str, payload: ServerSetting
                 status_code=422,
                 detail=f"'{key}' contains invalid control characters in its value.",
             )
-        text = raw_value.strip()
 
     # Validate each key independently so one invalid key never blocks or
     # reverts the others.
@@ -1358,19 +1356,6 @@ def _parse_gamerule_value(response: str, rule_type: str):
 
 # Per-profile cache of resolved gamerule alias keys: (profile_id, canonical_key) -> working_alias
 _gamerule_alias_cache: dict[tuple[str, str], str] = {}
-
-
-def _cached_alias_for_rule(profile_id: str, canonical: str, spec: dict, mc_version: str | None) -> str | None:
-    """Return a cached working alias for a gamerule, or resolve and cache it."""
-    cache_key = (profile_id, canonical)
-    if cache_key in _gamerule_alias_cache:
-        return _gamerule_alias_cache[cache_key]
-
-    for alias in _gamerule_aliases(spec, mc_version):
-        _gamerule_alias_cache[cache_key] = alias
-        return alias
-
-    return None
 
 
 @router.get("/{profile_id}/gamerules")
