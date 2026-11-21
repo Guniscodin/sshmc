@@ -136,9 +136,11 @@ async def test_whitelist_operations(mock_profile):
     assert added["name"] == "Steve"
     assert added["uuid"] == players.offline_uuid("Steve")
 
-    # Re-adding returns existing
+    # In offline mode, "steve" and "Steve" are different players (case-sensitive UUIDs).
     readded = await players.add_whitelist(profile, "steve")
-    assert readded["name"] == "Steve"
+    assert readded["name"] == "steve"
+    assert readded["uuid"] == players.offline_uuid("steve")
+    assert readded["uuid"] != added["uuid"]
 
     # Rename player
     renamed = await players.rename_whitelist(profile, "Steve", "Alex")
@@ -156,6 +158,7 @@ async def test_whitelist_operations(mock_profile):
 
     # Remove player
     await players.remove_whitelist(profile, "Alex")
+    await players.remove_whitelist(profile, "steve")
     state = players.read_state(profile)
     assert state["whitelist"]["players"] == []
 
@@ -336,10 +339,16 @@ async def test_live_server_rcon_and_rollback(mock_profile, monkeypatch):
     assert "whitelist remove LivePlayer" in rcon_commands
 
     # 3. Add operator live (vanilla /op takes no level arg; level is patched into ops.json after)
-    op = await players.add_operator(profile, "LiveOp", 3)
+    # Default op-permission-level is 4, so live /op can only assign level 4.
+    op = await players.add_operator(profile, "LiveOp", 4)
     assert op["name"] == "LiveOp"
-    assert op["level"] == 3
+    assert op["level"] == 4
     assert "op LiveOp" in rcon_commands  # no level suffix in the RCON command
+
+    # Live operator cannot be assigned a non-default level while running
+    with pytest.raises(HTTPException) as exc:
+        await players.add_operator(profile, "LiveOp2", 3)
+    assert exc.value.status_code == 409
 
     # 4. Rename operator live
     op_renamed = await players.rename_operator(profile, "LiveOp", "LiveOpBoss")

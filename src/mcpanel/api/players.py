@@ -23,7 +23,6 @@ class PlayerName(BaseModel):
 
 class WhitelistSettings(BaseModel):
     enabled: bool | None = None
-    name: str | None = Field(default=None, min_length=3, max_length=16)
 
 
 class OperatorCreate(PlayerName):
@@ -67,9 +66,7 @@ async def update_whitelist_settings(profile_id: str, payload: WhitelistSettings)
     profile = _profile(profile_id)
     if payload.enabled is not None:
         return await players.set_whitelist_enabled(profile, payload.enabled)
-    if payload.name is not None:
-        return await players.rename_whitelist(profile, "settings", payload.name)
-    raise HTTPException(status_code=422, detail="Provide an enabled state or a player name.")
+    raise HTTPException(status_code=422, detail="Provide an enabled state.")
 
 
 # Keep this after /whitelist/settings so "settings" is not treated as a name.

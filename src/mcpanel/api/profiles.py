@@ -71,8 +71,13 @@ SERVER_SETTING_SPECS: dict[str, dict] = {
     },
     "level-type": {
         "type": "choice", "default": "minecraft:normal", "category": "world", "label": "World Preset Type",
-        "options": ["minecraft:normal", "minecraft:flat", "minecraft:large_biomes", "minecraft:amplified", "minecraft:single_biome_surface"],
+        "options": ["minecraft:normal", "minecraft:flat", "minecraft:large_biomes", "minecraft:amplified", "minecraft:single_biome_surface", "DEFAULT", "FLAT", "LARGEBIOMES", "AMPLIFIED", "CUSTOMIZED", "default", "buffet"],
         "description": "World generator preset. Only affects newly generated worlds.",
+        "legacy_map": {
+            "DEFAULT": "minecraft:normal", "FLAT": "minecraft:flat", "LARGEBIOMES": "minecraft:large_biomes",
+            "AMPLIFIED": "minecraft:amplified", "CUSTOMIZED": "minecraft:single_biome_surface",
+            "default": "minecraft:normal", "buffet": "minecraft:single_biome_surface",
+        },
     },
     "generate-structures": {
         "type": "bool", "default": "true", "category": "world", "label": "Generate Structures",
@@ -92,11 +97,15 @@ SERVER_SETTING_SPECS: dict[str, dict] = {
         "type": "choice", "default": "easy", "category": "gameplay", "label": "Difficulty",
         "options": ["peaceful", "easy", "normal", "hard"],
         "description": "Server difficulty applied to loaded worlds.",
+        "legacy_map": {"0": "peaceful", "1": "easy", "2": "normal", "3": "hard"},
+        "reverse_legacy_map": {"peaceful": "0", "easy": "1", "normal": "2", "hard": "3"},
     },
     "gamemode": {
         "type": "choice", "default": "survival", "category": "gameplay", "label": "Default Game Mode",
         "options": ["survival", "creative", "adventure", "spectator"],
         "description": "Game mode for new players joining the server.",
+        "legacy_map": {"0": "survival", "1": "creative", "2": "adventure", "3": "spectator"},
+        "reverse_legacy_map": {"survival": "0", "creative": "1", "adventure": "2", "spectator": "3"},
     },
     "force-gamemode": {
         "type": "bool", "default": "false", "category": "gameplay", "label": "Force Game Mode",
@@ -177,7 +186,7 @@ SERVER_SETTING_SPECS: dict[str, dict] = {
         "description": "Chunks sent to each player. Lower values significantly reduce network and RAM load.",
     },
     "simulation-distance": {
-        "type": "int", "default": "10", "min": 5, "max": 32, "category": "performance", "label": "Simulation Distance",
+        "type": "int", "default": "10", "min": 3, "max": 32, "category": "performance", "label": "Simulation Distance",
         "description": "Chunks that tick entities and blocks around players. Lower values reduce CPU load.",
     },
     "max-tick-time": {
@@ -446,6 +455,8 @@ def _validate_server_setting(key: str, spec: dict, value: str) -> str:
                 raise HTTPException(status_code=422, detail=spec.get("pattern_error", f"'{key}' format is invalid."))
         if spec.get("max_length") and len(text) > spec["max_length"]:
             raise HTTPException(status_code=422, detail=f"'{key}' cannot be longer than {spec['max_length']} characters.")
+        if text.endswith("\\"):
+            raise HTTPException(status_code=422, detail=f"'{key}' cannot end with a backslash (line continuation character in .properties files).")
         return text
     if not text:
         raise HTTPException(status_code=422, detail=f"'{key}' cannot be empty.")
@@ -465,6 +476,10 @@ def _validate_server_setting(key: str, spec: dict, value: str) -> str:
             )
         return str(number)
     if text not in spec["options"]:
+        legacy_map = spec.get("legacy_map", {})
+        if text in legacy_map:
+            mapped = legacy_map[text]
+            return str(mapped)
         raise HTTPException(status_code=422, detail=f"'{key}' must be one of: {', '.join(spec['options'])}.")
     return text
 
@@ -1097,26 +1112,35 @@ async def update_profile_server_settings(profile_id: str, payload: ServerSetting
 
     # Reject blocked keys and malformed keys/values before touching anything.
     for key, value in payload.properties.items():
-        if _is_blocked_setting_key(key):
-            raise HTTPException(
-                status_code=422,
-                detail=f"'{key}' is a reserved or security-sensitive key and cannot be changed via settings.",
-            )
-        if "=" in key:
-            raise HTTPException(
-                status_code=422,
-                detail=f"'{key}' contains invalid character '='.",
-            )
-        if _has_control_chars(key):
-            raise HTTPException(
-                status_code=422,
-                detail=f"'{key}' contains invalid control characters.",
-            )
+        clean_key = key.strip()
         raw_value = value or ""
-        if _has_control_chars(raw_value):
+        clean_value = raw_value.strip()
+        if clean_key != key:
             raise HTTPException(
                 status_code=422,
-                detail=f"'{key}' contains invalid control characters in its value.",
+                detail=f"'{key}' contains leading or trailing whitespace and cannot be used as a setting key.",
+            )
+        if _is_blocked_setting_key(clean_key):
+            raise HTTPException(
+                status_code=422,
+                detail=f"'{clean_key}' is a reserved or security-sensitive key and cannot be changed via settings.",
+            )
+        if any(c in clean_key for c in ("=", ":", " ", "\t")):
+            raise HTTPException(
+                status_code=422,
+                detail=f"'{clean_key}' contains invalid character for a setting key.",
+            )
+        if _has_control_chars(clean_key):
+            raise HTTPException(
+                status_code=422,
+                detail=f"'{clean_key}' contains invalid control characters.",
+            )
+        # Check control chars in both raw and stripped value (strip removes
+        # leading/trailing control chars but they may still exist internally).
+        if _has_control_chars(raw_value) or _has_control_chars(clean_value):
+            raise HTTPException(
+                status_code=422,
+                detail=f"'{clean_key}' contains invalid control characters in its value.",
             )
 
     # Validate each key independently so one invalid key never blocks or
@@ -1124,26 +1148,27 @@ async def update_profile_server_settings(profile_id: str, payload: ServerSetting
     applied: dict[str, str] = {}
     rejected: dict[str, str] = {}
     for key, value in payload.properties.items():
-        spec = SERVER_SETTING_SPECS.get(key)
+        clean_key = key.strip()
+        raw_value = value or ""
+        clean_value = raw_value.strip()
+        spec = SERVER_SETTING_SPECS.get(clean_key)
         if spec is not None:
             try:
-                applied[key] = _validate_server_setting(key, spec, value)
+                applied[clean_key] = _validate_server_setting(clean_key, spec, clean_value)
             except HTTPException as exc:
-                rejected[key] = exc.detail
+                rejected[clean_key] = exc.detail
         else:
             # Dynamic key: not in the curated spec, but accept it so settings
             # added by mods or other loaders work for any version/build.
-            raw_text = value or ""
-            if _has_control_chars(raw_text):
-                rejected[key] = f"'{key}' contains invalid control characters in its value."
+            if _has_control_chars(raw_value) or _has_control_chars(clean_value):
+                rejected[clean_key] = f"'{clean_key}' contains invalid control characters in its value."
                 continue
-            text = raw_text.strip()
-            if text.lower() in ("true", "false"):
-                applied[key] = text.lower()
-            elif text.lstrip("-").isdigit():
-                applied[key] = str(int(text))
+            if clean_value.lower() in ("true", "false"):
+                applied[clean_key] = clean_value.lower()
+            elif clean_value.lstrip("-").isdigit():
+                applied[clean_key] = str(int(clean_value))
             else:
-                applied[key] = text
+                applied[clean_key] = clean_value
 
     if not applied:
         raise HTTPException(
@@ -1557,8 +1582,20 @@ async def update_profile_gamerule(profile_id: str, rule: str, payload: GameruleU
             )
             last_response = response
             # Minecraft responds with the gamerule name when successful;
-            # unknown gamerules produce "Unknown gamerule" or similar.
-            if "unknown gamerule" not in response.lower() and "does not exist" not in response.lower():
+            # unknown/unavailable gamerules produce version-specific messages.
+            lower = response.lower()
+            is_failure = any(
+                phrase in lower
+                for phrase in (
+                    "unknown gamerule",
+                    "does not exist",
+                    "no game rule called",
+                    "is available",
+                    "incorrect argument",
+                    "unknown or incomplete command",
+                )
+            )
+            if not is_failure:
                 accepted_alias = alias
                 break
         except rcon.RCONError as exc:

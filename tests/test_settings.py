@@ -1112,4 +1112,159 @@ def test_gamerule_alias_resolution(profile_v1_21_1, monkeypatch):
     assert rules["doMobSpawning"]["value"] is True
 
 
+def test_settings_put_whitespace_key_rejected(profile_v1_21_1, monkeypatch):
+    """Keys with leading/trailing whitespace are rejected (Java .properties bypass)."""
+    from fastapi import FastAPI
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    profile, _ = profile_v1_21_1
+
+    # Leading whitespace on key
+    resp = client.put(
+        f"/api/profiles/{profile.id}/server-settings",
+        json={"properties": {" server-port": "25565"}},
+    )
+    assert resp.status_code == 422
+
+    # Trailing whitespace on key
+    resp = client.put(
+        f"/api/profiles/{profile.id}/server-settings",
+        json={"properties": {"rcon.password ": "secret"}},
+    )
+    assert resp.status_code == 422
+
+    # Tab in key
+    resp = client.put(
+        f"/api/profiles/{profile.id}/server-settings",
+        json={"properties": {"\trcon.port": "25575"}},
+    )
+    assert resp.status_code == 422
+
+
+def test_settings_put_colon_key_rejected(profile_v1_21_1, monkeypatch):
+    """Keys containing ':' are rejected."""
+    from fastapi import FastAPI
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    profile, _ = profile_v1_21_1
+
+    resp = client.put(
+        f"/api/profiles/{profile.id}/server-settings",
+        json={"properties": {"level-name:evil": "value"}},
+    )
+    assert resp.status_code == 422
+
+
+def test_settings_put_trailing_backslash_rejected(profile_v1_21_1, monkeypatch):
+    """Text values ending with backslash (.properties line continuation) are rejected."""
+    from fastapi import FastAPI
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    profile, _ = profile_v1_21_1
+
+    resp = client.put(
+        f"/api/profiles/{profile.id}/server-settings",
+        json={"properties": {"level-seed": "seed\\"}},
+    )
+    assert resp.status_code == 422
+
+
+def test_settings_legacy_level_type(profile_v1_21_1, monkeypatch):
+    """Legacy level-type values (DEFAULT, FLAT) are accepted and normalized."""
+    from fastapi import FastAPI
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    profile, _ = profile_v1_21_1
+
+    # Legacy DEFAULT → minecraft:normal
+    resp = client.put(
+        f"/api/profiles/{profile.id}/server-settings",
+        json={"properties": {"level-type": "DEFAULT"}},
+    )
+    assert resp.status_code == 200
+
+    # Legacy FLAT → minecraft:flat
+    resp = client.put(
+        f"/api/profiles/{profile.id}/server-settings",
+        json={"properties": {"level-type": "FLAT"}},
+    )
+    assert resp.status_code == 200
+
+    # Invalid legacy value still rejected
+    resp = client.put(
+        f"/api/profiles/{profile.id}/server-settings",
+        json={"properties": {"level-type": "not_a_preset"}},
+    )
+    assert resp.status_code == 422
+
+
+def test_settings_numeric_difficulty_and_gamemode(profile_v1_21_1, monkeypatch):
+    """Numeric difficulty (0-3) and gamemode (0-3) are accepted for pre-1.9 servers."""
+    from fastapi import FastAPI
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    profile, _ = profile_v1_21_1
+
+    # Numeric difficulty
+    resp = client.put(
+        f"/api/profiles/{profile.id}/server-settings",
+        json={"properties": {"difficulty": "0"}},
+    )
+    assert resp.status_code == 200
+
+    resp = client.put(
+        f"/api/profiles/{profile.id}/server-settings",
+        json={"properties": {"difficulty": "3"}},
+    )
+    assert resp.status_code == 200
+
+    # Numeric gamemode
+    resp = client.put(
+        f"/api/profiles/{profile.id}/server-settings",
+        json={"properties": {"gamemode": "1"}},
+    )
+    assert resp.status_code == 200
+
+    resp = client.put(
+        f"/api/profiles/{profile.id}/server-settings",
+        json={"properties": {"gamemode": "3"}},
+    )
+    assert resp.status_code == 200
+
+
+def test_runtime_preserves_white_list_false(mock_profile, monkeypatch):
+    """_generate_server_properties does not unconditionally force white-list=true."""
+    from mcpanel.core import runtime
+    from mcpanel.core.server_properties import read_properties
+    from pathlib import Path
+
+    profile, server_dir = mock_profile
+
+    # Save white-list=false
+    settings_path = server_dir.parent / "server_settings.json"
+    import json
+    settings_path.write_text(json.dumps({"white-list": "false"}), encoding="utf-8")
+
+    props_path = server_dir / "server.properties"
+    props_path.write_text("online-mode=false\n", encoding="utf-8")
+
+    # Generate properties - writes to disk, white-list=false should be preserved
+    runtime._generate_server_properties(profile, server_dir)
+    props = read_properties(props_path)
+    assert props.get("white-list") == "false", f"Expected white-list=false, got {props.get('white-list')}"
+
+    # enforce-whitelist should be consistent (false when white-list is false)
+    assert props.get("enforce-whitelist") == "false", f"Expected enforce-whitelist=false, got {props.get('enforce-whitelist')}"
+
+
 

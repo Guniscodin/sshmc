@@ -134,6 +134,18 @@ def _online_mode(profile_id: str) -> bool:
     return (properties.get("online-mode", "true") or "true").strip().lower() != "false"
 
 
+def _default_op_level(profile_id: str) -> int:
+    """Return the server's configured op-permission-level (default 4)."""
+    props_path = server_properties.properties_path(profile_id)
+    properties = server_properties.read_properties(props_path)
+    if "op-permission-level" not in properties:
+        properties.update(server_properties.read_saved_settings(profile_id))
+    try:
+        return int(properties.get("op-permission-level", "4") or "4")
+    except (TypeError, ValueError):
+        return 4
+
+
 def offline_uuid(name: str) -> str:
     """Java's UUID.nameUUIDFromBytes("OfflinePlayer:<name>") equivalent."""
     digest = hashlib.md5(f"OfflinePlayer:{name}".encode("utf-8")).digest()
@@ -196,11 +208,11 @@ def _mojang_lookup(name: str) -> tuple[str, str] | None:
 
 def _resolve_uuid(profile_id: str, name: str, online_mode: bool) -> tuple[str, str]:
     """Return (uuid, canonical_name) for a player that is not in a player file yet."""
+    if not online_mode:
+        return offline_uuid(name), name
     known = _usercache_uuid(profile_id, name)
     if known:
         return known
-    if not online_mode:
-        return offline_uuid(name), name
     found = _mojang_lookup(name)
     if found:
         return found
@@ -210,10 +222,15 @@ def _resolve_uuid(profile_id: str, name: str, online_mode: bool) -> tuple[str, s
     )
 
 
-def _match(entries: list[dict], name: str) -> dict | None:
+def _match(entries: list[dict], name: str, online_mode: bool = True) -> dict | None:
     for entry in entries:
-        if str(entry.get("name", "")).lower() == name.lower():
-            return entry
+        entry_name = str(entry.get("name", ""))
+        if online_mode:
+            if entry_name.lower() == name.lower():
+                return entry
+        else:
+            if entry_name == name:
+                return entry
     return None
 
 
@@ -417,14 +434,17 @@ async def add_whitelist(profile: Profile, name: str) -> dict:
 
         def _add() -> dict:
             entries = _read_entries(profile.id, WHITELIST_FILE)
-            existing = _match(entries, name)
+            online = _online_mode(profile.id)
+            existing = _match(entries, name, online)
             if existing is not None:
                 return _whitelist_view(existing)
-            uid, canonical = _resolve_uuid(profile.id, name, _online_mode(profile.id))
-            if _match(entries, canonical) is not None:
-                return _whitelist_view(_match(entries, canonical))
-            if _match_uuid(entries, uid) is not None:
-                return _whitelist_view(_match_uuid(entries, uid))
+            uid, canonical = _resolve_uuid(profile.id, name, online)
+            canonical_match = _match(entries, canonical, online)
+            if canonical_match is not None:
+                return _whitelist_view(canonical_match)
+            uuid_match = _match_uuid(entries, uid)
+            if uuid_match is not None:
+                return _whitelist_view(uuid_match)
             entry = {"uuid": uid, "name": canonical}
             entries.append(entry)
             _write_entries(profile.id, WHITELIST_FILE, entries)
@@ -445,11 +465,15 @@ async def remove_whitelist(profile: Profile, name: str) -> None:
             response = await _rcon(profile, f"whitelist remove {name}")
             if await _wait_for_entry(profile.id, WHITELIST_FILE, name) is not None:
                 raise _command_error(response, name, "remove from the whitelist")
+            # On older/legacy versions (1.13 and earlier), whitelist remove does
+            # not kick online players, so kick them explicitly.
+            await _rcon(profile, f"kick {name} Removed from whitelist")
             return
 
         def _remove() -> None:
             entries = _read_entries(profile.id, WHITELIST_FILE)
-            target = _match(entries, name)
+            online = _online_mode(profile.id)
+            target = _match(entries, name, online)
             if target is None:
                 raise HTTPException(status_code=404, detail=f"'{name}' is not on the whitelist.")
             entries.remove(target)
@@ -477,10 +501,11 @@ async def rename_whitelist(profile: Profile, name: str, new_name: str) -> dict:
 
         def _target() -> dict:
             entries = _read_entries(profile.id, WHITELIST_FILE)
-            target = _match(entries, name)
+            online = _online_mode(profile.id)
+            target = _match(entries, name, online)
             if target is None:
                 raise HTTPException(status_code=404, detail=f"'{name}' is not on the whitelist.")
-            conflict = _match(entries, new_name)
+            conflict = _match(entries, new_name, online)
             if conflict is not None and conflict is not target:
                 raise HTTPException(status_code=409, detail=f"'{new_name}' is already on the whitelist.")
             return target
@@ -504,14 +529,15 @@ async def rename_whitelist(profile: Profile, name: str, new_name: str) -> dict:
 
         def _rename() -> dict:
             entries = _read_entries(profile.id, WHITELIST_FILE)
-            current = _match(entries, name)
+            online = _online_mode(profile.id)
+            current = _match(entries, name, online)
             if current is None:
                 raise HTTPException(status_code=404, detail=f"'{name}' is not on the whitelist.")
-            conflict = _match(entries, new_name)
+            conflict = _match(entries, new_name, online)
             if conflict is not None and conflict is not current:
                 raise HTTPException(status_code=409, detail=f"'{new_name}' is already on the whitelist.")
-            uid, canonical = _resolve_uuid(profile.id, new_name, _online_mode(profile.id))
-            conflict = _match(entries, canonical)
+            uid, canonical = _resolve_uuid(profile.id, new_name, online)
+            conflict = _match(entries, canonical, online)
             if conflict is not None and conflict is not current:
                 raise HTTPException(status_code=409, detail=f"'{canonical}' is already on the whitelist.")
             uid_conflict = _match_uuid(entries, uid)
@@ -536,6 +562,12 @@ async def add_operator(profile: Profile, name: str, level: int | None) -> dict:
         if phase in ("starting", "stopping"):
             raise HTTPException(status_code=409, detail=f"The server is {phase}. Try again when it has finished.")
         if phase == "running":
+            default_level = _default_op_level(profile.id)
+            if level != default_level:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"The server is running. Vanilla /op always assigns the server's default op-permission-level ({default_level}). Stop the server to assign operator level {level}.",
+                )
             response = await _rcon(profile, f"op {name}")
             entry = await _wait_for_entry(profile.id, OPS_FILE, name)
             if entry is None:
@@ -554,12 +586,13 @@ async def add_operator(profile: Profile, name: str, level: int | None) -> dict:
 
         def _add() -> dict:
             entries = _read_entries(profile.id, OPS_FILE)
-            existing = _match(entries, name)
+            online = _online_mode(profile.id)
+            existing = _match(entries, name, online)
             if existing is not None:
                 existing["level"] = level
                 _write_entries(profile.id, OPS_FILE, entries)
                 return _operator_view(existing)
-            uid, canonical = _resolve_uuid(profile.id, name, _online_mode(profile.id))
+            uid, canonical = _resolve_uuid(profile.id, name, online)
             uid_match = _match_uuid(entries, uid)
             if uid_match is not None:
                 uid_match["level"] = level
@@ -602,6 +635,13 @@ async def update_operator(
                     status_code=409,
                     detail="Minecraft has no command for the bypass limit, so stop the server to change it.",
                 )
+            if level is not None:
+                default_level = _default_op_level(profile.id)
+                if level != default_level:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"The server is running. Vanilla /op always assigns the server's default op-permission-level ({default_level}). Stop the server to assign operator level {level}.",
+                    )
             response = await _rcon(profile, f"op {name}")
             entry = await _wait_for_entry(profile.id, OPS_FILE, name)
             if entry is None:
@@ -619,7 +659,8 @@ async def update_operator(
 
         def _update() -> dict:
             entries = _read_entries(profile.id, OPS_FILE)
-            target = _match(entries, name)
+            online = _online_mode(profile.id)
+            target = _match(entries, name, online)
             if target is None:
                 raise HTTPException(status_code=404, detail=f"'{name}' is not an operator.")
             if level is not None:
@@ -688,14 +729,15 @@ async def rename_operator(profile: Profile, name: str, new_name: str) -> dict:
 
         def _rename() -> dict:
             entries = _read_entries(profile.id, OPS_FILE)
-            current = _match(entries, name)
+            online = _online_mode(profile.id)
+            current = _match(entries, name, online)
             if current is None:
                 raise HTTPException(status_code=404, detail=f"'{name}' is not an operator.")
-            conflict = _match(entries, new_name)
+            conflict = _match(entries, new_name, online)
             if conflict is not None and conflict is not current:
                 raise HTTPException(status_code=409, detail=f"'{new_name}' is already an operator.")
-            uid, canonical = _resolve_uuid(profile.id, new_name, _online_mode(profile.id))
-            conflict = _match(entries, canonical)
+            uid, canonical = _resolve_uuid(profile.id, new_name, online)
+            conflict = _match(entries, canonical, online)
             if conflict is not None and conflict is not current:
                 raise HTTPException(status_code=409, detail=f"'{canonical}' is already an operator.")
             uid_conflict = _match_uuid(entries, uid)
@@ -726,7 +768,8 @@ async def remove_operator(profile: Profile, name: str) -> None:
 
         def _remove() -> None:
             entries = _read_entries(profile.id, OPS_FILE)
-            target = _match(entries, name)
+            online = _online_mode(profile.id)
+            target = _match(entries, name, online)
             if target is None:
                 raise HTTPException(status_code=404, detail=f"'{name}' is not an operator.")
             entries.remove(target)

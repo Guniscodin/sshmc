@@ -156,6 +156,7 @@
                                 <div class="flex items-center justify-between gap-2">
                                     <span class="gamerule-name" x-text="rule.label"></span>
                                     <code class="gamerule-code text-xs text-muted" x-text="rule.key"></code>
+                                    <span class="badge badge-status badge-warning" x-show="!rule.available" title="Not supported on this server version">Not supported</span>
                                 </div>
                                 <p class="form-hint m-0 text-xs" x-text="rule.description"></p>
                             </div>
@@ -164,17 +165,17 @@
                                     <button type="button" class="btn btn-sm"
                                             :class="rule.value ? 'btn-success' : 'btn-secondary'"
                                             @click="toggleGamerule(rule)"
-                                            :disabled="savingGameruleKey === rule.key">
+                                            :disabled="savingGameruleKey === rule.key || !rule.available">
                                         <i class="fa-solid" :class="savingGameruleKey === rule.key ? 'fa-spinner fa-spin' : (rule.value ? 'fa-check' : 'fa-xmark')"></i>
                                         <span x-text="rule.value ? 'Enabled' : 'Disabled'"></span>
                                     </button>
                                 </template>
                                 <template x-if="rule.type === 'int'">
                                     <div class="flex items-center gap-1">
-                                        <input type="number" class="gamerule-int-input" x-model.number="rule.value" :min="rule.min" :max="rule.max" @keydown.enter.prevent="saveIntGamerule(rule)">
+                                        <input type="number" class="gamerule-int-input" x-model.number="rule.value" :min="rule.min" :max="rule.max" @keydown.enter.prevent="saveIntGamerule(rule)" :disabled="!rule.available">
                                         <button type="button" class="btn btn-primary btn-sm btn-icon"
                                                 @click="saveIntGamerule(rule)"
-                                                :disabled="savingGameruleKey === rule.key"
+                                                :disabled="savingGameruleKey === rule.key || !rule.available"
                                                 title="Apply value">
                                             <i class="fa-solid" :class="savingGameruleKey === rule.key ? 'fa-spinner fa-spin' : 'fa-check'"></i>
                                         </button>
@@ -226,10 +227,11 @@
                             </template>
                             <template x-if="field.type !== 'bool'">
                                 <label :for="'ss-' + field.key" x-text="field.label"></label>
+                                <span class="badge badge-status badge-warning" x-show="!field.available" title="Not supported on this server version">Not supported</span>
                             </template>
 
                             <template x-if="field.type === 'choice'">
-                                <select :id="'ss-' + field.key" x-model="field.value" @change="dirty = true">
+                                <select :id="'ss-' + field.key" x-model="field.value" @change="dirty = true" :disabled="!field.available">
                                     <template x-for="option in field.options" :key="option">
                                         <option :value="option" x-text="option" :selected="option === field.value"></option>
                                     </template>
@@ -237,11 +239,11 @@
                             </template>
 
                             <template x-if="field.type === 'int'">
-                                <input type="number" :id="'ss-' + field.key" x-model.number="field.value" :min="field.min" :max="field.max" @input="dirty = true">
+                                <input type="number" :id="'ss-' + field.key" x-model.number="field.value" :min="field.min" :max="field.max" @input="dirty = true" :disabled="!field.available">
                             </template>
 
                             <template x-if="field.type === 'text'">
-                                <input type="text" :id="'ss-' + field.key" x-model="field.value" :placeholder="field.placeholder || ''" @input="dirty = true" autocomplete="off" spellcheck="false">
+                                <input type="text" :id="'ss-' + field.key" x-model="field.value" :placeholder="field.placeholder || ''" @input="dirty = true" autocomplete="off" spellcheck="false" :disabled="!field.available">
                             </template>
 
                             <p class="form-hint" x-text="field.description"></p>

@@ -81,9 +81,15 @@ def _generate_server_properties(profile: Profile, server_dir: Path) -> None:
         "rcon.port": str(profile.rcon_port),
         "rcon.password": profile.rcon_password,
         "motd": motd_value,
-        "white-list": "true",
-        "enforce-whitelist": "true",
     })
+
+    # Respect the saved white-list setting (default true only if never set).
+    # enforce-whitelist stays consistent with whether white-list is active.
+    if "white-list" not in properties:
+        properties["white-list"] = "true"
+    white_list_enabled = (properties.get("white-list", "true") or "true").strip().lower() == "true"
+    if "enforce-whitelist" not in properties:
+        properties["enforce-whitelist"] = "true" if white_list_enabled else "false"
 
     server_properties.write_properties(props_path, properties)
 
