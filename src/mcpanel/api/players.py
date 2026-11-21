@@ -22,7 +22,8 @@ class PlayerName(BaseModel):
 
 
 class WhitelistSettings(BaseModel):
-    enabled: bool
+    enabled: bool | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=32)
 
 
 class OperatorCreate(PlayerName):
@@ -30,6 +31,7 @@ class OperatorCreate(PlayerName):
 
 
 class OperatorUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=32)
     level: int | None = Field(default=None, ge=1, le=4)
     bypasses_player_limit: bool | None = None
 
@@ -63,7 +65,18 @@ async def remove_whitelisted_player(profile_id: str, name: str):
 @router.put("/whitelist/settings")
 async def update_whitelist_settings(profile_id: str, payload: WhitelistSettings):
     profile = _profile(profile_id)
-    return await players.set_whitelist_enabled(profile, payload.enabled)
+    if payload.enabled is not None:
+        return await players.set_whitelist_enabled(profile, payload.enabled)
+    if payload.name is not None:
+        return await players.rename_whitelist(profile, "settings", payload.name)
+    raise HTTPException(status_code=422, detail="Provide an enabled state or a player name.")
+
+
+# Keep this after /whitelist/settings so "settings" is not treated as a name.
+@router.put("/whitelist/{name}")
+async def rename_whitelisted_player(profile_id: str, name: str, payload: PlayerName):
+    profile = _profile(profile_id)
+    return await players.rename_whitelist(profile, name, payload.name)
 
 
 @router.post("/ops", status_code=status.HTTP_201_CREATED)
@@ -75,6 +88,13 @@ async def add_operator(profile_id: str, payload: OperatorCreate):
 @router.put("/ops/{name}")
 async def update_operator(profile_id: str, name: str, payload: OperatorUpdate):
     profile = _profile(profile_id)
+    if payload.name is not None:
+        if payload.level is not None or payload.bypasses_player_limit is not None:
+            raise HTTPException(
+                status_code=422,
+                detail="Rename an operator separately from level or bypass changes.",
+            )
+        return await players.rename_operator(profile, name, payload.name)
     return await players.update_operator(
         profile, name, payload.level, payload.bypasses_player_limit
     )

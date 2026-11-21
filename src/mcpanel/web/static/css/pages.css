@@ -1472,6 +1472,41 @@
     font-size: var(--font-xs);
 }
 
+.player-edit-input {
+    width: 100%;
+    min-width: 0;
+    padding: var(--space-1) var(--space-2);
+    font-size: var(--font-sm);
+    font-weight: var(--fw-semibold);
+}
+
+.player-row-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    flex-shrink: 0;
+    margin-left: auto;
+}
+
+.players-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 6px;
+    border-radius: var(--radius-full);
+    background-color: var(--surface-active);
+    color: var(--text-muted);
+    font-size: var(--font-xs);
+    font-weight: var(--fw-semibold);
+    line-height: 1;
+}
+
+.player-level-help {
+    line-height: 1.55;
+}
+
 .player-empty {
     margin: 0;
     padding: var(--space-4);
@@ -1486,18 +1521,69 @@
     margin-right: var(--space-2);
 }
 
-.player-levels-hint {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-2) var(--space-4);
-    font-size: var(--font-xs);
-    color: var(--text-muted);
+.player-levels-guide {
+    margin-top: var(--space-2);
     border-top: 1px solid var(--border-subtle);
     padding-top: var(--space-2);
+    font-size: var(--font-xs);
 }
 
-.player-levels-hint strong {
+.player-levels-guide summary {
+    cursor: pointer;
+    color: var(--text-muted);
+    user-select: none;
+    font-weight: var(--fw-medium);
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    transition: color var(--transition-fast);
+}
+
+.player-levels-guide summary:hover {
+    color: var(--text-primary);
+}
+
+.player-levels-guide dl {
+    margin: var(--space-3) 0 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+}
+
+.player-levels-guide dl > div {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.player-levels-guide dt {
+    font-weight: var(--fw-semibold);
     color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+}
+
+.player-levels-guide dd {
+    margin: 0;
+    padding-left: calc(24px + var(--space-2));
+    color: var(--text-muted);
+    line-height: 1.45;
+}
+
+.player-level-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 18px;
+    border-radius: var(--radius-sm);
+    background-color: var(--surface-active);
+    color: var(--text-secondary);
+    font-size: 0.7rem;
+    font-weight: var(--fw-bold);
+    font-family: var(--font-mono, monospace);
+    line-height: 1;
 }
 
 @media (max-width: 1100px) {

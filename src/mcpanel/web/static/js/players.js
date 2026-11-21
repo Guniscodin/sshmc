@@ -23,14 +23,38 @@ window.playersApp = function playersApp() {
         whitelistName: '',
         opName: '',
         opLevel: 4,
+        editingWhitelist: null,
+        whitelistEditName: '',
+        editingOperator: null,
+        operatorEditName: '',
         token: 0,
         pollTimer: null,
         visible: false,
         levelOptions: [
-            { value: 1, short: 'L1', label: 'Level 1 · Spawn protection' },
-            { value: 2, short: 'L2', label: 'Level 2 · Command blocks' },
-            { value: 3, short: 'L3', label: 'Level 3 · Manage players' },
-            { value: 4, short: 'L4', label: 'Level 4 · Full admin' }
+            {
+                value: 1,
+                short: 'L1',
+                label: 'Level 1 · Spawn protection',
+                description: 'Can build and break blocks inside the spawn-protection radius. No extra commands.'
+            },
+            {
+                value: 2,
+                short: 'L2',
+                label: 'Level 2 · Command blocks & cheats',
+                description: 'Can use command blocks and most gameplay commands such as /give, /tp, /gamemode, /time and /weather, but cannot manage other players.'
+            },
+            {
+                value: 3,
+                short: 'L3',
+                label: 'Level 3 · Manage players',
+                description: 'Everything above, plus /kick, /ban, /op, /deop and whitelist changes.'
+            },
+            {
+                value: 4,
+                short: 'L4',
+                label: 'Level 4 · Full admin',
+                description: 'Can run every server command, including /stop and /reload. Only give this to people you fully trust.'
+            }
         ],
 
         init() {
@@ -53,6 +77,8 @@ window.playersApp = function playersApp() {
 
         leave() {
             this.visible = false;
+            this.cancelWhitelistEdit();
+            this.cancelOperatorEdit();
             this.stopPolling();
         },
 
@@ -60,6 +86,8 @@ window.playersApp = function playersApp() {
             this.stopPolling();
             this.pollTimer = setInterval(() => {
                 if (!this.visible || !this.profileId || this.busy) return;
+                // Do not replace the state under an in-progress rename.
+                if (this.editingWhitelist || this.editingOperator) return;
                 this.loadState(true);
             }, 15000);
         },
@@ -107,6 +135,8 @@ window.playersApp = function playersApp() {
             this.state = emptyState();
             this.whitelistName = '';
             this.opName = '';
+            this.cancelWhitelistEdit();
+            this.cancelOperatorEdit();
             this.error = '';
             if (this.profileId && this.profile) this.loadState();
         },
@@ -123,6 +153,14 @@ window.playersApp = function playersApp() {
                 if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : `Request failed (${response.status}).`);
                 if (token !== this.token || profileId !== this.profileId) return;
                 this.state = { ...emptyState(), ...data };
+                // Drop an inline edit if that player disappeared (removed on
+                // another tab, server change, or a nickname update).
+                if (this.editingWhitelist && !(data.whitelist?.players || []).some(p => this.entryKey(p) === this.editingWhitelist)) {
+                    this.cancelWhitelistEdit();
+                }
+                if (this.editingOperator && !(data.operators || []).some(o => this.entryKey(o) === this.editingOperator)) {
+                    this.cancelOperatorEdit();
+                }
                 if (!silent) this.error = '';
             } catch (error) {
                 if (token === this.token && !silent) this.error = error.message || 'Could not load players.';
@@ -157,7 +195,8 @@ window.playersApp = function playersApp() {
                 showToast(this.error, 'error');
             } finally {
                 this.busy = false;
-                await this.loadState();
+                // Silent: a failed action must keep its error visible.
+                await this.loadState(true);
             }
         },
 
@@ -175,6 +214,89 @@ window.playersApp = function playersApp() {
 
         basePath(suffix = '') {
             return `/api/profiles/${encodeURIComponent(this.profileId)}/players${suffix}`;
+        },
+
+        entryKey(player) {
+            return player.uuid || player.name;
+        },
+
+        isEditingWhitelist(player) {
+            return Boolean(this.editingWhitelist && this.editingWhitelist === this.entryKey(player));
+        },
+
+        isEditingOperator(operator) {
+            return Boolean(this.editingOperator && this.editingOperator === this.entryKey(operator));
+        },
+
+        levelDescription(value) {
+            const option = this.levelOptions.find(item => item.value === Number(value));
+            return option ? option.description : '';
+        },
+
+        async startWhitelistEdit(player) {
+            if (this.busy || this.state.busy) return;
+            this.cancelOperatorEdit();
+            this.editingWhitelist = this.entryKey(player);
+            this.whitelistEditName = player.name;
+            await this.$nextTick();
+            const input = this.$el.querySelector('.player-edit-input');
+            if (input) {
+                input.focus();
+                input.select();
+            }
+        },
+
+        cancelWhitelistEdit() {
+            this.editingWhitelist = null;
+            this.whitelistEditName = '';
+        },
+
+        async renameWhitelisted(player) {
+            const name = this.whitelistEditName.trim();
+            if (name === player.name) {
+                this.cancelWhitelistEdit();
+                return;
+            }
+            if (!this.validName(name)) return;
+            const original = player.name;
+            await this.mutate(
+                () => this.send('PUT', this.basePath(`/whitelist/${encodeURIComponent(original)}`), { name }),
+                `${original} was renamed to ${name}.`
+            );
+            if (!this.error) this.cancelWhitelistEdit();
+        },
+
+        async startOperatorEdit(operator) {
+            if (this.busy || this.state.busy) return;
+            this.cancelWhitelistEdit();
+            this.editingOperator = this.entryKey(operator);
+            this.operatorEditName = operator.name;
+            await this.$nextTick();
+            const input = this.$el.querySelector('.player-edit-input');
+            if (input) {
+                input.focus();
+                input.select();
+            }
+        },
+
+        cancelOperatorEdit() {
+            this.editingOperator = null;
+            this.operatorEditName = '';
+        },
+
+        async renameOperator(operator) {
+            const name = this.operatorEditName.trim();
+            if (name === operator.name) {
+                this.cancelOperatorEdit();
+                return;
+            }
+            if (!this.validName(name)) return;
+            const original = operator.name;
+            await this.mutate(
+                () => this.send('PUT', this.basePath(`/ops/${encodeURIComponent(original)}`), { name }),
+                `${original} is now known as ${name}.`
+            );
+            if (!this.error) this.cancelOperatorEdit();
         },
 
         async setWhitelist(event) {

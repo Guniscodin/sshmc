@@ -68,7 +68,10 @@
             <div class="card players-card">
                 <div class="card-header">
                     <div class="players-card-heading">
-                        <h3 class="m-0"><i class="fa-solid fa-user-check text-primary-color"></i> Whitelist</h3>
+                        <h3 class="m-0">
+                            <i class="fa-solid fa-user-check text-primary-color"></i> Whitelist
+                            <span class="players-count" x-text="state.whitelist.players.length" aria-hidden="true"></span>
+                        </h3>
                         <p class="form-hint m-0">When enabled, only listed players may join.</p>
                     </div>
                     <label class="toggle-label players-toggle" :title="state.whitelist.enabled ? 'Whitelist is on' : 'Whitelist is off'">
@@ -99,14 +102,39 @@
                                 <img class="player-avatar" :src="avatarUrl(player.uuid)" alt="" loading="lazy" @error="$el.remove()">
                             </span>
                             <div class="player-identity">
-                                <strong x-text="player.name"></strong>
+                                <template x-if="!isEditingWhitelist(player)">
+                                    <strong x-text="player.name"></strong>
+                                </template>
+                                <template x-if="isEditingWhitelist(player)">
+                                    <input class="player-edit-input" type="text" x-model="whitelistEditName" maxlength="32"
+                                           autocomplete="off" spellcheck="false"
+                                           :aria-label="'New name for ' + player.name"
+                                           @keydown.enter.prevent="renameWhitelisted(player)"
+                                           @keydown.escape.prevent="cancelWhitelistEdit()">
+                                </template>
                                 <span class="player-uuid" x-text="player.uuid"></span>
                             </div>
-                            <button type="button" class="btn btn-ghost btn-sm" @click="removeWhitelisted(player)"
-                                    :disabled="busy || state.busy"
-                                    :aria-label="'Remove ' + player.name + ' from the whitelist'">
-                                <i class="fa-solid fa-user-minus"></i> Remove
-                            </button>
+                            <div class="player-row-actions" x-show="!isEditingWhitelist(player)">
+                                <button type="button" class="btn btn-ghost btn-sm" @click="startWhitelistEdit(player)"
+                                        :disabled="busy || state.busy"
+                                        :aria-label="'Rename ' + player.name">
+                                    <i class="fa-solid fa-pen"></i> Edit
+                                </button>
+                                <button type="button" class="btn btn-ghost btn-sm" @click="removeWhitelisted(player)"
+                                        :disabled="busy || state.busy"
+                                        :aria-label="'Remove ' + player.name + ' from the whitelist'">
+                                    <i class="fa-solid fa-user-minus"></i> Remove
+                                </button>
+                            </div>
+                            <div class="player-row-actions" x-show="isEditingWhitelist(player)">
+                                <button type="button" class="btn btn-primary btn-sm" @click="renameWhitelisted(player)"
+                                        :disabled="busy || !whitelistEditName.trim()">
+                                    <i class="fa-solid fa-check"></i> Save
+                                </button>
+                                <button type="button" class="btn btn-ghost btn-sm" @click="cancelWhitelistEdit()" :disabled="busy">
+                                    Cancel
+                                </button>
+                            </div>
                         </li>
                     </template>
                 </ul>
@@ -129,7 +157,10 @@
             <div class="card players-card">
                 <div class="card-header">
                     <div class="players-card-heading">
-                        <h3 class="m-0"><i class="fa-solid fa-user-shield text-warning"></i> Operators</h3>
+                        <h3 class="m-0">
+                            <i class="fa-solid fa-user-shield text-warning"></i> Operators
+                            <span class="players-count" x-text="state.operators.length" aria-hidden="true"></span>
+                        </h3>
                         <p class="form-hint m-0">Operators can run server commands in game.</p>
                     </div>
                 </div>
@@ -140,13 +171,18 @@
                            :disabled="busy || state.busy">
                     <select :value="opLevel" @change="opLevel = Number($event.target.value)" aria-label="Operator level" :disabled="busy || state.busy">
                         <template x-for="option in levelOptions" :key="option.value">
-                            <option :value="option.value" x-text="option.label" :selected="option.value === opLevel"></option>
+                            <option :value="option.value" x-text="option.label" :selected="option.value === opLevel" :title="option.description"></option>
                         </template>
                     </select>
                     <button type="submit" class="btn btn-primary btn-sm" :disabled="busy || state.busy || !opName.trim()">
                         <i class="fa-solid fa-plus"></i> Add
                     </button>
                 </form>
+
+                <p class="form-hint m-0 player-level-help">
+                    <i class="fa-solid fa-circle-info"></i>
+                    <span x-text="levelDescription(opLevel)"></span>
+                </p>
 
                 <template x-if="state.operators.length">
                 <ul class="player-list">
@@ -157,8 +193,19 @@
                                 <img class="player-avatar" :src="avatarUrl(operator.uuid)" alt="" loading="lazy" @error="$el.remove()">
                             </span>
                             <div class="player-identity">
-                                <strong x-text="operator.name"></strong>
-                                <label class="player-bypass" :title="state.can_edit_bypass ? 'Allow this operator to join a full server' : 'Stop the server to change bypass limit (Minecraft has no command for it)'">
+                                <template x-if="!isEditingOperator(operator)">
+                                    <strong x-text="operator.name" :title="levelDescription(operator.level)"></strong>
+                                </template>
+                                <template x-if="isEditingOperator(operator)">
+                                    <input class="player-edit-input" type="text" x-model="operatorEditName" maxlength="32"
+                                           autocomplete="off" spellcheck="false"
+                                           :aria-label="'New name for ' + operator.name"
+                                           @keydown.enter.prevent="renameOperator(operator)"
+                                           @keydown.escape.prevent="cancelOperatorEdit()">
+                                </template>
+                                <span class="player-uuid" x-text="operator.uuid"></span>
+                                <label class="player-bypass" x-show="!isEditingOperator(operator)"
+                                       :title="state.can_edit_bypass ? 'Allow this operator to join a full server' : 'Stop the server to change bypass limit (Minecraft has no command for it)'">
                                     <input type="checkbox" :checked="operator.bypasses_player_limit"
                                            @change="changeBypass(operator, $event.target.checked)"
                                            :disabled="busy || state.busy || !state.can_edit_bypass">
@@ -166,16 +213,34 @@
                                 </label>
                             </div>
                             <select class="player-level" :value="operator.level" aria-label="Operator level"
+                                    :title="levelDescription(operator.level)"
+                                    x-show="!isEditingOperator(operator)"
                                     @change="changeLevel(operator, $event.target.value)" :disabled="busy || state.busy">
                                 <template x-for="option in levelOptions" :key="option.value">
-                                    <option :value="option.value" x-text="option.short" :selected="option.value === operator.level"></option>
+                                    <option :value="option.value" x-text="option.short" :selected="option.value === operator.level" :title="option.label"></option>
                                 </template>
                             </select>
-                            <button type="button" class="btn btn-ghost btn-sm" @click="removeOperator(operator)"
-                                    :disabled="busy || state.busy"
-                                    :aria-label="'Remove operator ' + operator.name">
-                                <i class="fa-solid fa-user-minus"></i> Remove
-                            </button>
+                            <div class="player-row-actions" x-show="!isEditingOperator(operator)">
+                                <button type="button" class="btn btn-ghost btn-sm" @click="startOperatorEdit(operator)"
+                                        :disabled="busy || state.busy"
+                                        :aria-label="'Rename operator ' + operator.name">
+                                    <i class="fa-solid fa-pen"></i> Edit
+                                </button>
+                                <button type="button" class="btn btn-ghost btn-sm" @click="removeOperator(operator)"
+                                        :disabled="busy || state.busy"
+                                        :aria-label="'Remove operator ' + operator.name">
+                                    <i class="fa-solid fa-user-minus"></i> Remove
+                                </button>
+                            </div>
+                            <div class="player-row-actions" x-show="isEditingOperator(operator)">
+                                <button type="button" class="btn btn-primary btn-sm" @click="renameOperator(operator)"
+                                        :disabled="busy || !operatorEditName.trim()">
+                                    <i class="fa-solid fa-check"></i> Save
+                                </button>
+                                <button type="button" class="btn btn-ghost btn-sm" @click="cancelOperatorEdit()" :disabled="busy">
+                                    Cancel
+                                </button>
+                            </div>
                         </li>
                     </template>
                 </ul>
@@ -188,12 +253,27 @@
                     </p>
                 </template>
 
-                <div class="player-levels-hint">
-                    <span><strong>1</strong> spawn protection</span>
-                    <span><strong>2</strong> command blocks</span>
-                    <span><strong>3</strong> manage players</span>
-                    <span><strong>4</strong> full admin</span>
-                </div>
+                <details class="player-levels-guide">
+                    <summary><i class="fa-solid fa-circle-question"></i> What do OP levels mean?</summary>
+                    <dl>
+                        <div>
+                            <dt><span class="player-level-badge">L1</span> Spawn protection</dt>
+                            <dd>Can build and break blocks inside the spawn-protection radius. No extra commands.</dd>
+                        </div>
+                        <div>
+                            <dt><span class="player-level-badge">L2</span> Command blocks &amp; cheats</dt>
+                            <dd>Can use command blocks and most gameplay commands such as /give, /tp, /gamemode, /time and /weather, but cannot manage other players.</dd>
+                        </div>
+                        <div>
+                            <dt><span class="player-level-badge">L3</span> Manage players</dt>
+                            <dd>Everything above, plus /kick, /ban, /op, /deop and whitelist changes.</dd>
+                        </div>
+                        <div>
+                            <dt><span class="player-level-badge">L4</span> Full admin</dt>
+                            <dd>Can run every server command, including /stop and /reload. Only give this to people you fully trust.</dd>
+                        </div>
+                    </dl>
+                </details>
             </div>
         </div>
     </div>
