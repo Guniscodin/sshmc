@@ -20,8 +20,9 @@ from mcpanel.models import Profile, BuildType, ProfileStatus, ModDownload
 from mcpanel.config import PROFILES_DIR
 from mcpanel.core import (
     runtime, loader, ports, process, modpacks, backups, rcon, mod_storage,
-    mod_downloads, server_properties,
+    server_properties,
 )
+from mcpanel.core.mod_downloads import source_key, legacy_cache_key
 from mcpanel import db
 
 logger = logging.getLogger(__name__)
@@ -565,7 +566,7 @@ def create_new_profile(
             loader_version=loader_version,
             git_url=clean_git_url,
             description=(description or "").strip(),
-            mod_downloads=parsed_mod_downloads,
+            mod_downloads=[ModDownload.model_validate(item) for item in parsed_mod_downloads],
             java_path=java_path,
             ram_mb=ram_mb,
             port=assigned_port,
@@ -675,7 +676,7 @@ async def update_existing_profile(
             git_url=effective_git_url,
             description=(description or "").strip(),
             modpack_name=effective_pack,
-            mod_downloads=effective_downloads,
+            mod_downloads=effective_download_models,
             java_path=java_path,
             ram_mb=ram_mb,
             port=assigned_port,
@@ -710,13 +711,13 @@ async def update_existing_profile(
             db.update_profile(updated_profile)
             root = mod_storage.profile_root(profile_id)
             if not incompatible_change:
-                retained = {mod_downloads.source_key(item, index) for index, item in enumerate(effective_download_models)}
+                retained = {source_key(item, index) for index, item in enumerate(effective_download_models)}
                 cache_root = root / "downloaded_mods"
                 if cache_root.is_dir() and not cache_root.is_symlink():
                     for index, old_item in enumerate(existing.mod_downloads):
-                        key = mod_downloads.source_key(old_item, index)
+                        key = source_key(old_item, index)
                         if key not in retained:
-                            for cache_key in (key, mod_downloads.legacy_cache_key(old_item)):
+                            for cache_key in (key, legacy_cache_key(old_item)):
                                 folder = cache_root / cache_key
                                 if folder.is_dir() and not folder.is_symlink():
                                     await asyncio.to_thread(shutil.rmtree, folder, True)
@@ -972,8 +973,12 @@ def get_dashboard_stats(request: Request):
     profile_states = db.list_profiles_with_states()
 
     total = len(profile_states)
-    running = sum(1 for _, s in profile_states if s and s.status == ProfileStatus.RUNNING)
-    ram = sum(p.ram_mb for p, s in profile_states if s and s.status == ProfileStatus.RUNNING)
+    running = 0
+    ram = 0
+    for p, s in profile_states:
+        if s and s.status == ProfileStatus.RUNNING:
+            running += 1
+            ram += p.ram_mb
     
     html = f"""
     <div class="stat-card"><span class="stat-label">Total Servers</span><span class="stat-value">{total}</span></div>
@@ -1298,7 +1303,7 @@ async def send_profile_broadcast(profile_id: str, payload: BroadcastPayload):
     if prefix_text:
         components.append({"text": f"{prefix_text} ", "color": "gold", "bold": True})
 
-    msg_comp = {
+    msg_comp: dict[str, object] = {
         "text": msg_text,
         "color": payload.color,
     }
