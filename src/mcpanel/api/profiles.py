@@ -136,7 +136,7 @@ SERVER_SETTING_SPECS: dict[str, dict] = {
         "description": "Radius in blocks around world spawn only operators may edit. 0 disables protection.",
     },
 
-    # Multiplayer & Access
+    # Multiplayer & Player Policies
     "online-mode": {
         "type": "bool", "default": "true", "category": "multiplayer", "label": "Online Mode",
         "description": "Verify players against Mojang's session servers. Turn off to allow offline-mode clients.",
@@ -152,6 +152,22 @@ SERVER_SETTING_SPECS: dict[str, dict] = {
     "op-permission-level": {
         "type": "int", "default": "4", "min": 0, "max": 4, "category": "multiplayer", "label": "OP Permission Level",
         "description": "Default permission level granted to operators (1 = spawn protection, 4 = full admin).",
+    },
+    "player-idle-timeout": {
+        "type": "int", "default": "0", "min": 0, "max": 2147483647, "category": "multiplayer", "label": "Player Idle Timeout (min)",
+        "description": "Kick AFK/idle players after this many minutes. Set to 0 to disable automatic kicking.",
+    },
+    "hide-online-players": {
+        "type": "bool", "default": "false", "category": "multiplayer", "label": "Hide Online Players",
+        "description": "Hide online player names from the multiplayer server list hover menu for privacy.",
+    },
+    "prevent-proxy-connections": {
+        "type": "bool", "default": "false", "category": "multiplayer", "label": "Prevent Proxy Connections",
+        "description": "Block players connecting through commercial VPNs or proxies via Mojang's session check.",
+    },
+    "enable-status": {
+        "type": "bool", "default": "true", "category": "multiplayer", "label": "Enable Status Ping",
+        "description": "Allow the server to appear as online and respond to multiplayer list status pings.",
     },
 
     # Performance & Optimization / Crash Prevention

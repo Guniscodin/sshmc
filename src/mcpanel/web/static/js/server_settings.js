@@ -36,9 +36,9 @@ window.serverSettingsApp = function serverSettingsApp() {
             },
             {
                 id: 'multiplayer',
-                label: 'Multiplayer & Access',
+                label: 'Multiplayer & Player Policies',
                 icon: 'fa-users',
-                description: 'Online mode, signed chat profiles, max players, and operator level.'
+                description: 'Online mode, AFK timeout, player limit, privacy, and proxy protection.'
             },
             {
                 id: 'performance',

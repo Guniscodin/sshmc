@@ -98,6 +98,35 @@ def test_validate_server_setting_world_options():
         _validate_server_setting("sync-chunk-writes", sync_spec, "maybe")
     assert exc.value.status_code == 422
 
+    # Player & Network Policies validation
+    idle_spec = SERVER_SETTING_SPECS["player-idle-timeout"]
+    assert _validate_server_setting("player-idle-timeout", idle_spec, "0") == "0"
+    assert _validate_server_setting("player-idle-timeout", idle_spec, "15") == "15"
+    with pytest.raises(HTTPException) as exc:
+        _validate_server_setting("player-idle-timeout", idle_spec, "-1")
+    assert exc.value.status_code == 422
+
+    hide_spec = SERVER_SETTING_SPECS["hide-online-players"]
+    assert _validate_server_setting("hide-online-players", hide_spec, "true") == "true"
+    assert _validate_server_setting("hide-online-players", hide_spec, "false") == "false"
+    with pytest.raises(HTTPException) as exc:
+        _validate_server_setting("hide-online-players", hide_spec, "invalid")
+    assert exc.value.status_code == 422
+
+    proxy_spec = SERVER_SETTING_SPECS["prevent-proxy-connections"]
+    assert _validate_server_setting("prevent-proxy-connections", proxy_spec, "true") == "true"
+    assert _validate_server_setting("prevent-proxy-connections", proxy_spec, "false") == "false"
+    with pytest.raises(HTTPException) as exc:
+        _validate_server_setting("prevent-proxy-connections", proxy_spec, "invalid")
+    assert exc.value.status_code == 422
+
+    status_spec = SERVER_SETTING_SPECS["enable-status"]
+    assert _validate_server_setting("enable-status", status_spec, "true") == "true"
+    assert _validate_server_setting("enable-status", status_spec, "false") == "false"
+    with pytest.raises(HTTPException) as exc:
+        _validate_server_setting("enable-status", status_spec, "no")
+    assert exc.value.status_code == 422
+
 
 def test_categories_assigned_to_all_specs():
     valid_categories = {"world", "gameplay", "spawns", "multiplayer", "performance"}
@@ -154,9 +183,9 @@ def test_get_and_update_server_settings_api(mock_profile):
     data = resp.json()
     assert data["profile_id"] == profile.id
     fields = data["fields"]
-    assert len(fields) >= 28
+    assert len(fields) >= 32
 
-    # Check that world and performance settings exist and have correct categories
+    # Check that world, performance, and multiplayer settings exist and have correct categories
     field_map = {f["key"]: f for f in fields}
     assert field_map["level-name"]["category"] == "world"
     assert field_map["level-name"]["value"] == "world"
@@ -171,7 +200,12 @@ def test_get_and_update_server_settings_api(mock_profile):
     assert field_map["max-chained-neighbor-updates"]["category"] == "performance"
     assert field_map["sync-chunk-writes"]["category"] == "performance"
 
-    # 2. PUT server-settings with custom world & performance settings
+    assert field_map["player-idle-timeout"]["category"] == "multiplayer"
+    assert field_map["hide-online-players"]["category"] == "multiplayer"
+    assert field_map["prevent-proxy-connections"]["category"] == "multiplayer"
+    assert field_map["enable-status"]["category"] == "multiplayer"
+
+    # 2. PUT server-settings with custom world, performance & player policy settings
     payload = {
         "properties": {
             "level-name": "skyblock_world",
@@ -185,6 +219,10 @@ def test_get_and_update_server_settings_api(mock_profile):
             "network-compression-threshold": "-1",
             "max-chained-neighbor-updates": "500000",
             "sync-chunk-writes": "false",
+            "player-idle-timeout": "10",
+            "hide-online-players": "true",
+            "prevent-proxy-connections": "true",
+            "enable-status": "false",
         }
     }
     update_resp = client.put(f"/api/profiles/{profile.id}/server-settings", json=payload)
@@ -203,3 +241,7 @@ def test_get_and_update_server_settings_api(mock_profile):
     assert props["network-compression-threshold"] == "-1"
     assert props["max-chained-neighbor-updates"] == "500000"
     assert props["sync-chunk-writes"] == "false"
+    assert props["player-idle-timeout"] == "10"
+    assert props["hide-online-players"] == "true"
+    assert props["prevent-proxy-connections"] == "true"
+    assert props["enable-status"] == "false"
