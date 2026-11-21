@@ -154,6 +154,101 @@
                         </div>
                     </template>
                 </div>
+
+                <!-- LIVE IN-GAME BROADCAST TOOL (Admin section) -->
+                <div class="broadcast-panel mt-4" x-show="cat.id === 'admin'">
+                    <div class="broadcast-panel-header">
+                        <h4 class="m-0 flex items-center gap-2">
+                            <i class="fa-solid fa-paper-plane text-primary-color"></i>
+                            <span>Send In-Game Broadcast</span>
+                        </h4>
+                        <p class="form-hint m-0">Send an immediate styled announcement, title, or action bar message to all online players.</p>
+                    </div>
+
+                    <div class="stack-sm mt-3">
+                        <div class="form-group mb-0">
+                            <label for="broadcast-message-input">Announcement Message</label>
+                            <textarea id="broadcast-message-input" rows="2" maxlength="300" x-model="broadcastMessage"
+                                      placeholder="Type a message (e.g. Server restarting in 5 minutes! Save your builds.)"></textarea>
+                        </div>
+
+                        <div class="broadcast-controls-grid">
+                            <div class="form-group mb-0">
+                                <label for="broadcast-prefix-input">Prefix Tag</label>
+                                <input type="text" id="broadcast-prefix-input" x-model="broadcastPrefix" maxlength="24" placeholder="[Server]">
+                            </div>
+
+                            <div class="form-group mb-0">
+                                <label for="broadcast-type-select">Display Mode</label>
+                                <select id="broadcast-type-select" x-model="broadcastType">
+                                    <option value="chat">Chat Message</option>
+                                    <option value="title">Screen Title (Center)</option>
+                                    <option value="actionbar">Action Bar (Above Hotbar)</option>
+                                </select>
+                            </div>
+
+                            <div class="form-group mb-0">
+                                <label for="broadcast-color-select">Color</label>
+                                <select id="broadcast-color-select" x-model="broadcastColor">
+                                    <option value="gold">Gold (Default)</option>
+                                    <option value="yellow">Yellow</option>
+                                    <option value="red">Red (Alert)</option>
+                                    <option value="green">Green (Success)</option>
+                                    <option value="aqua">Aqua (Info)</option>
+                                    <option value="light_purple">Light Purple</option>
+                                    <option value="white">White</option>
+                                    <option value="gray">Gray</option>
+                                </select>
+                            </div>
+
+                            <div class="form-group mb-0 flex flex-col justify-end">
+                                <span class="text-xs text-muted mb-1">Styling</span>
+                                <div class="flex items-center gap-3">
+                                    <label class="checkbox-item m-0">
+                                        <input type="checkbox" x-model="broadcastBold">
+                                        <span><strong>Bold</strong></span>
+                                    </label>
+                                    <label class="checkbox-item m-0">
+                                        <input type="checkbox" x-model="broadcastItalic">
+                                        <span><em>Italic</em></span>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- In-game Preview Box -->
+                        <div class="broadcast-preview-wrap mt-2">
+                            <span class="text-xs text-muted">In-Game Live Preview:</span>
+                            <div class="broadcast-preview-box" :class="'preview-' + broadcastType">
+                                <template x-if="broadcastPrefix.trim()">
+                                    <span class="broadcast-preview-prefix" x-text="broadcastPrefix.trim() + ' '"></span>
+                                </template>
+                                <span class="broadcast-preview-msg"
+                                      :style="{ color: broadcastPreviewColor(), fontWeight: broadcastBold ? 'bold' : 'normal', fontStyle: broadcastItalic ? 'italic' : 'normal' }"
+                                      x-text="broadcastMessage.trim() || 'Your broadcast message preview will appear here...'"></span>
+                            </div>
+                        </div>
+
+                        <div class="flex items-center justify-between mt-2 flex-wrap gap-2">
+                            <div class="flex items-center gap-2">
+                                <button type="button" class="btn btn-primary btn-sm"
+                                        @click="sendBroadcast()"
+                                        :disabled="!serverRunning || sendingBroadcast || !broadcastMessage.trim()">
+                                    <span x-show="!sendingBroadcast"><i class="fa-solid fa-paper-plane"></i> Send Broadcast</span>
+                                    <span x-show="sendingBroadcast"><i class="fa-solid fa-spinner fa-spin"></i> Sending…</span>
+                                </button>
+                                <button type="button" class="btn btn-ghost btn-sm"
+                                        @click="broadcastMessage = ''"
+                                        :disabled="!broadcastMessage">
+                                    Clear
+                                </button>
+                            </div>
+                            <div x-show="!serverRunning" class="form-hint text-warning m-0">
+                                <i class="fa-solid fa-circle-exclamation"></i> Server must be running to send live broadcasts.
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </template>
 

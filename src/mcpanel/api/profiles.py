@@ -199,6 +199,16 @@ SERVER_SETTING_SPECS: dict[str, dict] = {
         "type": "bool", "default": "true", "category": "performance", "label": "Sync Chunk Writes",
         "description": "Save chunk data synchronously to disk. Disabling can reduce I/O stutter on slower hard drives or heavily loaded disks.",
     },
+
+    # Admin & Operator Broadcasts
+    "broadcast-console-to-ops": {
+        "type": "bool", "default": "true", "category": "admin", "label": "Broadcast Console to Ops",
+        "description": "Send automated console command outputs and server alerts to online operators in-game.",
+    },
+    "broadcast-rcon-to-ops": {
+        "type": "bool", "default": "true", "category": "admin", "label": "Broadcast RCON to Ops",
+        "description": "Broadcast RCON command executions (such as panel actions) in game chat to online operators.",
+    },
 }
 
 MANAGED_SERVER_PROPERTIES = {"server-port", "enable-rcon", "rcon.port", "rcon.password", "motd"}
@@ -956,3 +966,72 @@ async def clear_mod_download_cache(profile_id: str):
             except OSError as exc:
                 raise HTTPException(status_code=500, detail=f"Could not clear the mod download cache: {exc}") from exc
     return None
+
+
+class BroadcastPayload(BaseModel):
+    message: str = Field(..., min_length=1, max_length=500)
+    display_type: str = Field(default="chat", pattern="^(chat|title|actionbar)$")
+    color: str = Field(default="gold", pattern="^(gold|yellow|red|green|aqua|light_purple|white|gray)$")
+    bold: bool = False
+    italic: bool = False
+    prefix: str = Field(default="[Server]", max_length=50)
+
+
+@router.post("/{profile_id}/broadcast")
+async def send_profile_broadcast(profile_id: str, payload: BroadcastPayload):
+    """Broadcasts a styled in-game announcement, screen title, or action bar notice to all players via RCON."""
+    profile = db.get_profile(profile_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    state = db.get_runtime_state(profile_id)
+    if not state or state.status != ProfileStatus.RUNNING:
+        raise HTTPException(status_code=409, detail="The server must be running to send a live broadcast.")
+
+    msg_text = payload.message.strip()
+    if not msg_text:
+        raise HTTPException(status_code=422, detail="Broadcast message cannot be empty.")
+
+    prefix_text = (payload.prefix or "").strip()
+    components = []
+    if prefix_text:
+        components.append({"text": f"{prefix_text} ", "color": "gold", "bold": True})
+
+    msg_comp = {
+        "text": msg_text,
+        "color": payload.color,
+    }
+    if payload.bold:
+        msg_comp["bold"] = True
+    if payload.italic:
+        msg_comp["italic"] = True
+    components.append(msg_comp)
+
+    raw_json = json.dumps(components)
+    if payload.display_type == "chat":
+        command = f"tellraw @a {raw_json}"
+    elif payload.display_type == "title":
+        command = f"title @a title {raw_json}"
+    elif payload.display_type == "actionbar":
+        command = f"title @a actionbar {raw_json}"
+    else:
+        command = f"tellraw @a {raw_json}"
+
+    try:
+        response = await rcon.send_command(
+            "127.0.0.1",
+            profile.rcon_port,
+            profile.rcon_password,
+            command,
+        )
+    except rcon.RCONError as exc:
+        logger.warning("Broadcast failed for profile '%s': %s", profile.name, exc)
+        raise HTTPException(status_code=502, detail=f"Could not deliver broadcast to server: {exc}") from exc
+
+    logger.info("Broadcast sent on profile '%s' (%s): %s", profile.name, payload.display_type, msg_text)
+    return {
+        "success": True,
+        "display_type": payload.display_type,
+        "message": msg_text,
+        "response": response,
+    }
+

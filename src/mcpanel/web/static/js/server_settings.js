@@ -14,6 +14,13 @@ window.serverSettingsApp = function serverSettingsApp() {
         dirty: false,
         settingsToken: 0,
         searchQuery: '',
+        broadcastMessage: '',
+        broadcastPrefix: '[Server]',
+        broadcastType: 'chat',
+        broadcastColor: 'gold',
+        broadcastBold: false,
+        broadcastItalic: false,
+        sendingBroadcast: false,
 
         categories: [
             {
@@ -45,6 +52,12 @@ window.serverSettingsApp = function serverSettingsApp() {
                 label: 'Performance & Crash Prevention',
                 icon: 'fa-gauge-high',
                 description: 'Render & simulation distances, watchdog tick limit, network compression, and chunk saving.'
+            },
+            {
+                id: 'admin',
+                label: 'Admin & Broadcasts',
+                icon: 'fa-bullhorn',
+                description: 'Operator alerts, RCON notifications, and live in-game server announcements.'
             }
         ],
 
@@ -331,6 +344,55 @@ window.serverSettingsApp = function serverSettingsApp() {
 
         async discardChanges() {
             await this.loadSettings();
+        },
+
+        broadcastPreviewColor() {
+            const colors = {
+                gold: '#FFAA00',
+                yellow: '#FFFF55',
+                red: '#FF5555',
+                green: '#55FF55',
+                aqua: '#55FFFF',
+                light_purple: '#FF55FF',
+                white: '#FFFFFF',
+                gray: '#AAAAAA',
+            };
+            return colors[this.broadcastColor] || '#FFAA00';
+        },
+
+        async sendBroadcast() {
+            const msg = (this.broadcastMessage || '').trim();
+            if (!msg || !this.profileId || this.sendingBroadcast) return;
+            if (!this.serverRunning) {
+                showToast('The server must be running to send live in-game broadcasts.', 'error');
+                return;
+            }
+            this.sendingBroadcast = true;
+            try {
+                const response = await fetch(`/api/profiles/${encodeURIComponent(this.profileId)}/broadcast`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        message: msg,
+                        prefix: this.broadcastPrefix,
+                        display_type: this.broadcastType,
+                        color: this.broadcastColor,
+                        bold: this.broadcastBold,
+                        italic: this.broadcastItalic,
+                    }),
+                });
+                if (response.status === 401) { window.location.assign('/login'); return; }
+                const data = await this.readJson(response, 'Could not send broadcast.');
+                if (!response.ok) {
+                    throw new Error(typeof data.detail === 'string' ? data.detail : 'Could not send broadcast.');
+                }
+                showToast('Broadcast delivered to in-game server!', 'success');
+                this.broadcastMessage = '';
+            } catch (err) {
+                showToast(err.message || 'Could not send broadcast.', 'error');
+            } finally {
+                this.sendingBroadcast = false;
+            }
         },
     };
 };

@@ -127,9 +127,24 @@ def test_validate_server_setting_world_options():
         _validate_server_setting("enable-status", status_spec, "no")
     assert exc.value.status_code == 422
 
+    # Admin & Operator Broadcasts validation
+    console_op_spec = SERVER_SETTING_SPECS["broadcast-console-to-ops"]
+    assert _validate_server_setting("broadcast-console-to-ops", console_op_spec, "true") == "true"
+    assert _validate_server_setting("broadcast-console-to-ops", console_op_spec, "false") == "false"
+    with pytest.raises(HTTPException) as exc:
+        _validate_server_setting("broadcast-console-to-ops", console_op_spec, "yes")
+    assert exc.value.status_code == 422
+
+    rcon_op_spec = SERVER_SETTING_SPECS["broadcast-rcon-to-ops"]
+    assert _validate_server_setting("broadcast-rcon-to-ops", rcon_op_spec, "true") == "true"
+    assert _validate_server_setting("broadcast-rcon-to-ops", rcon_op_spec, "false") == "false"
+    with pytest.raises(HTTPException) as exc:
+        _validate_server_setting("broadcast-rcon-to-ops", rcon_op_spec, "invalid")
+    assert exc.value.status_code == 422
+
 
 def test_categories_assigned_to_all_specs():
-    valid_categories = {"world", "gameplay", "spawns", "multiplayer", "performance"}
+    valid_categories = {"world", "gameplay", "spawns", "multiplayer", "performance", "admin"}
     for key, spec in SERVER_SETTING_SPECS.items():
         assert "category" in spec, f"Spec '{key}' is missing a category"
         assert spec["category"] in valid_categories, f"Spec '{key}' has invalid category '{spec['category']}'"
@@ -183,9 +198,9 @@ def test_get_and_update_server_settings_api(mock_profile):
     data = resp.json()
     assert data["profile_id"] == profile.id
     fields = data["fields"]
-    assert len(fields) >= 32
+    assert len(fields) >= 34
 
-    # Check that world, performance, and multiplayer settings exist and have correct categories
+    # Check that world, performance, multiplayer, and admin settings exist and have correct categories
     field_map = {f["key"]: f for f in fields}
     assert field_map["level-name"]["category"] == "world"
     assert field_map["level-name"]["value"] == "world"
@@ -205,7 +220,10 @@ def test_get_and_update_server_settings_api(mock_profile):
     assert field_map["prevent-proxy-connections"]["category"] == "multiplayer"
     assert field_map["enable-status"]["category"] == "multiplayer"
 
-    # 2. PUT server-settings with custom world, performance & player policy settings
+    assert field_map["broadcast-console-to-ops"]["category"] == "admin"
+    assert field_map["broadcast-rcon-to-ops"]["category"] == "admin"
+
+    # 2. PUT server-settings with custom world, performance, player policy & admin settings
     payload = {
         "properties": {
             "level-name": "skyblock_world",
@@ -223,6 +241,8 @@ def test_get_and_update_server_settings_api(mock_profile):
             "hide-online-players": "true",
             "prevent-proxy-connections": "true",
             "enable-status": "false",
+            "broadcast-console-to-ops": "false",
+            "broadcast-rcon-to-ops": "false",
         }
     }
     update_resp = client.put(f"/api/profiles/{profile.id}/server-settings", json=payload)
@@ -245,3 +265,108 @@ def test_get_and_update_server_settings_api(mock_profile):
     assert props["hide-online-players"] == "true"
     assert props["prevent-proxy-connections"] == "true"
     assert props["enable-status"] == "false"
+    assert props["broadcast-console-to-ops"] == "false"
+    assert props["broadcast-rcon-to-ops"] == "false"
+
+
+def test_send_profile_broadcast(mock_profile, monkeypatch):
+    from fastapi import FastAPI
+    from mcpanel.models import RuntimeState, ProfileStatus
+    from mcpanel.api import profiles
+    from mcpanel.core import rcon
+
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    profile, server_dir = mock_profile
+
+    # 1. Server stopped -> 409
+    resp = client.post(
+        f"/api/profiles/{profile.id}/broadcast",
+        json={"message": "Server stopped broadcast"},
+    )
+    assert resp.status_code == 409
+    assert "running" in resp.json()["detail"].lower()
+
+    # 2. Server running -> simulate RCON
+    monkeypatch.setattr(
+        profiles.db,
+        "get_runtime_state",
+        lambda pid: RuntimeState(
+            profile_id=pid,
+            status=ProfileStatus.RUNNING,
+            pid=99999,
+            started_at=None,
+            stopped_at=None,
+            crash_count=0,
+            last_exit_code=None,
+        ),
+    )
+
+    sent_rcon_commands = []
+
+    async def mock_send_command(host, port, password, command):
+        sent_rcon_commands.append(command)
+        return "Delivered"
+
+    monkeypatch.setattr(profiles.rcon, "send_command", mock_send_command)
+
+    # 2a. Chat broadcast with prefix, color, bold
+    resp = client.post(
+        f"/api/profiles/{profile.id}/broadcast",
+        json={
+            "message": "Welcome everyone!",
+            "prefix": "[Alert]",
+            "display_type": "chat",
+            "color": "red",
+            "bold": True,
+            "italic": False,
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["success"] is True
+    assert len(sent_rcon_commands) == 1
+    assert sent_rcon_commands[0].startswith("tellraw @a ")
+    assert "[Alert]" in sent_rcon_commands[0]
+    assert "Welcome everyone!" in sent_rcon_commands[0]
+    assert "red" in sent_rcon_commands[0]
+
+    # 2b. Screen Title broadcast
+    resp = client.post(
+        f"/api/profiles/{profile.id}/broadcast",
+        json={
+            "message": "Event Starting!",
+            "prefix": "",
+            "display_type": "title",
+            "color": "gold",
+            "bold": True,
+            "italic": True,
+        },
+    )
+    assert resp.status_code == 200
+    assert len(sent_rcon_commands) == 2
+    assert sent_rcon_commands[1].startswith("title @a title ")
+    assert "Event Starting!" in sent_rcon_commands[1]
+
+    # 2c. Action Bar broadcast
+    resp = client.post(
+        f"/api/profiles/{profile.id}/broadcast",
+        json={
+            "message": "Action bar info",
+            "prefix": "[Info]",
+            "display_type": "actionbar",
+            "color": "aqua",
+        },
+    )
+    assert resp.status_code == 200
+    assert len(sent_rcon_commands) == 3
+    assert sent_rcon_commands[2].startswith("title @a actionbar ")
+    assert "Action bar info" in sent_rcon_commands[2]
+
+    # 3. Invalid payload / empty message -> 422
+    resp = client.post(
+        f"/api/profiles/{profile.id}/broadcast",
+        json={"message": "   "},
+    )
+    assert resp.status_code == 422
