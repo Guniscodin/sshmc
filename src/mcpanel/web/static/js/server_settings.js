@@ -489,7 +489,10 @@ window.serverSettingsApp = function serverSettingsApp() {
                 if (response.status === 401) { window.location.assign('/login'); return; }
                 const data = await this.readJson(response, 'Could not update gamerule.');
                 if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Could not update gamerule.');
-                showToast(`Gamerule ${rule.key} updated to ${rule.value}!`, 'success');
+                // Sync the UI with the server-confirmed value so the change
+                // persists across refreshes instead of showing a stale value.
+                rule.value = data.value;
+                showToast(`Gamerule ${rule.key} updated to ${data.value}!`, 'success');
             } catch (err) {
                 showToast(err.message || 'Could not update gamerule.', 'error');
             } finally {
