@@ -1,24 +1,119 @@
 """Background storage inventory for panel-managed persistent data."""
 
 import asyncio
+from datetime import datetime, timezone
 import logging
 import os
+from pathlib import Path
 import re
 import stat
-from datetime import datetime, timezone
-from pathlib import Path
+import struct
 
 from mcpanel import db
 from mcpanel.config import (
-    BACKUPS_ROOT, CRASH_REPORT_KEEP, CRASH_REPORT_RETENTION_DAYS, DATA_DIR,
-    PANEL_LOG_BACKUP_COUNT, PANEL_LOG_MAX_BYTES, PROFILES_DIR,
-    SERVER_LOG_BACKUP_COUNT, SERVER_LOG_MAX_BYTES, SERVER_ROTATED_LOG_KEEP,
+    BACKUPS_ROOT,
+    CRASH_REPORT_KEEP,
+    CRASH_REPORT_RETENTION_DAYS,
+    DATA_DIR,
+    PANEL_LOG_BACKUP_COUNT,
+    PANEL_LOG_MAX_BYTES,
+    PROFILES_DIR,
+    SERVER_LOG_BACKUP_COUNT,
+    SERVER_LOG_MAX_BYTES,
+    SERVER_ROTATED_LOG_KEEP,
     UPLOAD_SESSION_MAX_AGE_SECONDS,
 )
 
 logger = logging.getLogger(__name__)
 SCAN_INTERVAL_SECONDS = 600
 WORLD_FOLDERS = ("world", "world_nether", "world_the_end")
+
+REGION_HEADER_BYTES = 4096
+
+
+def _count_chunks_in_region_file(region_path: Path) -> int:
+    """Count generated chunks in a single .mca region file.
+
+    The Anvil region format stores a 4096-byte chunk offset table at the start
+    of the file: 1024 big-endian 32-bit offsets, one per (x, z) chunk in the
+    region. An offset of 0 means the chunk has never been generated. Counting
+    non-zero entries gives the exact number of generated chunks without parsing
+    NBT, and reading just the header is cheap (8 KB per file).
+    """
+    try:
+        with open(region_path, "rb") as f:
+            header = f.read(REGION_HEADER_BYTES)
+    except OSError:
+        return 0
+    if len(header) < REGION_HEADER_BYTES:
+        return 0
+    try:
+        offsets = struct.unpack(">1024I", header)
+    except struct.error:
+        return 0
+    return sum(1 for offset in offsets if offset != 0)
+
+
+def _world_folder_stats(server_dir: Path) -> dict[str, dict]:
+    """Compute per-world stats for every known world folder under a server dir.
+
+    Returns a mapping of world_name -> {bytes, chunks, region_files,
+    last_modified}. Worlds that don't exist on disk report zeros and a null
+    timestamp.
+    """
+    stats: dict[str, dict] = {}
+    for world_name in WORLD_FOLDERS:
+        world_dir = server_dir / world_name
+        entry: dict = {
+            "bytes": 0,
+            "chunks": 0,
+            "region_files": 0,
+            "last_modified": None,
+        }
+        if not world_dir.is_dir() or world_dir.is_symlink():
+            stats[world_name] = entry
+            continue
+
+        total_bytes = 0
+        last_mtime: float | None = None
+        try:
+            for path in world_dir.rglob("*"):
+                try:
+                    info = path.stat()
+                except OSError:
+                    continue
+                if not stat.S_ISREG(info.st_mode):
+                    continue
+                total_bytes += info.st_size
+                if last_mtime is None or info.st_mtime > last_mtime:
+                    last_mtime = info.st_mtime
+        except OSError:
+            pass
+
+        region_files = 0
+        chunks = 0
+        region_dir = world_dir / "region"
+        if region_dir.is_dir() and not region_dir.is_symlink():
+            try:
+                region_files_iter = region_dir.glob("*.mca")
+            except OSError:
+                region_files_iter = []
+            for region_file in region_files_iter:
+                try:
+                    if not region_file.is_file() or region_file.is_symlink():
+                        continue
+                    region_files += 1
+                    chunks += _count_chunks_in_region_file(region_file)
+                except OSError:
+                    continue
+
+        entry["bytes"] = total_bytes
+        entry["chunks"] = chunks
+        entry["region_files"] = region_files
+        if last_mtime is not None:
+            entry["last_modified"] = datetime.fromtimestamp(last_mtime, tz=timezone.utc).isoformat()
+        stats[world_name] = entry
+    return stats
 
 # Monitoring payload derived from the last storage scan: one shared walk,
 # two consumers.
@@ -33,7 +128,11 @@ def _empty_profile(profile_id: str, name: str, status: str = "stopped", orphaned
     return {
         "id": profile_id, "name": name, "status": status, "orphaned": orphaned,
         "total_bytes": 0, "server_bytes": 0, "world_bytes": 0,
-        "worlds": {name: 0 for name in WORLD_FOLDERS}, "server_logs_bytes": 0,
+        "worlds": {
+            name: {"bytes": 0, "chunks": 0, "region_files": 0, "last_modified": None}
+            for name in WORLD_FOLDERS
+        },
+        "server_logs_bytes": 0,
         "relay_logs_bytes": 0, "crash_reports_bytes": 0, "backups_bytes": 0,
         "download_cache_bytes": 0, "modrinth_cache_bytes": 0, "modrinth_manifest_bytes": 0,
         "repo_bytes": 0, "other_bytes": 0,
@@ -55,8 +154,10 @@ def _profile_bucket(entry: dict, parts: tuple[str, ...], size: int):
         entry["server_bytes"] += size
         child = parts[3] if len(parts) > 3 else ""
         if child in WORLD_FOLDERS:
-            entry["worlds"][child] += size
-            entry["world_bytes"] += size
+            # World breakdown (bytes/chunks/region_files/last_modified) is
+            # computed in the post-pass via _world_folder_stats to avoid
+            # double-walking world directories. Keep key None so world files
+            # aren't double-counted as other_bytes.
             key = None
         elif child == "logs":
             key = "server_logs_bytes"
@@ -181,6 +282,16 @@ def _scan_storage() -> dict:
         _scan_root(BACKUPS_ROOT, inventory, profiles)
     for entry in (*profiles.values(), *inventory["orphan_profiles"].values()):
         entry["backups"].sort(key=lambda item: item["filename"], reverse=True)
+
+    # Enrich per-profile world breakdowns (bytes/chunks/region_files/
+    # last_modified) from the storage scan. This walks each world directory
+    # once; monitoring consumes the result via profile_sizes_snapshot().
+    for entry in profiles.values():
+        server_dir = PROFILES_DIR / entry["id"] / "server"
+        world_stats = _world_folder_stats(server_dir)
+        entry["worlds"] = world_stats
+        entry["world_bytes"] = sum(world["bytes"] for world in world_stats.values())
+
     all_profiles = [*profiles.values(), *inventory.pop("orphan_profiles").values()]
     modpacks = sorted(inventory.pop("modpack_map").values(), key=lambda item: item["name"].casefold())
 

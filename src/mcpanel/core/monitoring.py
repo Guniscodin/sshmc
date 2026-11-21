@@ -1,8 +1,8 @@
 """Read-only host and Minecraft process monitoring for the dashboard."""
 import asyncio
-import logging
 from collections import deque
 from datetime import datetime, timezone
+import logging
 
 import psutil
 
@@ -83,8 +83,19 @@ def get_stats() -> dict:
         "servers": [],
     }
     profile_sizes, sizes_timestamp = storage.profile_sizes_snapshot()
+    # Merge per-world storage stats (chunk counts, sizes, last modified) into
+    # each running server entry so the monitoring tab can render per-world
+    # breakdowns without an extra endpoint round-trip.
+    sizes_by_id = {item["profile_id"]: item for item in profile_sizes}
+    enriched_servers = []
+    for server in sample.get("servers", []):
+        enriched = dict(server)
+        size_info = sizes_by_id.get(server["profile_id"], {})
+        enriched["worlds"] = size_info.get("world_folders", {})
+        enriched_servers.append(enriched)
     return {
         **sample,
+        "servers": enriched_servers,
         "profile_sizes": profile_sizes,
         "profile_sizes_timestamp": sizes_timestamp,
         "thresholds": WARNING_THRESHOLDS,

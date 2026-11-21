@@ -779,6 +779,31 @@
     border-radius: var(--radius-sm);
 }
 
+/* Per-world stat cards inside each running server card. */
+.monitor-worlds {
+    margin-top: var(--space-1);
+    padding-top: var(--space-3);
+    border-top: 1px solid var(--border-subtle);
+}
+
+.monitor-worlds h4 {
+    margin: 0 0 var(--space-2);
+}
+
+.monitor-world-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-2) var(--space-3);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+
+.monitor-world-card .text-primary-color {
+    color: var(--primary);
+}
+
 .monitor-server-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
