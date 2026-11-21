@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 import re
 import shutil
@@ -9,7 +8,7 @@ from pathlib import Path
 
 from mcpanel.models import Profile, RuntimeState, ProfileStatus
 from mcpanel.config import PROFILES_DIR
-from mcpanel.core import process, rcon, housekeeping, backups
+from mcpanel.core import process, rcon, housekeeping, backups, server_properties
 from mcpanel import db
 
 logger = logging.getLogger(__name__)
@@ -60,27 +59,14 @@ async def shutdown_starting_servers() -> None:
         await asyncio.gather(*tasks, return_exceptions=True)
 
 def _load_saved_server_settings(profile_id: str) -> dict[str, str]:
-    """User-managed server.properties values saved from the server settings tab."""
-    path = PROFILES_DIR / profile_id / "server_settings.json"
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    return server_properties.read_saved_settings(profile_id)
 
 def _generate_server_properties(profile: Profile, server_dir: Path) -> None:
     """Generates or updates server.properties with our custom profile settings."""
-    props_path = server_dir / "server.properties"
+    props_path = server_properties.properties_path(profile.id)
     logger.info(f"Updating server.properties (Port: {profile.port}, RCON Port: {profile.rcon_port})")
     
-    properties = {}
-    if props_path.exists():
-        with open(props_path, "r") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, v = line.split("=", 1)
-                    properties[k.strip()] = v.strip()
+    properties = server_properties.read_properties(props_path)
 
     # Apply the user's saved server settings, then let the panel-managed keys
     # (ports, RCON, MOTD) win so they are never overridden.
@@ -97,9 +83,7 @@ def _generate_server_properties(profile: Profile, server_dir: Path) -> None:
         "motd": motd_value
     })
 
-    with open(props_path, "w") as f:
-        for k, v in properties.items():
-            f.write(f"{k}={v}\n")
+    server_properties.write_properties(props_path, properties)
 
 def _apply_server_icon(profile: Profile, server_dir: Path) -> None:
     """Copies the profile's uploaded 64x64 icon into the server folder."""

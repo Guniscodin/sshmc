@@ -17,7 +17,10 @@ from pydantic import ValidationError
 
 from mcpanel.models import Profile, BuildType, ProfileStatus, ModDownload
 from mcpanel.config import PROFILES_DIR
-from mcpanel.core import runtime, loader, ports, process, modpacks, backups, rcon, mod_storage, mod_downloads
+from mcpanel.core import (
+    runtime, loader, ports, process, modpacks, backups, rcon, mod_storage,
+    mod_downloads, server_properties,
+)
 from mcpanel import db
 
 logger = logging.getLogger(__name__)
@@ -126,33 +129,6 @@ SERVER_SETTING_SPECS: dict[str, dict] = {
 }
 
 MANAGED_SERVER_PROPERTIES = {"server-port", "enable-rcon", "rcon.port", "rcon.password", "motd"}
-
-
-def _read_properties_file(path: Path) -> dict[str, str]:
-    properties: dict[str, str] = {}
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as props_file:
-            for line in props_file:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, value = line.split("=", 1)
-                    properties[key.strip()] = value.strip()
-    except OSError:
-        return {}
-    return properties
-
-
-def _saved_server_settings_path(profile_id: str) -> Path:
-    return PROFILES_DIR / profile_id / "server_settings.json"
-
-
-def _read_saved_server_settings(profile_id: str) -> dict[str, str]:
-    path = _saved_server_settings_path(profile_id)
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
 
 
 def _validate_server_setting(key: str, spec: dict, value: str) -> str:
@@ -729,14 +705,14 @@ def get_profile_server_settings(profile_id: str):
     profile = db.get_profile(profile_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
-    props_path = PROFILES_DIR / profile_id / "server" / "server.properties"
+    props_path = server_properties.properties_path(profile_id)
     server_installed = props_path.is_file() and not props_path.is_symlink()
     if server_installed:
-        values = _read_properties_file(props_path)
+        values = server_properties.read_properties(props_path)
     else:
         # The server has not been installed yet; show settings saved from a
         # previous edit so they are not silently lost before the first Start.
-        values = _read_saved_server_settings(profile_id)
+        values = server_properties.read_saved_settings(profile_id)
     state = db.get_runtime_state(profile_id)
     fields = []
     for key, spec in SERVER_SETTING_SPECS.items():
@@ -781,21 +757,15 @@ async def update_profile_server_settings(profile_id: str, payload: ServerSetting
 
     # Persist the saved settings so they survive a wiped or not-yet-installed
     # server folder; the panel re-applies them whenever it writes server.properties.
-    saved = _read_saved_server_settings(profile_id)
-    saved.update(updates)
-    settings_path = _saved_server_settings_path(profile_id)
-    settings_path.parent.mkdir(parents=True, exist_ok=True)
-    settings_path.write_text(json.dumps(saved, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    server_properties.merge_saved_settings(profile_id, updates)
 
     # Also merge into the existing server.properties so the file on disk matches
     # what the panel will apply on the next start.
-    props_path = PROFILES_DIR / profile_id / "server" / "server.properties"
+    props_path = server_properties.properties_path(profile_id)
     if props_path.is_file() and not props_path.is_symlink():
-        existing = _read_properties_file(props_path)
+        existing = server_properties.read_properties(props_path)
         existing.update(updates)
-        with open(props_path, "w", encoding="utf-8") as props_file:
-            for prop_key, prop_value in existing.items():
-                props_file.write(f"{prop_key}={prop_value}\n")
+        server_properties.write_properties(props_path, existing)
 
     state = db.get_runtime_state(profile_id)
     logger.info("API: Saved %d server settings for profile '%s'", len(updates), profile.name)

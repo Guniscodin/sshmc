@@ -54,6 +54,10 @@
                         <i class="fa-solid fa-cubes"></i>
                         <span>Mods</span>
                     </button>
+                    <button type="button" class="sidebar-nav-item" :class="{ 'is-active': activeTab === 'players' }" @click="setTab('players')" title="Players">
+                        <i class="fa-solid fa-user-shield"></i>
+                        <span>Players</span>
+                    </button>
                     <button type="button" class="sidebar-nav-item" :class="{ 'is-active': activeTab === 'storage' }" @click="setTab('storage')" title="Storage">
                         <i class="fa-solid fa-hard-drive"></i>
                         <span>Storage</span>
@@ -274,6 +278,9 @@
             <!-- MODS TAB -->
             {% include "partials/mods_tab.html" %}
 
+            <!-- PLAYERS TAB -->
+            {% include "partials/players_tab.html" %}
+
             <!-- STORAGE TAB -->
             {% include "partials/storage_tab.html" %}
 
@@ -299,6 +306,7 @@
     <script src="{{ static_url('js/modpacks.js') }}"></script>
     <script src="{{ static_url('js/edit_profile.js') }}"></script>
     <script src="{{ static_url('js/mods.js') }}"></script>
+    <script src="{{ static_url('js/players.js') }}"></script>
     <script src="{{ static_url('js/monitoring.js') }}"></script>
     <script src="{{ static_url('js/storage.js') }}"></script>
     <script src="{{ static_url('js/server_settings.js') }}"></script>

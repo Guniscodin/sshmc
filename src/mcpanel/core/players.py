@@ -1,0 +1,502 @@
+"""Whitelist and operator management for a profile's Minecraft server.
+
+A running server owns ``whitelist.json`` and ``ops.json``: the only safe way to
+change them is through RCON, because the server rewrites the files from memory.
+A stopped server is edited directly on disk, which also works before the first
+start. This module keeps that split (and the UUID resolution behind it) in one
+place so the API layer stays a thin translator.
+"""
+
+import asyncio
+import hashlib
+import json
+import logging
+import os
+import re
+import uuid as uuid_module
+from pathlib import Path
+
+import httpx
+from fastapi import HTTPException
+
+from mcpanel import db
+from mcpanel.core import mod_storage, rcon, server_properties
+from mcpanel.models import Profile, ProfileStatus
+
+logger = logging.getLogger(__name__)
+
+# Java usernames are up to 16 chars; Geyser prefixes add a character or two.
+# Spaces are excluded because the name is interpolated into an RCON command.
+PLAYER_NAME_RE = re.compile(r"^[A-Za-z0-9_.+*-]{1,32}\Z")
+OP_LEVEL_MIN, OP_LEVEL_MAX = 1, 4
+MAX_PLAYER_FILE_BYTES = 2 * 1024 * 1024
+WHITELIST_FILE = "whitelist.json"
+OPS_FILE = "ops.json"
+
+_MOJANG_ENDPOINTS = (
+    "https://api.minecraftservices.com/minecraft/profile/lookup/name/{name}",
+    "https://api.mojang.com/users/profiles/minecraft/{name}",
+)
+_uuid_cache: dict[str, tuple[str, str]] = {}
+_locks: dict[str, asyncio.Lock] = {}
+
+
+def parse_name(name: str) -> str:
+    """Validate and trim a player name before it reaches RCON or a JSON file."""
+    text = (name or "").strip()
+    if not PLAYER_NAME_RE.fullmatch(text):
+        raise HTTPException(
+            status_code=422,
+            detail="Player names may only contain letters, numbers, '.', '_', '+', '*' and '-' (up to 32 characters).",
+        )
+    return text
+
+
+def parse_level(level: int | None) -> int:
+    try:
+        value = int(level if level is not None else 4)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="Operator level must be a whole number from 1 to 4.") from exc
+    if not OP_LEVEL_MIN <= value <= OP_LEVEL_MAX:
+        raise HTTPException(status_code=422, detail="Operator level must be between 1 and 4.")
+    return value
+
+
+def _dashed(value) -> str:
+    """Normalise a UUID (dashed or undashed) to lowercase dashed form."""
+    try:
+        return str(uuid_module.UUID(str(value)))
+    except (ValueError, AttributeError, TypeError):
+        return ""
+
+
+def _server_dir(profile_id: str) -> Path:
+    server = mod_storage.profile_root(profile_id) / "server"
+    if server.is_symlink():
+        raise HTTPException(status_code=400, detail="The server directory cannot be a symbolic link.")
+    return server
+
+
+def _player_file(profile_id: str, filename: str) -> Path:
+    path = _server_dir(profile_id) / filename
+    if path.is_symlink():
+        raise HTTPException(status_code=400, detail=f"{filename} cannot be a symbolic link.")
+    return path
+
+
+def _read_entries(profile_id: str, filename: str) -> list[dict]:
+    path = _player_file(profile_id, filename)
+    try:
+        if path.stat().st_size > MAX_PLAYER_FILE_BYTES:
+            raise HTTPException(status_code=500, detail=f"{filename} is unexpectedly large; refusing to edit it.")
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not read {filename}: {exc}") from exc
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"{filename} is not valid JSON. Fix it (or restore a backup) before managing players.",
+        ) from exc
+    if not isinstance(data, list) or any(not isinstance(entry, dict) for entry in data):
+        raise HTTPException(
+            status_code=500,
+            detail=f"{filename} does not contain a list of player records. Fix it before managing players.",
+        )
+    return data
+
+
+def _write_entries(profile_id: str, filename: str, entries: list[dict]) -> None:
+    path = _player_file(profile_id, filename)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f".{path.name}.{uuid_module.uuid4().hex}.part")
+    try:
+        with temp.open("x", encoding="utf-8") as output:
+            json.dump(entries, output, indent=2)
+            output.write("\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
+def _online_mode(profile_id: str) -> bool:
+    props_path = server_properties.properties_path(profile_id)
+    properties = server_properties.read_properties(props_path)
+    if "online-mode" not in properties:
+        properties.update(server_properties.read_saved_settings(profile_id))
+    return (properties.get("online-mode", "true") or "true").strip().lower() != "false"
+
+
+def offline_uuid(name: str) -> str:
+    """Java's UUID.nameUUIDFromBytes("OfflinePlayer:<name>") equivalent."""
+    digest = hashlib.md5(f"OfflinePlayer:{name}".encode("utf-8")).digest()
+    return str(uuid_module.UUID(bytes=digest, version=3))
+
+
+def _usercache_uuid(profile_id: str, name: str) -> tuple[str, str] | None:
+    path = _server_dir(profile_id) / "usercache.json"
+    try:
+        if path.is_symlink():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, list):
+        return None
+    for entry in data:
+        if isinstance(entry, dict) and str(entry.get("name", "")).lower() == name.lower():
+            uid = _dashed(entry.get("uuid"))
+            if uid:
+                return uid, str(entry.get("name"))
+    return None
+
+
+def _mojang_lookup(name: str) -> tuple[str, str] | None:
+    """Resolve an online-mode username. Returns (uuid, canonical_name)."""
+    cached = _uuid_cache.get(name.lower())
+    if cached:
+        return cached
+    with httpx.Client(timeout=6.0, follow_redirects=True) as client:
+        for template in _MOJANG_ENDPOINTS:
+            try:
+                response = client.get(template.format(name=name))
+            except httpx.HTTPError as exc:
+                logger.warning("Mojang lookup failed for %s: %s", name, exc)
+                continue
+            if response.status_code == 204 or response.status_code == 404:
+                return None
+            if response.status_code == 429:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Mojang is rate-limiting profile lookups. Wait a minute and try again.",
+                )
+            if response.status_code != 200:
+                continue
+            try:
+                payload = response.json()
+            except ValueError:
+                continue
+            uid = _dashed(payload.get("id"))
+            canonical = str(payload.get("name") or name)
+            if uid:
+                _uuid_cache[name.lower()] = (uid, canonical)
+                return uid, canonical
+    raise HTTPException(
+        status_code=502,
+        detail="Could not look this player up with Mojang. Check the spelling, or start the server and add them from there.",
+    )
+
+
+def _resolve_uuid(profile_id: str, name: str, online_mode: bool) -> tuple[str, str]:
+    """Return (uuid, canonical_name) for a player that is not in a player file yet."""
+    known = _usercache_uuid(profile_id, name)
+    if known:
+        return known
+    if not online_mode:
+        return offline_uuid(name), name
+    found = _mojang_lookup(name)
+    if found:
+        return found
+    raise HTTPException(
+        status_code=404,
+        detail=f"Mojang has no account named '{name}'. Check the spelling, or add them after they have joined.",
+    )
+
+
+def _match(entries: list[dict], name: str) -> dict | None:
+    for entry in entries:
+        if str(entry.get("name", "")).lower() == name.lower():
+            return entry
+    return None
+
+
+def _phase(profile_id: str) -> str:
+    state = db.get_runtime_state(profile_id)
+    if not state:
+        return "stopped"
+    return state.status.value if isinstance(state.status, ProfileStatus) else str(state.status)
+
+
+async def _rcon(profile: Profile, command: str) -> str:
+    try:
+        return await rcon.send_command(
+            "127.0.0.1", profile.rcon_port, profile.rcon_password, command
+        )
+    except rcon.RCONError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"The server is running but its console is unreachable ({exc}). Try again in a moment.",
+        ) from exc
+
+
+async def _wait_for_entry(profile_id: str, filename: str, name: str) -> dict | None:
+    """The server writes player files synchronously with the command, but give
+    slow disks a short window before calling the command failed."""
+    for _ in range(6):
+        entry = _match(await asyncio.to_thread(_read_entries, profile_id, filename), name)
+        if entry is not None:
+            return entry
+        await asyncio.sleep(0.1)
+    return None
+
+
+def _command_error(response: str, name: str, action: str) -> HTTPException:
+    message = (response or "").strip() or f"The server did not {action} '{name}'."
+    if "does not exist" in message.lower() or "not found" in message.lower():
+        return HTTPException(status_code=404, detail=message)
+    return HTTPException(status_code=502, detail=message)
+
+
+def _whitelist_view(entry: dict) -> dict:
+    return {"uuid": _dashed(entry.get("uuid")), "name": str(entry.get("name") or "")}
+
+
+def _operator_view(entry: dict) -> dict:
+    try:
+        level = int(entry.get("level", 4))
+    except (TypeError, ValueError):
+        level = 4
+    return {
+        "uuid": _dashed(entry.get("uuid")),
+        "name": str(entry.get("name") or ""),
+        "level": level if OP_LEVEL_MIN <= level <= OP_LEVEL_MAX else 4,
+        "bypasses_player_limit": bool(entry.get("bypassesPlayerLimit", False)),
+    }
+
+
+def read_state(profile: Profile) -> dict:
+    """Everything the Players tab needs, read from the files the server owns."""
+    props_path = server_properties.properties_path(profile.id)
+    server_installed = props_path.is_file() and not props_path.is_symlink()
+    properties = server_properties.read_properties(props_path)
+    if not server_installed:
+        properties.update(server_properties.read_saved_settings(profile.id))
+    enabled = (properties.get("white-list", "false") or "false").strip().lower() == "true"
+    phase = _phase(profile.id)
+
+    whitelist = [
+        _whitelist_view(entry) for entry in _read_entries(profile.id, WHITELIST_FILE)
+        if _dashed(entry.get("uuid")) and entry.get("name")
+    ]
+    operators = [
+        _operator_view(entry) for entry in _read_entries(profile.id, OPS_FILE)
+        if _dashed(entry.get("uuid")) and entry.get("name")
+    ]
+    whitelist.sort(key=lambda item: item["name"].lower())
+    operators.sort(key=lambda item: (item["level"], item["name"].lower()), reverse=True)
+
+    warnings = []
+    if enabled and not whitelist:
+        warnings.append("The whitelist is enabled but empty, so nobody can join. Add a player or turn it off.")
+    if not server_installed:
+        warnings.append("This server has not been installed yet. Player changes are saved and applied on first start.")
+
+    return {
+        "profile_id": profile.id,
+        "profile_name": profile.name,
+        "server_installed": server_installed,
+        "online_mode": (properties.get("online-mode", "true") or "true").strip().lower() != "false",
+        "phase": phase,
+        "server_running": phase == "running",
+        "busy": phase in ("starting", "stopping"),
+        "can_edit_bypass": phase in ("stopped", "crashed"),
+        "whitelist": {"enabled": enabled, "players": whitelist},
+        "operators": operators,
+        "warnings": warnings,
+    }
+
+
+async def set_whitelist_enabled(profile: Profile, enabled: bool) -> dict:
+    async with _locks.setdefault(profile.id, asyncio.Lock()):
+        phase = _phase(profile.id)
+        if phase in ("starting", "stopping"):
+            raise HTTPException(status_code=409, detail=f"The server is {phase}. Try again when it has finished.")
+        if phase == "running":
+            await _rcon(profile, f"whitelist {'on' if enabled else 'off'}")
+
+        def _persist() -> None:
+            props_path = server_properties.properties_path(profile.id)
+            if props_path.is_file() and not props_path.is_symlink():
+                current = server_properties.read_properties(props_path).get("white-list")
+                if (current or "").strip().lower() != ("true" if enabled else "false"):
+                    server_properties.set_property(props_path, "white-list", "true" if enabled else "false")
+            server_properties.merge_saved_settings(
+                profile.id, {"white-list": "true" if enabled else "false"}
+            )
+
+        await asyncio.to_thread(_persist)
+        logger.info(
+            "Players: %s whitelist for profile '%s' (server %s)",
+            "enabled" if enabled else "disabled", profile.name, phase,
+        )
+        return {"enabled": enabled, "applied": phase == "running"}
+
+
+async def add_whitelist(profile: Profile, name: str) -> dict:
+    name = parse_name(name)
+    async with _locks.setdefault(profile.id, asyncio.Lock()):
+        phase = _phase(profile.id)
+        if phase in ("starting", "stopping"):
+            raise HTTPException(status_code=409, detail=f"The server is {phase}. Try again when it has finished.")
+        if phase == "running":
+            response = await _rcon(profile, f"whitelist add {name}")
+            entry = await _wait_for_entry(profile.id, WHITELIST_FILE, name)
+            if entry is None:
+                raise _command_error(response, name, "whitelist")
+            logger.info("Players: added '%s' to the whitelist of '%s' (live)", name, profile.name)
+            return _whitelist_view(entry)
+
+        def _add() -> dict:
+            entries = _read_entries(profile.id, WHITELIST_FILE)
+            existing = _match(entries, name)
+            if existing is not None:
+                return _whitelist_view(existing)
+            uid, canonical = _resolve_uuid(profile.id, name, _online_mode(profile.id))
+            if _match(entries, canonical) is not None:
+                return _whitelist_view(_match(entries, canonical))
+            entry = {"uuid": uid, "name": canonical}
+            entries.append(entry)
+            _write_entries(profile.id, WHITELIST_FILE, entries)
+            return _whitelist_view(entry)
+
+        entry = await asyncio.to_thread(_add)
+        logger.info("Players: added '%s' to the whitelist of '%s'", entry["name"], profile.name)
+        return entry
+
+
+async def remove_whitelist(profile: Profile, name: str) -> None:
+    name = parse_name(name)
+    async with _locks.setdefault(profile.id, asyncio.Lock()):
+        phase = _phase(profile.id)
+        if phase in ("starting", "stopping"):
+            raise HTTPException(status_code=409, detail=f"The server is {phase}. Try again when it has finished.")
+        if phase == "running":
+            response = await _rcon(profile, f"whitelist remove {name}")
+            if await _wait_for_entry(profile.id, WHITELIST_FILE, name) is not None:
+                raise _command_error(response, name, "remove from the whitelist")
+            return
+
+        def _remove() -> None:
+            entries = _read_entries(profile.id, WHITELIST_FILE)
+            target = _match(entries, name)
+            if target is None:
+                raise HTTPException(status_code=404, detail=f"'{name}' is not on the whitelist.")
+            entries.remove(target)
+            _write_entries(profile.id, WHITELIST_FILE, entries)
+
+        await asyncio.to_thread(_remove)
+        logger.info("Players: removed '%s' from the whitelist of '%s'", name, profile.name)
+
+
+async def add_operator(profile: Profile, name: str, level: int | None) -> dict:
+    name = parse_name(name)
+    level = parse_level(level)
+    async with _locks.setdefault(profile.id, asyncio.Lock()):
+        phase = _phase(profile.id)
+        if phase in ("starting", "stopping"):
+            raise HTTPException(status_code=409, detail=f"The server is {phase}. Try again when it has finished.")
+        if phase == "running":
+            response = await _rcon(profile, f"op {name} {level}")
+            entry = await _wait_for_entry(profile.id, OPS_FILE, name)
+            if entry is None:
+                raise _command_error(response, name, "op")
+            entry["level"] = level
+            logger.info("Players: made '%s' an operator (level %d) on '%s' (live)", name, level, profile.name)
+            return _operator_view(entry)
+
+        def _add() -> dict:
+            entries = _read_entries(profile.id, OPS_FILE)
+            existing = _match(entries, name)
+            if existing is not None:
+                existing["level"] = level
+                _write_entries(profile.id, OPS_FILE, entries)
+                return _operator_view(existing)
+            uid, canonical = _resolve_uuid(profile.id, name, _online_mode(profile.id))
+            entry = {
+                "uuid": uid,
+                "name": canonical,
+                "level": level,
+                "bypassesPlayerLimit": False,
+            }
+            entries.append(entry)
+            _write_entries(profile.id, OPS_FILE, entries)
+            return _operator_view(entry)
+
+        entry = await asyncio.to_thread(_add)
+        logger.info("Players: made '%s' an operator (level %d) on '%s'", entry["name"], level, profile.name)
+        return entry
+
+
+async def update_operator(
+    profile: Profile,
+    name: str,
+    level: int | None = None,
+    bypasses_player_limit: bool | None = None,
+) -> dict:
+    name = parse_name(name)
+    if level is None and bypasses_player_limit is None:
+        raise HTTPException(status_code=422, detail="Provide a level or a bypass setting to change.")
+    if level is not None:
+        level = parse_level(level)
+
+    async with _locks.setdefault(profile.id, asyncio.Lock()):
+        phase = _phase(profile.id)
+        if phase in ("starting", "stopping"):
+            raise HTTPException(status_code=409, detail=f"The server is {phase}. Try again when it has finished.")
+        if phase == "running":
+            if bypasses_player_limit is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Minecraft has no command for the bypass limit, so stop the server to change it.",
+                )
+            response = await _rcon(profile, f"op {name} {level}")
+            entry = await _wait_for_entry(profile.id, OPS_FILE, name)
+            if entry is None:
+                raise _command_error(response, name, "op")
+            entry["level"] = level
+            return _operator_view(entry)
+
+        def _update() -> dict:
+            entries = _read_entries(profile.id, OPS_FILE)
+            target = _match(entries, name)
+            if target is None:
+                raise HTTPException(status_code=404, detail=f"'{name}' is not an operator.")
+            if level is not None:
+                target["level"] = level
+            if bypasses_player_limit is not None:
+                target["bypassesPlayerLimit"] = bool(bypasses_player_limit)
+            _write_entries(profile.id, OPS_FILE, entries)
+            return _operator_view(target)
+
+        entry = await asyncio.to_thread(_update)
+        logger.info("Players: updated operator '%s' on '%s'", entry["name"], profile.name)
+        return entry
+
+
+async def remove_operator(profile: Profile, name: str) -> None:
+    name = parse_name(name)
+    async with _locks.setdefault(profile.id, asyncio.Lock()):
+        phase = _phase(profile.id)
+        if phase in ("starting", "stopping"):
+            raise HTTPException(status_code=409, detail=f"The server is {phase}. Try again when it has finished.")
+        if phase == "running":
+            response = await _rcon(profile, f"deop {name}")
+            if await _wait_for_entry(profile.id, OPS_FILE, name) is not None:
+                raise _command_error(response, name, "deop")
+            return
+
+        def _remove() -> None:
+            entries = _read_entries(profile.id, OPS_FILE)
+            target = _match(entries, name)
+            if target is None:
+                raise HTTPException(status_code=404, detail=f"'{name}' is not an operator.")
+            entries.remove(target)
+            _write_entries(profile.id, OPS_FILE, entries)
+
+        await asyncio.to_thread(_remove)
+        logger.info("Players: removed operator '%s' from '%s'", name, profile.name)

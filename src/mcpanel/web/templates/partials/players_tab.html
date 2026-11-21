@@ -1,0 +1,200 @@
+<!-- PLAYERS TAB -->
+<section class="page-container" x-show="activeTab === 'players'" x-data="playersApp()" x-init="init()" aria-labelledby="players-title">
+    <div class="page-header">
+        <div class="page-header-info">
+            <span class="page-eyebrow">Whitelist &amp; operators</span>
+            <h1 id="players-title" class="page-title">Players</h1>
+            <p class="page-subtitle">Decide who may join your server and who can run commands.</p>
+        </div>
+        <div class="page-actions">
+            <div class="flex items-center gap-2">
+                <label for="players-profile-select" class="m-0 text-xs">Profile:</label>
+                <select id="players-profile-select" x-model="profileId" @change="selectProfile()" aria-label="Choose a profile">
+                    <option value="">Choose a profile</option>
+                    <template x-for="item in profiles" :key="item.id">
+                        <option :value="item.id" x-text="item.name"></option>
+                    </template>
+                </select>
+                <span class="badge badge-status badge-running" x-show="state.server_running"><span class="badge-status-dot"></span> Running</span>
+                <span class="badge badge-status badge-starting" x-show="state.busy"><span class="badge-status-dot"></span> <span x-text="state.phase === 'starting' ? 'Starting' : 'Stopping'"></span></span>
+            </div>
+        </div>
+    </div>
+
+    <!-- No profile selected -->
+    <div x-show="!profileId || !profile" class="empty-state mt-6">
+        <i class="fa-solid fa-user-shield empty-state-hero-icon text-muted"></i>
+        <h3 class="mt-2">No profile selected</h3>
+        <p class="text-muted max-w-md line-height-base">
+            Choose a Minecraft profile above to manage its whitelist and operators. You can set these up before the server's first start.
+        </p>
+        <template x-if="profiles.length === 0">
+            <button type="button" class="btn btn-primary btn-sm mt-2" @click="openNewProfileModal()">
+                <i class="fa-solid fa-plus"></i> Create your first profile
+            </button>
+        </template>
+    </div>
+
+    <div x-show="profileId && profile" class="stack-md">
+        <div class="form-hint callout-box" role="status" x-show="state.server_running">
+            <i class="fa-solid fa-bolt text-success"></i>
+            <span><strong><span x-text="profile ? profile.name : ''"></span> is running.</strong>
+            Whitelist and operator changes are applied to the live server immediately through its console.</span>
+        </div>
+
+        <div class="form-hint callout-box" role="status" x-show="!state.server_running && !state.busy">
+            <i class="fa-solid fa-circle-info text-primary-color"></i>
+            <span>Changes are saved to this server's files and take effect the next time it starts.</span>
+        </div>
+
+        <div class="form-hint callout-box" role="status" x-show="state.busy">
+            <i class="fa-solid fa-spinner fa-spin text-warning"></i>
+            <span>The server is <span x-text="state.phase"></span>. Player changes are disabled until it finishes.</span>
+        </div>
+
+        <div class="form-error" x-show="error" x-text="error" role="alert"></div>
+
+        <template x-for="warning in state.warnings" :key="warning">
+            <div class="form-hint callout-box" role="status">
+                <i class="fa-solid fa-triangle-exclamation text-warning"></i>
+                <span x-text="warning"></span>
+            </div>
+        </template>
+
+        <div x-show="loading && !state.profile_id" class="form-hint"><i class="fa-solid fa-spinner fa-spin"></i> Loading players…</div>
+
+        <div class="grid-2 players-grid" x-show="!loading">
+            <!-- WHITELIST -->
+            <div class="card players-card">
+                <div class="card-header">
+                    <div class="players-card-heading">
+                        <h3 class="m-0"><i class="fa-solid fa-user-check text-primary-color"></i> Whitelist</h3>
+                        <p class="form-hint m-0">When enabled, only listed players may join.</p>
+                    </div>
+                    <label class="toggle-label players-toggle" :title="state.whitelist.enabled ? 'Whitelist is on' : 'Whitelist is off'">
+                        <span x-text="state.whitelist.enabled ? 'On' : 'Off'"></span>
+                        <span class="toggle-switch">
+                            <input type="checkbox" :checked="state.whitelist.enabled" @change="setWhitelist($event)"
+                                   :disabled="busy || loading || state.busy" aria-label="Enable the whitelist">
+                            <span class="toggle-slider"></span>
+                        </span>
+                    </label>
+                </div>
+
+                <form class="player-add-row" @submit.prevent="addWhitelisted()">
+                    <input type="text" x-model="whitelistName" maxlength="32" autocomplete="off" spellcheck="false"
+                           placeholder="Minecraft username" aria-label="Username to whitelist"
+                           :disabled="busy || state.busy">
+                    <button type="submit" class="btn btn-primary btn-sm" :disabled="busy || state.busy || !whitelistName.trim()">
+                        <i class="fa-solid fa-user-plus"></i> Add
+                    </button>
+                </form>
+
+                <template x-if="state.whitelist.players.length">
+                <ul class="player-list">
+                    <template x-for="player in state.whitelist.players" :key="player.uuid || player.name">
+                        <li class="player-row">
+                            <span class="player-avatar-wrap" aria-hidden="true">
+                                <span class="player-avatar-initial" x-text="initial(player.name)"></span>
+                                <img class="player-avatar" :src="avatarUrl(player.uuid)" alt="" loading="lazy" @error="$el.remove()">
+                            </span>
+                            <div class="player-identity">
+                                <strong x-text="player.name"></strong>
+                                <span class="player-uuid" x-text="player.uuid"></span>
+                            </div>
+                            <button type="button" class="btn btn-ghost btn-sm" @click="removeWhitelisted(player)"
+                                    :disabled="busy || state.busy"
+                                    :aria-label="'Remove ' + player.name + ' from the whitelist'">
+                                <i class="fa-solid fa-user-minus"></i> Remove
+                            </button>
+                        </li>
+                    </template>
+                </ul>
+                </template>
+
+                <template x-if="!state.whitelist.players.length">
+                    <p class="player-empty">
+                        <i class="fa-solid fa-users-slash"></i>
+                        Nobody is on the whitelist yet.
+                    </p>
+                </template>
+
+                <p class="form-hint m-0" x-show="!state.online_mode && state.server_installed">
+                    <i class="fa-solid fa-circle-info"></i>
+                    This server runs in offline mode, so UUIDs are derived from the player's name.
+                </p>
+            </div>
+
+            <!-- OPERATORS -->
+            <div class="card players-card">
+                <div class="card-header">
+                    <div class="players-card-heading">
+                        <h3 class="m-0"><i class="fa-solid fa-user-shield text-warning"></i> Operators</h3>
+                        <p class="form-hint m-0">Operators can run server commands in game.</p>
+                    </div>
+                </div>
+
+                <form class="player-add-row" @submit.prevent="addOperator()">
+                    <input type="text" x-model="opName" maxlength="32" autocomplete="off" spellcheck="false"
+                           placeholder="Minecraft username" aria-label="Username to make an operator"
+                           :disabled="busy || state.busy">
+                    <select :value="opLevel" @change="opLevel = Number($event.target.value)" aria-label="Operator level" :disabled="busy || state.busy">
+                        <template x-for="option in levelOptions" :key="option.value">
+                            <option :value="option.value" x-text="option.label" :selected="option.value === opLevel"></option>
+                        </template>
+                    </select>
+                    <button type="submit" class="btn btn-primary btn-sm" :disabled="busy || state.busy || !opName.trim()">
+                        <i class="fa-solid fa-plus"></i> Add
+                    </button>
+                </form>
+
+                <template x-if="state.operators.length">
+                <ul class="player-list">
+                    <template x-for="operator in state.operators" :key="operator.uuid || operator.name">
+                        <li class="player-row player-row-op">
+                            <span class="player-avatar-wrap" aria-hidden="true">
+                                <span class="player-avatar-initial" x-text="initial(operator.name)"></span>
+                                <img class="player-avatar" :src="avatarUrl(operator.uuid)" alt="" loading="lazy" @error="$el.remove()">
+                            </span>
+                            <div class="player-identity">
+                                <strong x-text="operator.name"></strong>
+                                <label class="player-bypass" :title="state.can_edit_bypass ? 'Allow this operator to join a full server' : 'Stop the server to change bypass limit (Minecraft has no command for it)'">
+                                    <input type="checkbox" :checked="operator.bypasses_player_limit"
+                                           @change="changeBypass(operator, $event.target.checked)"
+                                           :disabled="busy || state.busy || !state.can_edit_bypass">
+                                    <span>Bypass limit</span>
+                                </label>
+                            </div>
+                            <select class="player-level" :value="operator.level" aria-label="Operator level"
+                                    @change="changeLevel(operator, $event.target.value)" :disabled="busy || state.busy">
+                                <template x-for="option in levelOptions" :key="option.value">
+                                    <option :value="option.value" x-text="option.short" :selected="option.value === operator.level"></option>
+                                </template>
+                            </select>
+                            <button type="button" class="btn btn-ghost btn-sm" @click="removeOperator(operator)"
+                                    :disabled="busy || state.busy"
+                                    :aria-label="'Remove operator ' + operator.name">
+                                <i class="fa-solid fa-user-minus"></i> Remove
+                            </button>
+                        </li>
+                    </template>
+                </ul>
+                </template>
+
+                <template x-if="!state.operators.length">
+                    <p class="player-empty">
+                        <i class="fa-solid fa-user-lock"></i>
+                        No operators yet.
+                    </p>
+                </template>
+
+                <div class="player-levels-hint">
+                    <span><strong>1</strong> spawn protection</span>
+                    <span><strong>2</strong> command blocks</span>
+                    <span><strong>3</strong> manage players</span>
+                    <span><strong>4</strong> full admin</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>

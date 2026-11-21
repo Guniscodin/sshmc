@@ -114,6 +114,7 @@ function panelApp() {
             }
             this.mobileNavOpen = false;
             if (tab === 'mods') window.dispatchEvent(new Event('sshmc-mods-enter'));
+            if (tab === 'players') window.dispatchEvent(new Event('sshmc-players-enter'));
             if (tab === 'storage') window.dispatchEvent(new Event('sshmc-storage-enter'));
             if (tab === 'settings') window.dispatchEvent(new Event('sshmc-settings-enter'));
         },
