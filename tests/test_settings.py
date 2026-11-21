@@ -1267,4 +1267,123 @@ def test_runtime_preserves_white_list_false(mock_profile, monkeypatch):
     assert props.get("enforce-whitelist") == "false", f"Expected enforce-whitelist=false, got {props.get('enforce-whitelist')}"
 
 
+def test_uninstalled_profile_settings_available(mock_profile, monkeypatch):
+    """For uninstalled profiles, all curated settings should be available=True."""
+    from fastapi import FastAPI
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    profile, server_dir = mock_profile
+
+    # Remove server.properties to simulate an uninstalled profile
+    props_path = server_dir / "server.properties"
+    props_path.unlink()
+
+    resp = client.get(f"/api/profiles/{profile.id}/server-settings")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["server_installed"] is False
+
+    field_map = {f["key"]: f for f in data["fields"]}
+    # Curated settings should all be available when server is not installed
+    for key in ["level-seed", "difficulty", "gamemode", "max-players", "level-type", "view-distance"]:
+        assert key in field_map, f"Curated setting {key} missing"
+        assert field_map[key]["available"] is True, f"Curated setting {key} should be available when not installed"
+
+
+def test_broadcast_pre_1_8_falls_back_to_chat(mock_profile, monkeypatch):
+    """Pre-1.8 servers should fall back broadcast to tellraw/chat since /title doesn't exist."""
+    from fastapi import FastAPI
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    profile, _ = mock_profile
+
+    # Change mc_version to pre-1.8
+    profile.mc_version = "1.7.10"
+
+    from mcpanel.api import profiles
+    from mcpanel.models import ProfileStatus, RuntimeState
+
+    # Simulate running server
+    monkeypatch.setattr(
+        profiles.db,
+        "get_runtime_state",
+        lambda pid: RuntimeState(
+            profile_id=pid,
+            status=ProfileStatus.RUNNING,
+            pid=99999,
+            started_at=None,
+            stopped_at=None,
+            crash_count=0,
+            last_exit_code=None,
+        ),
+    )
+
+    rcon_commands = []
+
+    async def mock_send_command(host, port, password, command):
+        rcon_commands.append(command)
+        return "Broadcast sent"
+
+    monkeypatch.setattr(profiles.rcon, "send_command", mock_send_command)
+
+    resp = client.post(
+        f"/api/profiles/{profile.id}/broadcast",
+        json={"message": "Hello", "display_type": "title"},
+    )
+    assert resp.status_code == 200, resp.text
+    # /title doesn't exist pre-1.8, should fall back to tellraw/chat
+    assert any("tellraw" in cmd for cmd in rcon_commands), f"Expected tellraw command, got: {rcon_commands}"
+
+
+def test_broadcast_pre_1_11_actionbar_falls_back(mock_profile, monkeypatch):
+    """Pre-1.11 servers with actionbar should fall back to title/tellraw."""
+    from fastapi import FastAPI
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    profile, _ = mock_profile
+
+    # Change mc_version to pre-1.11
+    profile.mc_version = "1.10.2"
+
+    from mcpanel.api import profiles
+    from mcpanel.models import ProfileStatus, RuntimeState
+
+    monkeypatch.setattr(
+        profiles.db,
+        "get_runtime_state",
+        lambda pid: RuntimeState(
+            profile_id=pid,
+            status=ProfileStatus.RUNNING,
+            pid=99999,
+            started_at=None,
+            stopped_at=None,
+            crash_count=0,
+            last_exit_code=None,
+        ),
+    )
+
+    rcon_commands = []
+
+    async def mock_send_command(host, port, password, command):
+        rcon_commands.append(command)
+        return "Broadcast sent"
+
+    monkeypatch.setattr(profiles.rcon, "send_command", mock_send_command)
+
+    resp = client.post(
+        f"/api/profiles/{profile.id}/broadcast",
+        json={"message": "Hello", "display_type": "actionbar"},
+    )
+    assert resp.status_code == 200, resp.text
+    # actionbar doesn't exist pre-1.11, should fall back to title/tellraw
+    assert any("tellraw" in cmd or "title" in cmd for cmd in rcon_commands), f"Expected title/tellraw command, got: {rcon_commands}"
+    assert not any("actionbar" in cmd for cmd in rcon_commands), f"Should not send actionbar pre-1.11, got: {rcon_commands}"
+
+
 

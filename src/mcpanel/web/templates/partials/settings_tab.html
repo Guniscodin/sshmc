@@ -220,10 +220,13 @@
                     <template x-for="field in fieldsByCategory(cat.id)" :key="field.key">
                         <div class="form-group mb-0">
                             <template x-if="field.type === 'bool'">
-                                <label class="checkbox-item" :for="'ss-' + field.key">
-                                    <input type="checkbox" :id="'ss-' + field.key" x-model="field.value" @change="dirty = true">
-                                    <span x-text="field.label"></span>
-                                </label>
+                                <div class="flex items-center justify-between gap-2">
+                                    <label class="checkbox-item" :for="'ss-' + field.key">
+                                        <input type="checkbox" :id="'ss-' + field.key" x-model="field.value" @change="dirty = true" :disabled="!field.available">
+                                        <span x-text="field.label"></span>
+                                    </label>
+                                    <span class="badge badge-status badge-warning" x-show="!field.available" title="Not supported on this server version">Not supported</span>
+                                </div>
                             </template>
                             <template x-if="field.type !== 'bool'">
                                 <label :for="'ss-' + field.key" x-text="field.label"></label>

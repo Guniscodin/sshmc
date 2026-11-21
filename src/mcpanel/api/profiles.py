@@ -98,14 +98,12 @@ SERVER_SETTING_SPECS: dict[str, dict] = {
         "options": ["peaceful", "easy", "normal", "hard"],
         "description": "Server difficulty applied to loaded worlds.",
         "legacy_map": {"0": "peaceful", "1": "easy", "2": "normal", "3": "hard"},
-        "reverse_legacy_map": {"peaceful": "0", "easy": "1", "normal": "2", "hard": "3"},
     },
     "gamemode": {
         "type": "choice", "default": "survival", "category": "gameplay", "label": "Default Game Mode",
         "options": ["survival", "creative", "adventure", "spectator"],
         "description": "Game mode for new players joining the server.",
         "legacy_map": {"0": "survival", "1": "creative", "2": "adventure", "3": "spectator"},
-        "reverse_legacy_map": {"survival": "0", "creative": "1", "adventure": "2", "spectator": "3"},
     },
     "force-gamemode": {
         "type": "bool", "default": "false", "category": "gameplay", "label": "Force Game Mode",
@@ -1052,7 +1050,7 @@ def get_profile_server_settings(profile_id: str):
         # A curated setting is only "available" if it actually exists in the
         # running server's server.properties. Otherwise it is greyed out as
         # "not available on this version" instead of failing saves.
-        available = server_installed and key in values
+        available = (not server_installed) or (key in values)
         fields.append({
             "key": key,
             "category": spec.get("category", "gameplay"),
@@ -1339,11 +1337,21 @@ async def send_profile_broadcast(profile_id: str, payload: BroadcastPayload):
     components.append(msg_comp)
 
     raw_json = json.dumps(components)
-    if payload.display_type == "chat":
+
+    # Version fallbacks: /title does not exist before 1.8, and actionbar
+    # title subcommand does not exist before 1.11.
+    mc_version = _parse_mc_version(profile.mc_version)
+    display_type = payload.display_type
+    if mc_version < (1, 8):
+        display_type = "chat"
+    elif mc_version < (1, 11) and display_type == "actionbar":
+        display_type = "title"
+
+    if display_type == "chat":
         command = f"tellraw @a {raw_json}"
-    elif payload.display_type == "title":
+    elif display_type == "title":
         command = f"title @a title {raw_json}"
-    elif payload.display_type == "actionbar":
+    elif display_type == "actionbar":
         command = f"title @a actionbar {raw_json}"
     else:
         command = f"tellraw @a {raw_json}"

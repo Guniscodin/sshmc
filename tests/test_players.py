@@ -378,3 +378,98 @@ async def test_live_server_rcon_and_rollback(mock_profile, monkeypatch):
     with pytest.raises(HTTPException) as exc:
         await players.add_whitelist(profile, "AnyPlayer")
     assert exc.value.status_code == 409
+
+
+@pytest.mark.anyio
+async def test_rename_operator_live_non_default_level_raises_409(mock_profile, monkeypatch):
+    """Renaming an operator with non-default level on a live server raises 409."""
+    from mcpanel.models import RuntimeState, ProfileStatus
+    import json
+
+    profile, server_dir = mock_profile
+
+    # Add operator on a STOPPED server at level 2 (non-default)
+    op = await players.add_operator(profile, "LiveOp", 2)
+    assert op["level"] == 2
+
+    # Mark server as running
+    monkeypatch.setattr(
+        players.db,
+        "get_runtime_state",
+        lambda pid: RuntimeState(
+            profile_id=pid,
+            status=ProfileStatus.RUNNING,
+            pid=12345,
+            started_at=None,
+            stopped_at=None,
+            crash_count=0,
+            last_exit_code=None,
+        )
+    )
+
+    # Renaming should raise 409 because level != default op-permission-level
+    with pytest.raises(HTTPException) as exc:
+        await players.rename_operator(profile, "LiveOp", "LiveOpBoss")
+    assert exc.value.status_code == 409
+
+
+@pytest.mark.anyio
+async def test_rename_operator_live_default_level_allowed(mock_profile, monkeypatch):
+    """Renaming an operator with default level on a live server is allowed."""
+    from mcpanel.models import RuntimeState, ProfileStatus
+    import json
+
+    profile, server_dir = mock_profile
+
+    # Add operator on a STOPPED server at default level 4
+    op = await players.add_operator(profile, "LiveOp", 4)
+    assert op["level"] == 4
+
+    # Mark server as running
+    monkeypatch.setattr(
+        players.db,
+        "get_runtime_state",
+        lambda pid: RuntimeState(
+            profile_id=pid,
+            status=ProfileStatus.RUNNING,
+            pid=12345,
+            started_at=None,
+            stopped_at=None,
+            crash_count=0,
+            last_exit_code=None,
+        )
+    )
+
+    # Mock RCON: simulate server writing to ops.json on /op and /deop
+    rcon_commands = []
+    async def mock_send_command(host, port, password, command):
+        rcon_commands.append(command)
+        ofile = server_dir / "ops.json"
+        if command.startswith("op "):
+            name = command.split(" ", 1)[1]
+            current = json.loads(ofile.read_text("utf-8")) if ofile.exists() else []
+            current.append({
+                "uuid": players.offline_uuid(name),
+                "name": name,
+                "level": 4,
+                "bypassesPlayerLimit": False,
+            })
+            ofile.write_text(json.dumps(current), encoding="utf-8")
+            return f"Made {name} a server operator"
+        if command.startswith("deop "):
+            name = command.split(" ", 1)[1]
+            if ofile.exists():
+                current = json.loads(ofile.read_text("utf-8"))
+                current = [e for e in current if e.get("name", "").lower() != name.lower()]
+                ofile.write_text(json.dumps(current), encoding="utf-8")
+            return f"Made {name} no longer a server operator"
+        return "OK"
+
+    monkeypatch.setattr(players.rcon, "send_command", mock_send_command)
+
+    # Renaming default-level operator should succeed
+    renamed = await players.rename_operator(profile, "LiveOp", "LiveOpBoss")
+    assert renamed["name"] == "LiveOpBoss"
+    assert renamed["level"] == 4
+    assert any("op LiveOpBoss" in cmd for cmd in rcon_commands)
+

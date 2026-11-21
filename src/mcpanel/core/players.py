@@ -687,10 +687,11 @@ async def rename_operator(profile: Profile, name: str, new_name: str) -> dict:
 
         def _target() -> dict:
             entries = _read_entries(profile.id, OPS_FILE)
-            target = _match(entries, name)
+            online = _online_mode(profile.id)
+            target = _match(entries, name, online)
             if target is None:
                 raise HTTPException(status_code=404, detail=f"'{name}' is not an operator.")
-            conflict = _match(entries, new_name)
+            conflict = _match(entries, new_name, online)
             if conflict is not None and conflict is not target:
                 raise HTTPException(status_code=409, detail=f"'{new_name}' is already an operator.")
             return target
@@ -706,6 +707,12 @@ async def rename_operator(profile: Profile, name: str, new_name: str) -> dict:
                     detail="Stop the server to rename this operator. The bypass-limit setting cannot be carried over the console.",
                 )
             level = _operator_level(target)
+            default_level = _default_op_level(profile.id)
+            if level != default_level:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"The server is running. Stop the server to rename an operator with a non-default level ({level}).",
+                )
             response = await _rcon(profile, f"op {new_name}")
             entry = await _wait_for_rename(profile.id, OPS_FILE, new_name, name, target.get("uuid"))
             if entry is None:
