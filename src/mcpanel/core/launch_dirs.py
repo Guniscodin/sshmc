@@ -87,6 +87,10 @@ def _dir(name: str) -> Path:
         target.relative_to(root)
     except ValueError as exc:
         raise LaunchDirError("Invalid launch directory name.") from exc
+    if not target.exists() or not target.is_dir():
+        for folder in root.iterdir():
+            if folder.name.casefold() == safe_name.casefold() and folder.is_dir() and not folder.is_symlink():
+                return folder.resolve()
     return target
 
 
@@ -541,13 +545,29 @@ def _delete_launch_dir_file(raw_name: str, file_path: str) -> dict:
     if not manifest:
         raise FileNotFoundError("Launch directory not found.")
 
-    clean = PurePosixPath(*(p for p in PureWindowsPath(file_path).parts if p and p != "."))
+    clean_str = file_path.strip().strip("/").strip("\\")
+    clean = PurePosixPath(*(p for p in PureWindowsPath(clean_str).parts if p and p != "."))
     if not clean.parts or any(part in ("", "..") or ".." in part or "\x00" in part for part in clean.parts):
         raise LaunchDirError("Invalid file or folder path.")
     if len(clean.parts) == 1 and clean.parts[0].casefold() == MANIFEST_NAME.casefold():
         raise LaunchDirError("Cannot delete the directory manifest.")
 
-    target = pack_dir.joinpath(*clean.parts)
+    # Match target case-insensitively component-by-component
+    curr = pack_dir
+    for part in clean.parts:
+        candidate = curr / part
+        if not candidate.exists():
+            matched = None
+            if curr.is_dir() and not curr.is_symlink():
+                for child in curr.iterdir():
+                    if child.name.casefold() == part.casefold():
+                        matched = child
+                        break
+            if matched:
+                candidate = matched
+        curr = candidate
+    target = curr
+
     try:
         target.resolve().relative_to(pack_dir.resolve())
     except ValueError as exc:
@@ -556,25 +576,21 @@ def _delete_launch_dir_file(raw_name: str, file_path: str) -> dict:
     if target.resolve() == pack_dir.resolve():
         raise LaunchDirError("Cannot delete the root launch directory.")
 
-    if target.is_symlink() or not target.exists():
-        raise FileNotFoundError(f"'{file_path}' does not exist.")
+    if target.exists() and not target.is_symlink():
+        if target.is_file():
+            target.unlink()
+        elif target.is_dir():
+            shutil.rmtree(target)
 
-    if target.is_file():
-        target.unlink()
-    elif target.is_dir():
-        shutil.rmtree(target)
-    else:
-        raise FileNotFoundError(f"'{file_path}' does not exist.")
-
-    parent = target.parent
-    while parent != pack_dir and parent.is_dir() and not parent.is_symlink():
-        try:
-            if any(parent.iterdir()):
+        parent = target.parent
+        while parent != pack_dir and parent.is_dir() and not parent.is_symlink():
+            try:
+                if any(parent.iterdir()):
+                    break
+                parent.rmdir()
+                parent = parent.parent
+            except OSError:
                 break
-            parent.rmdir()
-            parent = parent.parent
-        except OSError:
-            break
 
     file_count, total_bytes, folders, files = _actual_launch_dir_stats(pack_dir)
     manifest["file_count"] = file_count

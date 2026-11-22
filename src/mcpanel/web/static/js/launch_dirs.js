@@ -70,6 +70,13 @@ window.launchDirsApp = function launchDirsApp() {
             this.pickFiles();
         },
 
+        selectDirectoryForAddFolder(name) {
+            this.destinationMode = 'existing';
+            this.selectedDirectory = name;
+            this.setTargetFromDirectory();
+            this.pickFolder();
+        },
+
         resetImport() {
             this.uploading = false;
             this.importing = false;
@@ -345,7 +352,8 @@ window.launchDirsApp = function launchDirsApp() {
             })) return;
             this.error = '';
             try {
-                const response = await fetch('/api/launch-dirs/' + encodeURIComponent(directory.name) + '/files/' + encodeURIComponent(folderName), {
+                const cleanFolder = String(folderName || '').replace(/^\/+|\/+$/g, '');
+                const response = await fetch('/api/launch-dirs/' + encodeURIComponent(directory.name) + '/files/' + encodeURIComponent(cleanFolder).replaceAll('%2F', '/'), {
                     method: 'DELETE',
                 });
                 if (response.status === 401) { window.location.assign('/login'); return; }
@@ -353,7 +361,7 @@ window.launchDirsApp = function launchDirsApp() {
                 await this.load();
                 if (window.htmx) htmx.trigger('#profile-list', 'refresh');
                 if (typeof showToast === 'function') {
-                    showToast(`Deleted folder ${folderName} from ${directory.label || directory.name}.`);
+                    showToast(`Deleted folder ${cleanFolder} from ${directory.label || directory.name}.`);
                 }
             } catch (error) {
                 this.error = error.message || 'Could not delete the folder.';

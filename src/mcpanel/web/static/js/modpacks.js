@@ -47,6 +47,12 @@ function modPacksApp() {
                     this.setTargetFromPack();
                     this.$refs.multiPicker.click();
                 },
+                selectPackForAddFolder(name) {
+                    this.destinationMode = 'existing';
+                    this.selectedPack = name;
+                    this.setTargetFromPack();
+                    this.$refs.folderPicker.click();
+                },
                 chooseFile(file) {
                     if (!file || this.uploading || this.importing) return;
                     if (!file.name.toLowerCase().endsWith('.zip')) { this.uploadError = 'Choose a .zip archive.'; return; }

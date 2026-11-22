@@ -740,6 +740,22 @@ def test_add_files_to_launch_dir_and_conflicts(isolated_storage):
     assert "mods" in updated["folders"]
     assert "config" in updated["folders"]
 
+    # Add a whole folder of files (e.g. kubejs scripts, datapacks)
+    session_id2 = "33334444555566667777888899990000"
+    files_dir2 = uploads_dir / session_id2 / "files"
+    files_dir2.mkdir(parents=True)
+    (files_dir2 / "kubejs" / "server_scripts").mkdir(parents=True)
+    (files_dir2 / "kubejs" / "server_scripts" / "recipe.js").write_text("// test", encoding="utf-8")
+    (files_dir2 / "datapacks" / "custom").mkdir(parents=True)
+    (files_dir2 / "datapacks" / "custom" / "pack.mcmeta").write_text("{}", encoding="utf-8")
+
+    updated2 = launch_dirs.add_files_to_launch_dir(session_id2, "MyPack", replace_files=False)
+    assert "kubejs" in updated2["folders"]
+    assert "datapacks" in updated2["folders"]
+    assert any(f["path"] == "kubejs/server_scripts/recipe.js" for f in updated2["files"])
+    assert any(f["path"] == "datapacks/custom/pack.mcmeta" for f in updated2["files"])
+    assert (pack_dir / "kubejs" / "server_scripts" / "recipe.js").is_file()
+
 
 def test_delete_launch_dir_file_and_folder(isolated_storage):
     pack_dir = isolated_storage["launch_dir_root"] / "DeletePack"
@@ -770,6 +786,15 @@ def test_delete_launch_dir_file_and_folder(isolated_storage):
     assert not (pack_dir / "config").exists()
     assert "config" not in res2["folders"]
     assert any(f["path"] == "datapacks/dp.zip" for f in res2["files"])
+
+    # Case-insensitive pack name and folder deletion with trailing slash
+    res3 = launch_dirs.delete_launch_dir_file("deletepack", "DATAPACKS/")
+    assert not (pack_dir / "datapacks").exists()
+    assert "datapacks" not in res3["folders"]
+
+    # Deleting already-deleted folder cleans up manifest and succeeds
+    res4 = launch_dirs.delete_launch_dir_file("deletepack", "config")
+    assert "config" not in res4["folders"]
 
     # Cannot delete launch.json
     with pytest.raises(launch_dirs.LaunchDirError):
@@ -815,9 +840,9 @@ def test_api_add_and_delete_files_endpoints(isolated_storage, monkeypatch):
     assert del_resp.status_code == 200
     assert not (pack_dir / "mods" / "new.jar").exists()
 
-    # 404 for missing
+    # Deleting an already removed file or folder succeeds idempotently
     del_missing = client.delete("/api/launch-dirs/ApiPack/files/nonexistent.txt")
-    assert del_missing.status_code == 404
+    assert del_missing.status_code == 200
 
 
 def test_api_add_and_delete_files_blocked_when_running(isolated_storage, monkeypatch):

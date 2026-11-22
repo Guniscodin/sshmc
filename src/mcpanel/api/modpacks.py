@@ -173,14 +173,15 @@ async def upload_modpack_file(
         if kind == "launch":
             normalized_parts = parts
             normalized_path = "/".join(parts)
-        elif not is_jar:
-            matching_root = next((index for index, part in enumerate(parts) if part in {"config", "datapacks"}), None)
-            if matching_root is None:
-                raise HTTPException(status_code=415, detail="Only JARs and files under config/ or datapacks/ are accepted.")
-            parts = parts[matching_root:]
-            normalized_path = "/".join(parts)
+        else:
+            matching_root = next((index for index, part in enumerate(parts) if part in {"config", "datapacks", "mods"}), None)
+            if matching_root is not None:
+                parts = parts[matching_root:]
+                normalized_path = "/".join(parts)
+            elif not is_jar:
+                raise HTTPException(status_code=415, detail="Only JARs and files under config/, datapacks/ or mods/ are accepted.")
     if kind == "modpack" and not is_jar and not normalized_path:
-        raise HTTPException(status_code=415, detail="Only .jar files are accepted outside config/ and datapacks/.")
+        raise HTTPException(status_code=415, detail="Only .jar files are accepted outside config/, datapacks/ and mods/.")
 
     try:
         content_length = int(request.headers.get("content-length", "0"))

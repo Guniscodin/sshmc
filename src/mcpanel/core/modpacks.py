@@ -1,6 +1,7 @@
 """Safe storage, inspection, and application helpers for reusable mod packs."""
 import asyncio
 import json
+import logging
 import os
 import re
 import shutil
@@ -25,6 +26,7 @@ MAX_ZIP_ENTRIES = 100_000
 COPY_CHUNK_SIZE = 1024 * 1024
 _LOADER_NAMES = {item.value for item in BuildType}
 _IMPORT_LOCK = threading.Lock()
+logger = logging.getLogger(__name__)
 
 
 class ModPackError(Exception):
@@ -256,7 +258,7 @@ def _jar_loader(path: Path) -> str:
 
 
 def _actual_pack_jar_stats(pack_dir: Path) -> tuple[list[dict], dict[str, int]]:
-    jars = []
+    jars: list[dict] = []
     loader_counts = {loader: 0 for loader in ("fabric", "forge", "neoforge", "unknown")}
     mods_dir = pack_dir / "mods"
     if mods_dir.is_symlink() or not mods_dir.is_dir():
@@ -276,7 +278,7 @@ def _actual_pack_jar_stats(pack_dir: Path) -> tuple[list[dict], dict[str, int]]:
                 loader_counts[loader] += 1
     except OSError:
         pass
-    jars.sort(key=lambda item: item["filename"].casefold())
+    jars.sort(key=lambda item: str(item["filename"]).casefold())
     return jars, loader_counts
 
 
@@ -497,13 +499,6 @@ def add_files_to_pack(
         if not manifest:
             raise FileNotFoundError("Mod pack not found.")
         session, files_dir = _session_files(session_id)
-        if any(
-            path.is_file() and not path.is_symlink()
-            for folder in ("config", "datapacks")
-            for current, _, filenames in os.walk(files_dir / folder, followlinks=False)
-            for path in (Path(current) / filename for filename in filenames)
-        ):
-            raise ModPackError("Adding to an existing pack accepts JAR files only. Create a new pack to import config/ or datapacks/ files.")
         incoming_dir = files_dir / "mods"
         incoming = []
         if incoming_dir.is_dir() and not incoming_dir.is_symlink():

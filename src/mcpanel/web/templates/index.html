@@ -244,6 +244,9 @@
                                         <button type="button" class="btn btn-secondary btn-sm" @click="selectPackForAdd(pack.name)">
                                              <i class="fa-solid fa-plus"></i> Add files
                                         </button>
+                                        <button type="button" class="btn btn-secondary btn-sm" @click="selectPackForAddFolder(pack.name)">
+                                             <i class="fa-solid fa-folder-plus"></i> Add folder
+                                        </button>
                                         <button type="button" class="btn btn-danger btn-icon btn-sm" @click="deletePack(pack.name)" :aria-label="'Delete ' + pack.name" title="Delete pack">
                                             <i class="fa-solid fa-trash"></i>
                                         </button>
@@ -380,6 +383,9 @@
                                     <div class="modpack-card-actions">
                                         <button type="button" class="btn btn-secondary btn-sm" @click="selectDirectoryForAdd(directory.name)">
                                              <i class="fa-solid fa-plus"></i> Add files
+                                        </button>
+                                        <button type="button" class="btn btn-secondary btn-sm" @click="selectDirectoryForAddFolder(directory.name)">
+                                             <i class="fa-solid fa-folder-plus"></i> Add folder
                                         </button>
                                         <button type="button" class="btn btn-danger btn-icon btn-sm" @click="deleteDirectory(directory)" :aria-label="'Delete ' + directory.name" title="Delete directory">
                                             <i class="fa-solid fa-trash"></i>
