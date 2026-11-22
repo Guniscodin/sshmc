@@ -33,6 +33,8 @@ def isolated_storage(tmp_path, monkeypatch):
     monkeypatch.setattr("mcpanel.config.PROFILES_DIR", profiles_dir)
     monkeypatch.setattr("mcpanel.config.UPLOADS_DIR", uploads_dir)
     monkeypatch.setattr("mcpanel.config.LAUNCH_DIRS_DIR", launch_dir_root)
+    monkeypatch.setattr("mcpanel.core.storage.DATA_DIR", data_dir)
+    monkeypatch.setattr("mcpanel.core.storage.PROFILES_DIR", profiles_dir)
     monkeypatch.setattr("mcpanel.core.launch_dirs.DATA_DIR", data_dir)
     monkeypatch.setattr("mcpanel.core.launch_dirs.LAUNCH_DIRS_DIR", launch_dir_root)
     monkeypatch.setattr("mcpanel.core.launch_dirs.UPLOADS_DIR", uploads_dir)
@@ -593,3 +595,109 @@ def test_profile_mods_dir_follows_launch_directory(isolated_storage, monkeypatch
     mods_dir = mod_storage.profile_mods_dir(profile.id)
     assert mods_dir == (pack_dir / "mods").resolve()
     assert mods_dir.is_dir()
+
+
+def test_start_and_restart_missing_or_incompatible_launch_dir(isolated_storage, monkeypatch):
+    from mcpanel.api.lifecycle import router as lifecycle_router
+    app = FastAPI()
+    app.include_router(lifecycle_router)
+    client = TestClient(app)
+
+    profile_id = "88888888888888888888888888888888"
+    profile = Profile(
+        id=profile_id,
+        name="Missing Launch Server",
+        build=BuildType.FABRIC,
+        mc_version="1.21.1",
+        loader_version="latest",
+        launch_dir="MissingPack",
+        java_path="java",
+        ram_mb=2048,
+        port=25565,
+        rcon_port=25575,
+        rcon_password="secretpassword",
+    )
+    state = RuntimeState(profile_id=profile_id, status=ProfileStatus.STOPPED)
+
+    def mock_update_state(s):
+        nonlocal state
+        state = s
+
+    monkeypatch.setattr(db, "get_profile", lambda pid: profile if pid == profile_id else None)
+    monkeypatch.setattr(db, "get_runtime_state", lambda pid: state if pid == profile_id else None)
+    monkeypatch.setattr(db, "update_runtime_state", mock_update_state)
+    monkeypatch.setattr(db, "claim_runtime_state", lambda pid, exp, new: True)
+
+    # 1. Starting profile with missing launch directory returns 409 and marks status STOPPED
+    resp = client.post(f"/api/lifecycle/{profile_id}/start")
+    assert resp.status_code == 409
+    assert "missing" in resp.json()["detail"].lower()
+    assert state.status == ProfileStatus.STOPPED
+
+    # 2. Restarting profile with missing launch directory returns 409 and marks status STOPPED
+    resp = client.post(f"/api/lifecycle/{profile_id}/restart")
+    assert resp.status_code == 409
+    assert "missing" in resp.json()["detail"].lower()
+    assert state.status == ProfileStatus.STOPPED
+
+
+def test_storage_scan_and_clear_logs_for_launch_directory(isolated_storage, monkeypatch):
+    from mcpanel.api.storage import router as storage_router
+    from mcpanel.core import storage
+
+    launch_root = isolated_storage["launch_dir_root"]
+    pack_dir = launch_root / "StoragePack"
+    pack_dir.mkdir(parents=True)
+    _create_minimal_jar(pack_dir / "mods" / "mod.jar")
+    (pack_dir / "logs").mkdir(parents=True)
+    (pack_dir / "logs" / "latest.log").write_text("launch-log-line\n", encoding="utf-8")
+    (pack_dir / "crash-reports").mkdir(parents=True)
+    (pack_dir / "crash-reports" / "crash.txt").write_text("crash\n", encoding="utf-8")
+    manifest = {
+        "name": "StoragePack",
+        "mc_version": "1.21.1",
+        "build": "fabric",
+    }
+    (pack_dir / "launch.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    profile_id = "99999999999999999999999999999999"
+    profile = Profile(
+        id=profile_id,
+        name="Storage Server",
+        build=BuildType.FABRIC,
+        mc_version="1.21.1",
+        loader_version="latest",
+        launch_dir="StoragePack",
+        java_path="java",
+        ram_mb=2048,
+        port=25565,
+        rcon_port=25575,
+        rcon_password="secretpassword",
+    )
+    profiles_dir = isolated_storage["profiles_dir"]
+    profile_server = profiles_dir / profile_id / "server"
+    profile_server.mkdir(parents=True)
+    (profile_server / "world").mkdir()
+    (profile_server / "world" / "level.dat").write_text("world", encoding="utf-8")
+
+    monkeypatch.setattr(db, "get_profile", lambda pid: profile if pid == profile_id else None)
+    monkeypatch.setattr(db, "list_profiles_with_states", lambda: [(profile, RuntimeState(profile_id=profile_id, status=ProfileStatus.STOPPED))])
+    monkeypatch.setattr(db, "claim_runtime_state", lambda pid, exp, new: True)
+    monkeypatch.setattr(db, "get_runtime_state", lambda pid: RuntimeState(profile_id=profile_id, status=ProfileStatus.STOPPED))
+
+    # Storage scan attributes launch directory bytes to the profile
+    scan = storage._scan_storage()
+    p_entry = next(p for p in scan["profiles"] if p["id"] == profile_id)
+    assert p_entry["launch_dir_bytes"] > 0
+    assert p_entry["server_bytes"] >= p_entry["launch_dir_bytes"]
+
+    # Clear logs deletes from launch directory as well
+    app = FastAPI()
+    app.include_router(storage_router)
+    client = TestClient(app)
+
+    resp = client.delete(f"/api/storage/profiles/{profile_id}/logs")
+    assert resp.status_code == 200
+    assert not (pack_dir / "logs" / "latest.log").exists()
+    assert not (pack_dir / "crash-reports" / "crash.txt").exists()
+

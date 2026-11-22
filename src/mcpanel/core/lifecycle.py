@@ -128,11 +128,11 @@ async def restart_profile(
     if profile.launch_dir:
         manifest = launch_dirs.get_launch_dir(profile.launch_dir)
         if not manifest:
-            raise LifecycleError(
+            raise launch_dirs.LaunchDirError(
                 f"Launch directory '{profile.launch_dir}' is missing. Reset the profile to its default directory."
             )
         if not launch_dirs.is_compatible(manifest, profile):
-            raise LifecycleError(
+            raise launch_dirs.LaunchDirError(
                 f"Launch directory '{profile.launch_dir}' targets {manifest.get('mc_version')} {manifest.get('build')}, "
                 f"but the profile uses {profile.mc_version} {profile.build.value}."
             )

@@ -234,6 +234,14 @@ async def restart_profile(
             "filename": e.filename,
             "message": str(e),
         }) from e
+    except launch_dirs.LaunchDirError as e:
+        logger.exception("Restart failed for %s: %s", profile.name, e)
+        state = db.get_runtime_state(profile_id) or state
+        state.status = ProfileStatus.STOPPED
+        state.pid = None
+        state.pid_create_time = None
+        db.update_runtime_state(state)
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except lifecycle.LifecycleError as e:
         logger.error(f"Restart failed for {profile.name}: {e}")
         state = db.get_runtime_state(profile_id) or state
