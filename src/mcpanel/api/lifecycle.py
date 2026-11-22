@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException, Query
 from mcpanel import db
 from mcpanel.config import PROFILES_DIR
 from mcpanel.models import ProfileStatus
-from mcpanel.core import lifecycle, runtime, mod_downloads, backups, mod_storage
+from mcpanel.core import lifecycle, runtime, mod_downloads, backups, mod_storage, launch_dirs
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/lifecycle", tags=["lifecycle"])
@@ -84,6 +84,14 @@ async def start_profile(profile_id: str, skip_mod_download_indexes: list[int] = 
             "filename": e.filename,
             "message": str(e),
         }) from e
+    except launch_dirs.LaunchDirError as e:
+        logger.exception("Start failed for %s: %s", profile.name, e)
+        state = db.get_runtime_state(profile_id) or state
+        state.status = ProfileStatus.STOPPED
+        state.pid = None
+        state.pid_create_time = None
+        db.update_runtime_state(state)
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except lifecycle.LifecycleError as e:
         logger.error(f"Start failed for {profile.name}: {e}")
         # Unlock the state and mark it as crashed so the UI updates

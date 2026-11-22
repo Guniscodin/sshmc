@@ -46,11 +46,11 @@ class LaunchDirError(Exception):
     """A user-correctable launch-directory problem."""
 
 
-class LaunchDirExists(LaunchDirError):
+class LaunchDirExistsError(LaunchDirError):
     """Raised when an import would replace an existing directory."""
 
 
-class LaunchDirInUse(LaunchDirError):
+class LaunchDirInUseError(LaunchDirError):
     """Raised when a directory is assigned to a profile and cannot be changed."""
 
 
@@ -250,7 +250,7 @@ def _import_session(
         None,
     )
     if existing and not replace:
-        raise LaunchDirExists(
+        raise LaunchDirExistsError(
             f"A launch directory named '{existing.name}' already exists. Remove it first or choose another name."
         )
     if existing:
@@ -285,10 +285,13 @@ def _import_session(
                     raise LaunchDirError(f"This folder contains more than {MAX_ENTRIES} files.")
 
         stripped = _strip_wrapper([parts for parts, _ in candidates])
-        written = {
-            tuple(part.casefold() for part in parts): (parts, source)
-            for parts, (_, source) in zip(stripped, candidates)
-        }
+        written: dict[tuple[str, ...], tuple[tuple[str, ...], Path]] = {}
+        for parts, (_, source) in zip(stripped, candidates, strict=True):
+            key = tuple(part.casefold() for part in parts)
+            if key in written:
+                warnings.append(f"Skipped duplicate path: {'/'.join(parts)}")
+                continue
+            written[key] = (parts, source)
         copied = 0
         total_bytes = 0
         top_folders: set[str] = set()
@@ -337,7 +340,7 @@ def _import_session(
         try:
             os.replace(stage, _dir(name))
         except Exception:
-            if moved_old:
+            if moved_old and existing is not None:
                 os.replace(old, existing)
             raise
         if moved_old:
@@ -355,5 +358,5 @@ def delete_launch_dir(name: str) -> None:
         if path.is_symlink() or not path.is_dir() or not _manifest(path):
             raise FileNotFoundError("Launch directory not found.")
         if assigned_profile(path.name):
-            raise LaunchDirInUse("This launch directory is assigned to a profile. Reset that profile first.")
+            raise LaunchDirInUseError("This launch directory is assigned to a profile. Reset that profile first.")
         shutil.rmtree(path)

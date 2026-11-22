@@ -91,7 +91,10 @@ async def list_profile_mods(profile_id: str):
         async with source_lock(profile_id):
             state = db.get_runtime_state(profile_id)
             if not state or state.status not in (ProfileStatus.STARTING, ProfileStatus.STOPPING):
-                backfill_warnings = await mod_legacy.identify_legacy(profile_id, _mods_dir(profile_id).parent)
+                if not profile.launch_dir:
+                    # Imported launch directories own their JARs; adopting them as
+                    # profile mods would rewrite pack content after a later reset.
+                    backfill_warnings = await mod_legacy.identify_legacy(profile_id, _mods_dir(profile_id).parent)
                 profile = _profile(profile_id)
     directory = _mods_dir(profile_id)
     manifest = await _load_manifest(profile_id)

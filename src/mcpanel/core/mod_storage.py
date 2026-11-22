@@ -40,11 +40,22 @@ def get_profile(profile_id: str):
     return profile
 
 
-def profile_mods_dir(profile_id: str) -> Path:
-    root = profile_root(profile_id)
-    server = root / "server"
+def server_dir(profile_id: str) -> Path:
+    """The folder the profile actually runs from (launch directory when assigned)."""
+    from mcpanel.core import launch_dirs, workspace
+
+    profile = get_profile(profile_id)
+    try:
+        server = workspace.server_dir(profile)
+    except launch_dirs.LaunchDirError as exc:
+        raise HTTPException(409, f"The assigned launch directory is unavailable: {exc}") from exc
     if server.is_symlink():
         raise HTTPException(400, "Profile server path cannot be a symbolic link.")
+    return server
+
+
+def profile_mods_dir(profile_id: str) -> Path:
+    server = server_dir(profile_id)
     server.mkdir(parents=True, exist_ok=True)
     mods = server / "mods"
     if mods.is_symlink():

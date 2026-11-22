@@ -1,7 +1,4 @@
-import io
 import json
-import os
-import shutil
 import zipfile
 from pathlib import Path
 
@@ -11,8 +8,7 @@ from fastapi.testclient import TestClient
 
 from mcpanel.api.launch_dirs import router as launch_dirs_router
 from mcpanel.api.profiles import router as profiles_router
-from mcpanel.config import DATA_DIR, LAUNCH_DIRS_DIR, PROFILES_DIR, UPLOADS_DIR
-from mcpanel.core import launch_dirs, server_properties, workspace, backups
+from mcpanel.core import backups, launch_dirs, mod_storage, workspace
 from mcpanel.models import BuildType, Profile, ProfileStatus, RuntimeState
 from mcpanel import db
 
@@ -40,7 +36,6 @@ def isolated_storage(tmp_path, monkeypatch):
     monkeypatch.setattr("mcpanel.core.launch_dirs.DATA_DIR", data_dir)
     monkeypatch.setattr("mcpanel.core.launch_dirs.LAUNCH_DIRS_DIR", launch_dir_root)
     monkeypatch.setattr("mcpanel.core.launch_dirs.UPLOADS_DIR", uploads_dir)
-    monkeypatch.setattr("mcpanel.core.workspace.PROFILES_DIR", profiles_dir)
     monkeypatch.setattr("mcpanel.core.backups.PROFILES_DIR", profiles_dir)
     monkeypatch.setattr("mcpanel.core.backups.LAUNCH_DIRS_DIR", launch_dir_root)
     monkeypatch.setattr("mcpanel.core.mod_storage.PROFILES_DIR", profiles_dir)
@@ -152,7 +147,7 @@ def test_import_session_with_wrapper_and_exclusions(isolated_storage):
     assert not (imported_dir / "ops.json").exists()
 
     # Re-importing with same name without replace raises LaunchDirExists
-    with pytest.raises(launch_dirs.LaunchDirExists):
+    with pytest.raises(launch_dirs.LaunchDirExistsError):
         launch_dirs.import_session(
             session_id=session_id,
             raw_name="CurseForgePack",
@@ -303,6 +298,22 @@ def test_profile_launch_dir_assignment_and_reset(isolated_storage, monkeypatch):
     assert resp.status_code == 200
     assert stored_profile.launch_dir == "Better-MC"
 
+    # Omitting launch_dir entirely keeps the current assignment.
+    resp = client.put(
+        f"/api/profiles/{profile_id}",
+        data={
+            "name": "Test Server",
+            "build": "fabric",
+            "mc_version": "1.21.1",
+            "loader_version": "latest",
+            "java_path": "java",
+            "ram_mb": "2048",
+            "port": "25565",
+        },
+    )
+    assert resp.status_code == 200
+    assert stored_profile.launch_dir == "Better-MC"
+
     # Workspace server_dir now points to launch directory
     assert workspace.server_dir(stored_profile) == pack_dir
 
@@ -328,7 +339,7 @@ def test_profile_launch_dir_assignment_and_reset(isolated_storage, monkeypatch):
     assert resp.status_code == 422
 
     # 3. Cannot delete launch directory while assigned to profile
-    with pytest.raises(launch_dirs.LaunchDirInUse):
+    with pytest.raises(launch_dirs.LaunchDirInUseError):
         launch_dirs.delete_launch_dir("Better-MC")
 
     # 4. Reset to default profile directory
@@ -553,3 +564,32 @@ def test_real_world_folder_in_launch_dir_rejected(isolated_storage):
         workspace.ensure_world_links(profile)
     assert "contains a real 'world' folder" in str(exc_info.value)
 
+
+
+def test_profile_mods_dir_follows_launch_directory(isolated_storage, monkeypatch):
+    launch_root = isolated_storage["launch_dir_root"]
+    pack_dir = launch_root / "Pack-Mods"
+    pack_dir.mkdir(parents=True)
+    (pack_dir / "launch.json").write_text(
+        json.dumps({"name": "Pack-Mods", "mc_version": "1.21.1", "build": "fabric"}),
+        encoding="utf-8",
+    )
+
+    profile = Profile(
+        id="77777777777777777777777777777777",
+        name="Launch Mods",
+        build=BuildType.FABRIC,
+        mc_version="1.21.1",
+        loader_version="latest",
+        launch_dir="Pack-Mods",
+        java_path="java",
+        ram_mb=2048,
+        port=25565,
+        rcon_port=25575,
+        rcon_password="secretpassword",
+    )
+    monkeypatch.setattr(db, "get_profile", lambda pid: profile if pid == profile.id else None)
+
+    mods_dir = mod_storage.profile_mods_dir(profile.id)
+    assert mods_dir == (pack_dir / "mods").resolve()
+    assert mods_dir.is_dir()

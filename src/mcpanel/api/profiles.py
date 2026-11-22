@@ -607,6 +607,7 @@ def create_new_profile(
 @router.put("/{profile_id}")
 async def update_existing_profile(
     profile_id: str,
+    request: Request,
     name: str = Form(...),
     build: BuildType = Form(...),
     mc_version: str = Form(...),
@@ -663,23 +664,29 @@ async def update_existing_profile(
         raise HTTPException(status_code=409, detail="Game and RCON ports must be different.")
 
     try:
+        # An empty optional form value arrives as None, so the raw form is the
+        # only way to tell "field omitted" (keep the assignment) from
+        # "field cleared" (detach the directory).
+        launch_provided = "launch_dir" in await request.form()
         clean_git_url = git_url.strip() if git_url and git_url.strip() else None
         parsed_mod_downloads = _parse_mod_downloads(mod_downloads)
         existing_downloads = [item.model_dump(exclude_none=True) for item in existing.mod_downloads]
         requested_pack = modpacks.sanitize_pack_name(modpack_name) if modpack_name and modpack_name.strip() else None
         if requested_pack and not modpacks.get_pack(requested_pack):
             raise HTTPException(status_code=422, detail="The selected mod pack no longer exists.")
-        requested_launch = launch_dirs.sanitize_name(launch_dir) if launch_dir and launch_dir.strip() else None
+        requested_launch: str | None = None
+        if launch_dir is not None and launch_dir.strip():
+            requested_launch = launch_dirs.sanitize_name(launch_dir)
         if requested_launch:
-            manifest = launch_dirs.get_launch_dir(requested_launch)
-            if not manifest:
+            launch_manifest = launch_dirs.get_launch_dir(requested_launch)
+            if not launch_manifest:
                 raise HTTPException(status_code=422, detail="The selected launch directory no longer exists.")
-            if not launch_dirs.is_compatible(manifest, build.value, mc_version):
+            if not launch_dirs.is_compatible(launch_manifest, build.value, mc_version):
                 raise HTTPException(
                     status_code=422,
                     detail=(
                         f"Launch directory '{requested_launch}' targets "
-                        f"{manifest.get('mc_version')} {manifest.get('build')}, not {mc_version} {build.value}."
+                        f"{launch_manifest.get('mc_version')} {launch_manifest.get('build')}, not {mc_version} {build.value}."
                     ),
                 )
             other_profile = launch_dirs.assigned_profile(requested_launch, exclude_profile_id=profile_id)
@@ -689,10 +696,13 @@ async def update_existing_profile(
                     detail=f"Launch directory '{requested_launch}' is already used by profile '{other_profile.name}'.",
                 )
         version_changed = existing.build != build or existing.mc_version != mc_version
-        effective_launch = requested_launch
-        if version_changed and not requested_launch:
-            # An assigned directory cannot follow a version/loader switch.
-            effective_launch = None
+        if launch_provided:
+            effective_launch = requested_launch
+        else:
+            # The field was omitted: keep the current assignment so existing API
+            # clients don't silently detach profiles. A version/loader switch
+            # still clears it, because an assigned directory cannot follow one.
+            effective_launch = None if version_changed else existing.launch_dir
         if effective_launch != existing.launch_dir and state and state.status in (
             ProfileStatus.RUNNING, ProfileStatus.STARTING, ProfileStatus.STOPPING
         ):
@@ -806,6 +816,8 @@ async def update_existing_profile(
     except HTTPException:
         raise
     except modpacks.ModPackError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    except launch_dirs.LaunchDirError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
     except ValidationError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e

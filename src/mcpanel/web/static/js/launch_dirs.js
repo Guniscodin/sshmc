@@ -72,7 +72,8 @@ window.launchDirsApp = function launchDirsApp() {
             const checkIndex = (parts.length > 1 && !knownRoots.includes(parts[0].toLowerCase())) ? 1 : 0;
             const top = (parts[checkIndex] || '').toLowerCase();
             const excludedDirs = ['logs', 'crash-reports', 'libraries', 'versions', '.git', '.fabric', 'downloaded_mods'];
-            if (excludedDirs.includes(top) || top === 'world' || top.startsWith('world_') || top.startsWith('.')) return true;
+            const isDirectory = parts.length > checkIndex + 1;
+            if (excludedDirs.includes(top) || top === 'world' || top.startsWith('.') || (isDirectory && top.startsWith('world_'))) return true;
             const file = parts[parts.length - 1].toLowerCase();
             const excludedFiles = [
                 'server.jar', 'run.sh', 'run.bat', 'user_jvm_args.txt', 'eula.txt',

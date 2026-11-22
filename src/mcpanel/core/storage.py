@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import stat
 import struct
+from typing import Any
 
 from mcpanel import db
 from mcpanel.config import (
@@ -127,7 +128,7 @@ _scan_task: asyncio.Task | None = None
 def _empty_profile(profile_id: str, name: str, status: str = "stopped", orphaned: bool = False) -> dict:
     return {
         "id": profile_id, "name": name, "status": status, "orphaned": orphaned,
-        "total_bytes": 0, "server_bytes": 0, "world_bytes": 0,
+        "total_bytes": 0, "server_bytes": 0, "world_bytes": 0, "launch_dir_bytes": 0,
         "worlds": {
             name: {"bytes": 0, "chunks": 0, "region_files": 0, "last_modified": None}
             for name in WORLD_FOLDERS
@@ -235,6 +236,18 @@ def _scan_root(root: Path, inventory: dict, known_profiles: dict[str, dict]) -> 
                                 _profile_bucket(profile, parts, size)
                             else:
                                 inventory["other_items"][parts[0]] = inventory["other_items"].get(parts[0], 0) + size
+                        elif parts and parts[0] == "launch_dirs" and len(parts) > 1:
+                            owner_id = inventory["launch_dir_owners"].get(parts[1].casefold())
+                            owner = known_profiles.get(owner_id) if owner_id else None
+                            if owner:
+                                # The imported directory is this profile's live server
+                                # folder, so attribute its bytes to that profile.
+                                owner["launch_dir_bytes"] += size
+                                owner["server_bytes"] += size
+                                owner["total_bytes"] += size
+                                inventory["profiles_bytes"] += size
+                            else:
+                                inventory["other_items"]["launch_dirs"] = inventory["other_items"].get("launch_dirs", 0) + size
                         elif parts:
                             inventory["other_items"][parts[0]] = inventory["other_items"].get(parts[0], 0) + size
                     else:
@@ -262,14 +275,17 @@ def _scan_root(root: Path, inventory: dict, known_profiles: dict[str, dict]) -> 
 
 def _scan_storage() -> dict:
     profiles = {}
+    launch_dir_owners: dict[str, str] = {}
     for profile, state in db.list_profiles_with_states():
         entry = _empty_profile(profile.id, profile.name)
         entry["status"] = state.status.value if state else "stopped"
         profiles[profile.id] = entry
-    inventory = {
+        if profile.launch_dir:
+            launch_dir_owners[profile.launch_dir.casefold()] = profile.id
+    inventory: dict[str, Any] = {
         "data_dir": str(DATA_DIR), "total_bytes": 0, "panel_logs_bytes": 0,
         "uploads_bytes": 0, "modpacks_bytes": 0, "profiles_bytes": 0, "database_bytes": 0,
-        "external_backups_bytes": 0, "profiles": profiles,
+        "external_backups_bytes": 0, "profiles": profiles, "launch_dir_owners": launch_dir_owners,
         "orphan_profiles": {}, "modpack_map": {}, "panel_logs": [], "other_items": {},
     }
     inventory["total_bytes"] = _scan_root(DATA_DIR, inventory, profiles)

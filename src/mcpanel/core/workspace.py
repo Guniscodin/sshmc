@@ -16,7 +16,6 @@ import shutil
 from pathlib import Path
 
 from mcpanel import db
-from mcpanel.config import PROFILES_DIR
 from mcpanel.core import launch_dirs, mod_storage, server_properties
 from mcpanel.models import Profile
 
@@ -32,10 +31,7 @@ _RUNTIME_DIRS = ("libraries", "versions", ".fabric")
 
 
 def default_server_dir(profile: Profile) -> Path:
-    try:
-        return mod_storage.profile_root(profile.id) / "server"
-    except Exception:
-        return PROFILES_DIR / profile.id / "server"
+    return mod_storage.profile_root(profile.id) / "server"
 
 
 def server_dir(profile: Profile) -> Path:

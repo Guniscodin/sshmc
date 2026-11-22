@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException
 
 from mcpanel import db
 from mcpanel.config import PROFILES_DIR
-from mcpanel.core import backups, modpacks, storage, mod_storage
+from mcpanel.core import backups, launch_dirs, modpacks, storage, mod_storage, workspace
 from mcpanel.core.panel_logging import clear_panel_log_files
 from mcpanel.core import process
 from mcpanel.models import ProfileStatus
@@ -130,28 +130,43 @@ async def clear_modrinth_cache(profile_id: str):
 
 @router.delete("/profiles/{profile_id}/logs")
 async def clear_profile_logs(profile_id: str):
-    _profile(profile_id)
+    profile = _profile(profile_id)
     root, server = _safe_profile_server(profile_id)
-    directories = (server / "logs", server / "crash-reports", root / "logs")
+    # An assigned launch directory is where the server actually writes its logs.
+    directories = [
+        (server / "logs", server),
+        (server / "crash-reports", server),
+        (root / "logs", root),
+    ]
+    try:
+        content_dir = workspace.server_dir(profile)
+    except launch_dirs.LaunchDirError:
+        content_dir = None
+    if content_dir is not None and content_dir.resolve() != server.resolve():
+        directories.extend([
+            (content_dir / "logs", content_dir),
+            (content_dir / "crash-reports", content_dir),
+        ])
 
     def remove_logs():
         removed, failed = [], []
-        for directory in directories:
+        for directory, allowed_root in directories:
             if directory.is_symlink() or not directory.is_dir():
                 continue
             try:
-                directory.resolve().relative_to(root)
+                directory.resolve().relative_to(allowed_root.resolve())
                 entries = list(directory.iterdir())
             except (OSError, ValueError):
                 continue
             for path in entries:
+                name = str(path.relative_to(allowed_root))
                 try:
                     info = path.lstat()
                     if stat.S_ISREG(info.st_mode):
-                        removed.append({"filename": str(path.relative_to(root)), "size_bytes": info.st_size})
+                        removed.append({"filename": name, "size_bytes": info.st_size})
                         path.unlink()
                 except OSError:
-                    failed.append(str(path.relative_to(root)))
+                    failed.append(name)
         return removed, failed
 
     previous_status = _claim_stopped_profile(profile_id)

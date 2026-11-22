@@ -17,6 +17,7 @@ from mcpanel.config import (
 )
 from mcpanel.core import launch_dirs
 from mcpanel.models import ProfileStatus
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/launch-dirs", tags=["launch-directories"])
 
@@ -51,7 +52,7 @@ def _discard_session(session_id: str) -> None:
 
 
 @router.get("")
-def list_launch_directories():
+def list_launch_directories() -> dict:
     return {
         "directories": launch_dirs.list_launch_dirs(),
         "max_upload_bytes": MAX_MODPACK_UPLOAD_BYTES,
@@ -61,7 +62,7 @@ def list_launch_directories():
 
 
 @router.post("/import")
-async def import_launch_directory(payload: LaunchDirImportRequest):
+async def import_launch_directory(payload: LaunchDirImportRequest) -> dict:
     try:
         safe_name = launch_dirs.sanitize_name(payload.name)
     except launch_dirs.LaunchDirError as exc:
@@ -91,9 +92,9 @@ async def import_launch_directory(payload: LaunchDirImportRequest):
             payload.replace,
             payload.label,
         )
-    except launch_dirs.LaunchDirExists as exc:
+    except launch_dirs.LaunchDirExistsError as exc:
         raise HTTPException(status_code=409, detail={"code": "launch_dir_exists", "message": str(exc)}) from exc
-    except launch_dirs.LaunchDirInUse as exc:
+    except launch_dirs.LaunchDirInUseError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (launch_dirs.LaunchDirError, FileNotFoundError, OSError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -105,14 +106,13 @@ async def import_launch_directory(payload: LaunchDirImportRequest):
 
 
 @router.delete("/{name}", status_code=204)
-async def remove_launch_directory(name: str):
+async def remove_launch_directory(name: str) -> None:
     try:
         safe_name = launch_dirs.sanitize_name(name)
         await asyncio.to_thread(launch_dirs.delete_launch_dir, safe_name)
-    except launch_dirs.LaunchDirInUse as exc:
+    except launch_dirs.LaunchDirInUseError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Launch directory not found.") from exc
     except (launch_dirs.LaunchDirError, OSError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return None
