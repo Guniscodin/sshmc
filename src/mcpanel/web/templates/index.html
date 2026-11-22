@@ -158,9 +158,6 @@
                         <button type="button" class="btn btn-secondary btn-sm" @click="$refs.folderPicker.click()">
                             <i class="fa-solid fa-folder-open"></i> Choose folder
                         </button>
-                        <button type="button" class="btn btn-secondary btn-sm" @click="document.getElementById('launch-library-title')?.scrollIntoView({ behavior: 'smooth' })">
-                            <i class="fa-solid fa-folder-tree"></i> Import entire directory
-                        </button>
                     </div>
                     <div class="modpack-upload-status" x-show="uploading || uploadId || uploadSession || importResult || uploadError || skippedFiles.length" x-cloak>
                         <div class="modpack-progress-row" x-show="uploading || uploadId || uploadSession">
@@ -289,13 +286,17 @@
                          @click="pickFolder()" @keydown.enter="pickFolder()" @keydown.space.prevent="pickFolder()"
                          tabindex="0" role="button" aria-label="Choose a server pack folder to import">
                         <i class="fa-solid fa-folder-tree"></i>
-                        <strong>Choose a complete server pack folder</strong>
+                        <strong>Choose a complete server pack folder or files</strong>
                         <span>Preserves mods, config, datapacks, kubejs, scripts and other pack folders. Worlds, logs and server runtime files are excluded.</span>
                         <input x-ref="launchFolderPicker" type="file" webkitdirectory directory multiple hidden @click.stop @change="handleFiles(Array.from($event.target.files)); $event.target.value = ''">
+                        <input x-ref="launchFilesPicker" type="file" multiple hidden @click.stop @change="handleFiles(Array.from($event.target.files)); $event.target.value = ''">
                     </div>
                     <div class="modpack-picker-actions">
                         <button type="button" class="btn btn-secondary btn-sm" @click="pickFolder()">
                             <i class="fa-solid fa-folder-open"></i> Choose folder
+                        </button>
+                        <button type="button" class="btn btn-secondary btn-sm" @click="pickFiles()">
+                            <i class="fa-solid fa-file"></i> Choose files
                         </button>
                     </div>
 
@@ -306,16 +307,30 @@
                         </div>
                         <progress max="100" :value="selectedCount ? Math.round(uploadedCount / selectedCount * 100) : 0" x-show="uploading || uploadSession"></progress>
                         <div class="modpack-import-fields" x-show="uploadSession && !uploading">
-                            <label>Directory name
+                            <label x-show="uploadSession">Destination
+                                <select x-model="destinationMode">
+                                    <option value="new">Create a new launch directory</option>
+                                    <option value="existing" :disabled="!directories.length">Add to an existing directory</option>
+                                </select>
+                            </label>
+                            <label x-show="uploadSession && destinationMode === 'existing'">Existing directory
+                                <select x-model="selectedDirectory" @change="setTargetFromDirectory()">
+                                    <option value="">Choose directory</option>
+                                    <template x-for="directory in directories" :key="directory.name">
+                                        <option :value="directory.name" x-text="directory.label || directory.name"></option>
+                                    </template>
+                                </select>
+                            </label>
+                            <label x-show="destinationMode === 'new'">Directory name
                                 <input type="text" x-model="name" maxlength="64" placeholder="e.g. Better-MC-1.21">
                             </label>
-                            <label>Label
+                            <label x-show="destinationMode === 'new'">Label
                                 <input type="text" x-model="label" maxlength="100" placeholder="Readable name">
                             </label>
-                            <label>Minecraft version
+                            <label x-show="destinationMode === 'new'">Minecraft version
                                 <input type="text" x-model="mcVersion" maxlength="32" placeholder="1.21.1">
                             </label>
-                            <label>Loader
+                            <label x-show="destinationMode === 'new'">Loader
                                 <select x-model="build">
                                     <option value="vanilla">Vanilla</option>
                                     <option value="fabric">Fabric</option>
@@ -323,9 +338,9 @@
                                     <option value="neoforge">NeoForge</option>
                                 </select>
                             </label>
-                            <button type="button" class="btn btn-primary" @click="importDirectory()" :disabled="importing || !name.trim() || !mcVersion.trim()">
-                                <span x-show="!importing"><i class="fa-solid fa-box-open"></i> Import directory</span>
-                                <span x-show="importing"><i class="fa-solid fa-spinner fa-spin"></i> Importing…</span>
+                            <button type="button" class="btn btn-primary" @click="importDirectory()" :disabled="importing || (destinationMode === 'new' && (!name.trim() || !mcVersion.trim())) || (destinationMode === 'existing' && !selectedDirectory)">
+                                <span x-show="!importing" x-text="destinationMode === 'existing' ? 'Add files to directory' : 'Import directory'"></span>
+                                <span x-show="importing"><i class="fa-solid fa-spinner fa-spin"></i> <span x-text="destinationMode === 'existing' ? 'Adding files…' : 'Importing…'"></span></span>
                             </button>
                         </div>
                         <div class="modpack-conflict" x-show="conflict" x-cloak>
@@ -333,7 +348,7 @@
                             <button type="button" class="btn btn-ghost" @click="conflict = false; name = ''">Choose another name</button>
                         </div>
                         <div class="modpack-result" x-show="result" x-cloak>
-                            <strong x-text="result ? `${result.file_count} files imported into ${result.label || result.name}` : ''"></strong>
+                            <strong x-text="result ? (result.updated ? `${result.file_count_added || result.file_count} files added to ${result.label || result.name}` : `${result.file_count} files imported into ${result.label || result.name}`) : ''"></strong>
                             <span x-text="result ? `${result.mc_version} ${result.build} · ${formatBytes(result.bytes)}` : ''"></span>
                             <ul x-show="result && result.warnings && result.warnings.length">
                                 <template x-for="(warning, index) in (result ? result.warnings : [])" :key="index">
@@ -351,12 +366,41 @@
                                     <strong x-text="directory.label || directory.name"></strong>
                                     <span x-text="`${directory.mc_version} ${directory.build} · ${directory.file_count} files · ${formatBytes(directory.bytes)}`"></span>
                                     <span class="source-badge" x-show="directory.assigned_profile_name" x-text="`Used by ${directory.assigned_profile_name}`"></span>
-                                    <span x-show="directory.folders && directory.folders.length" x-text="'Folders: ' + directory.folders.join(', ')"></span>
+                                    <div x-show="directory.folders && directory.folders.length" class="modpack-folder-tags" style="margin-top: var(--space-1); display: flex; flex-wrap: wrap; gap: var(--space-1);">
+                                        <template x-for="folder in directory.folders" :key="folder">
+                                            <span class="source-badge" style="display: inline-flex; align-items: center; gap: 4px;">
+                                                <i class="fa-solid fa-folder"></i>
+                                                <span x-text="folder"></span>
+                                                <button type="button" class="btn btn-ghost btn-icon btn-sm" style="padding: 0 2px; font-size: 0.65rem;" @click="deleteFolder(directory, folder)" :aria-label="'Delete folder ' + folder" title="Delete folder">
+                                                    <i class="fa-solid fa-xmark"></i>
+                                                </button>
+                                            </span>
+                                        </template>
+                                    </div>
                                     <div class="modpack-card-actions">
+                                        <button type="button" class="btn btn-secondary btn-sm" @click="selectDirectoryForAdd(directory.name)">
+                                             <i class="fa-solid fa-plus"></i> Add files
+                                        </button>
                                         <button type="button" class="btn btn-danger btn-icon btn-sm" @click="deleteDirectory(directory)" :aria-label="'Delete ' + directory.name" title="Delete directory">
                                             <i class="fa-solid fa-trash"></i>
                                         </button>
                                     </div>
+                                    <details class="modpack-jar-details">
+                                        <summary>View files</summary>
+                                        <p class="form-hint">Profiles using this directory receive changes directly or on next start.</p>
+                                        <template x-for="file in directory.files || []" :key="file.path">
+                                            <div class="modpack-jar-row">
+                                                <div>
+                                                    <strong x-text="file.path"></strong>
+                                                    <span x-text="formatBytes(file.size_bytes)"></span>
+                                                </div>
+                                                <button type="button" class="btn btn-danger btn-icon btn-sm" @click="deleteFile(directory, file.path)" :aria-label="'Delete ' + file.path" title="Delete file">
+                                                    <i class="fa-solid fa-trash"></i>
+                                                </button>
+                                            </div>
+                                        </template>
+                                        <p class="form-hint" x-show="!directory.files || !directory.files.length">This directory contains no files.</p>
+                                    </details>
                                 </div>
                             </article>
                         </template>

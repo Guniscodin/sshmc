@@ -19,6 +19,8 @@ window.launchDirsApp = function launchDirsApp() {
         uploadError: '',
         result: null,
         maxUploadBytes: 4 * 1024 ** 3,
+        destinationMode: 'new',
+        selectedDirectory: '',
 
         init() {
             this.load();
@@ -44,6 +46,30 @@ window.launchDirsApp = function launchDirsApp() {
             this.$refs.launchFolderPicker.click();
         },
 
+        pickFiles() {
+            if (this.$refs.launchFilesPicker) {
+                this.$refs.launchFilesPicker.click();
+            } else {
+                this.pickFolder();
+            }
+        },
+
+        setTargetFromDirectory() {
+            if (this.destinationMode !== 'existing' || !this.selectedDirectory) return;
+            const dir = this.directories.find(item => item.name === this.selectedDirectory);
+            if (dir) {
+                this.build = dir.build;
+                this.mcVersion = dir.mc_version;
+            }
+        },
+
+        selectDirectoryForAdd(name) {
+            this.destinationMode = 'existing';
+            this.selectedDirectory = name;
+            this.setTargetFromDirectory();
+            this.pickFiles();
+        },
+
         resetImport() {
             this.uploading = false;
             this.importing = false;
@@ -56,6 +82,9 @@ window.launchDirsApp = function launchDirsApp() {
             this.uploadedCount = 0;
             this.uploadError = '';
             this.result = null;
+            if (!this.selectedDirectory) {
+                this.destinationMode = 'new';
+            }
         },
 
         folderNameFrom(files) {
@@ -141,9 +170,11 @@ window.launchDirsApp = function launchDirsApp() {
                 this.error = 'No importable server files were found. World saves, logs, and server runtime files are excluded.';
                 return;
             }
-            const folderName = this.folderNameFrom(files);
-            this.label = folderName || '';
-            this.name = (folderName || '').replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^[-_]+|[-_]+$/g, '').slice(0, 64);
+            if (this.destinationMode !== 'existing') {
+                const folderName = this.folderNameFrom(files);
+                this.label = folderName || '';
+                this.name = (folderName || '').replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^[-_]+|[-_]+$/g, '').slice(0, 64);
+            }
             this.selectedFiles = records;
             this.selectedCount = records.length;
             this.uploadSession = crypto.randomUUID().replaceAll('-', '');
@@ -193,38 +224,65 @@ window.launchDirsApp = function launchDirsApp() {
             }
         },
 
-        async importDirectory(replace = false) {
+        async importDirectory(replace = false, replaceFiles = false) {
             if (this.importing || this.uploading) return;
             this.error = '';
             this.conflict = false;
-            if (!this.name.trim()) { this.error = 'Enter a directory name.'; return; }
-            if (!this.mcVersion.trim()) { this.error = 'Enter the Minecraft version this pack targets.'; return; }
+            const addToExisting = !!this.uploadSession && this.destinationMode === 'existing';
+            if (!addToExisting) {
+                if (!this.name.trim()) { this.error = 'Enter a directory name.'; return; }
+                if (!this.mcVersion.trim()) { this.error = 'Enter the Minecraft version this pack targets.'; return; }
+            } else {
+                if (!this.selectedDirectory) { this.error = 'Choose a destination directory.'; return; }
+            }
             this.importing = true;
             try {
-                const response = await fetch('/api/launch-dirs/import', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
+                const url = addToExisting
+                    ? '/api/launch-dirs/' + encodeURIComponent(this.selectedDirectory) + '/files'
+                    : '/api/launch-dirs/import';
+                const body = addToExisting
+                    ? { session_id: this.uploadSession, replace_files: replaceFiles }
+                    : {
                         session_id: this.uploadSession,
                         name: this.name.trim(),
                         label: (this.label || '').trim() || undefined,
                         mc_version: this.mcVersion.trim(),
                         build: this.build,
                         replace,
-                    }),
+                    };
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body),
                 });
                 const payload = await response.json().catch(() => ({}));
                 if (response.status === 401) { window.location.assign('/login'); return; }
-                if (response.status === 409) {
+                if (response.status === 409 && payload.detail?.code === 'launch_dir_exists') {
                     const detail = payload.detail;
                     this.error = typeof detail === 'string' ? detail : (detail && detail.message) || 'Directory already exists.';
-                    if (detail && detail.code === 'launch_dir_exists') this.conflict = true;
+                    this.conflict = true;
+                    return;
+                }
+                if (response.status === 409 && payload.detail?.code === 'file_conflicts') {
+                    const filenames = payload.detail.filenames || [];
+                    if (await window.sshmcConfirm({
+                        title: 'Replace existing files?',
+                        message: `Replace same-named files in '${this.selectedDirectory}'?`,
+                        details: filenames,
+                        confirmLabel: 'Replace',
+                        danger: true,
+                    })) {
+                        this.importing = false;
+                        return await this.importDirectory(false, true);
+                    }
+                    this.error = 'Existing files were left unchanged.';
                     return;
                 }
                 if (!response.ok) {
-                    throw new Error(typeof payload.detail === 'string' ? payload.detail : 'Could not import this directory.');
+                    throw new Error(typeof payload.detail === 'string' ? payload.detail : 'Could not save files to directory.');
                 }
                 this.result = payload.directory;
+                const wasAdding = addToExisting;
                 this.uploadSession = '';
                 this.selectedFiles = [];
                 this.selectedCount = 0;
@@ -232,7 +290,13 @@ window.launchDirsApp = function launchDirsApp() {
                 this.name = '';
                 this.label = '';
                 this.mcVersion = '';
+                this.destinationMode = 'new';
+                this.selectedDirectory = '';
                 await this.load();
+                if (window.htmx) htmx.trigger('#profile-list', 'refresh');
+                if (typeof showToast === 'function') {
+                    showToast(wasAdding ? `Updated launch directory ${payload.directory.label || payload.directory.name}.` : `Imported launch directory ${payload.directory.label || payload.directory.name}.`);
+                }
             } catch (error) {
                 this.error = error.message || 'Could not import this directory.';
             } finally {
@@ -245,6 +309,56 @@ window.launchDirsApp = function launchDirsApp() {
                 try { await fetch('/api/modpacks/sessions/' + this.uploadSession, { method: 'DELETE' }); } catch (_) {}
             }
             this.resetImport();
+        },
+
+        async deleteFile(directory, filePath) {
+            if (!await window.sshmcConfirm({
+                title: 'Delete file?',
+                message: `Delete '${filePath}' from '${directory.label || directory.name}'? Profiles using this directory apply changes directly.`,
+                confirmLabel: 'Delete file',
+                danger: true,
+            })) return;
+            this.error = '';
+            try {
+                const response = await fetch('/api/launch-dirs/' + encodeURIComponent(directory.name) + '/files/' + encodeURIComponent(filePath).replaceAll('%2F', '/'), {
+                    method: 'DELETE',
+                });
+                if (response.status === 401) { window.location.assign('/login'); return; }
+                if (!response.ok) throw new Error(await responseMessage(response, 'Could not delete the file.'));
+                await this.load();
+                if (window.htmx) htmx.trigger('#profile-list', 'refresh');
+                if (typeof showToast === 'function') {
+                    showToast(`Deleted ${filePath} from ${directory.label || directory.name}.`);
+                }
+            } catch (error) {
+                this.error = error.message || 'Could not delete the file.';
+                if (typeof showToast === 'function') showToast(this.error);
+            }
+        },
+
+        async deleteFolder(directory, folderName) {
+            if (!await window.sshmcConfirm({
+                title: 'Delete folder?',
+                message: `Delete folder '${folderName}' and all its contents from '${directory.label || directory.name}'? Profiles using this directory apply changes directly.`,
+                confirmLabel: 'Delete folder',
+                danger: true,
+            })) return;
+            this.error = '';
+            try {
+                const response = await fetch('/api/launch-dirs/' + encodeURIComponent(directory.name) + '/files/' + encodeURIComponent(folderName), {
+                    method: 'DELETE',
+                });
+                if (response.status === 401) { window.location.assign('/login'); return; }
+                if (!response.ok) throw new Error(await responseMessage(response, 'Could not delete the folder.'));
+                await this.load();
+                if (window.htmx) htmx.trigger('#profile-list', 'refresh');
+                if (typeof showToast === 'function') {
+                    showToast(`Deleted folder ${folderName} from ${directory.label || directory.name}.`);
+                }
+            } catch (error) {
+                this.error = error.message || 'Could not delete the folder.';
+                if (typeof showToast === 'function') showToast(this.error);
+            }
         },
 
         async deleteDirectory(directory) {

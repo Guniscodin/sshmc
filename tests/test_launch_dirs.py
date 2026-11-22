@@ -701,3 +701,165 @@ def test_storage_scan_and_clear_logs_for_launch_directory(isolated_storage, monk
     assert not (pack_dir / "logs" / "latest.log").exists()
     assert not (pack_dir / "crash-reports" / "crash.txt").exists()
 
+
+def test_add_files_to_launch_dir_and_conflicts(isolated_storage):
+    pack_dir = isolated_storage["launch_dir_root"] / "MyPack"
+    pack_dir.mkdir(parents=True)
+    _create_minimal_jar(pack_dir / "mods" / "mod-a.jar")
+    (pack_dir / "config").mkdir(parents=True)
+    (pack_dir / "config" / "test.json").write_text('{"a": 1}', encoding="utf-8")
+    manifest = {
+        "name": "MyPack",
+        "mc_version": "1.21.1",
+        "build": "fabric",
+    }
+    (pack_dir / "launch.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    uploads_dir = isolated_storage["uploads_dir"]
+    session_id = "11112222333344445555666677778888"
+    files_dir = uploads_dir / session_id / "files"
+    files_dir.mkdir(parents=True)
+
+    # Stage conflicting file and new file
+    (files_dir / "config").mkdir(parents=True)
+    (files_dir / "config" / "test.json").write_text('{"a": 2}', encoding="utf-8")
+    _create_minimal_jar(files_dir / "mod-b.jar")
+
+    # Conflict without replace_files=True
+    with pytest.raises(launch_dirs.LaunchDirFileConflicts) as exc_info:
+        launch_dirs.add_files_to_launch_dir(session_id, "MyPack", replace_files=False)
+    assert "config/test.json" in exc_info.value.filenames
+
+    # Re-stage session because session was not removed on conflict
+    updated = launch_dirs.add_files_to_launch_dir(session_id, "MyPack", replace_files=True)
+    assert updated["name"] == "MyPack"
+    assert (pack_dir / "config" / "test.json").read_text(encoding="utf-8") == '{"a": 2}'
+    assert (pack_dir / "mods" / "mod-b.jar").is_file()
+    assert any(f["path"] == "mods/mod-b.jar" for f in updated["files"])
+    assert any(f["path"] == "config/test.json" for f in updated["files"])
+    assert "mods" in updated["folders"]
+    assert "config" in updated["folders"]
+
+
+def test_delete_launch_dir_file_and_folder(isolated_storage):
+    pack_dir = isolated_storage["launch_dir_root"] / "DeletePack"
+    pack_dir.mkdir(parents=True)
+    _create_minimal_jar(pack_dir / "mods" / "mod-a.jar")
+    (pack_dir / "config" / "sub").mkdir(parents=True)
+    (pack_dir / "config" / "sub" / "cfg.json").write_text('{"x": 1}', encoding="utf-8")
+    (pack_dir / "datapacks").mkdir(parents=True)
+    (pack_dir / "datapacks" / "dp.zip").write_text("fake-zip", encoding="utf-8")
+    manifest = {
+        "name": "DeletePack",
+        "mc_version": "1.21.1",
+        "build": "fabric",
+    }
+    (pack_dir / "launch.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    # Delete single file
+    res1 = launch_dirs.delete_launch_dir_file("DeletePack", "mods/mod-a.jar")
+    assert not (pack_dir / "mods" / "mod-a.jar").exists()
+    assert not any(f["path"] == "mods/mod-a.jar" for f in res1["files"])
+
+    # Empty parent 'mods' is cleaned up
+    assert not (pack_dir / "mods").exists()
+    assert "mods" not in res1["folders"]
+
+    # Delete folder 'config'
+    res2 = launch_dirs.delete_launch_dir_file("DeletePack", "config")
+    assert not (pack_dir / "config").exists()
+    assert "config" not in res2["folders"]
+    assert any(f["path"] == "datapacks/dp.zip" for f in res2["files"])
+
+    # Cannot delete launch.json
+    with pytest.raises(launch_dirs.LaunchDirError):
+        launch_dirs.delete_launch_dir_file("DeletePack", "launch.json")
+
+    # Path traversal rejected
+    with pytest.raises(launch_dirs.LaunchDirError):
+        launch_dirs.delete_launch_dir_file("DeletePack", "../outside.txt")
+
+
+def test_api_add_and_delete_files_endpoints(isolated_storage, monkeypatch):
+    pack_dir = isolated_storage["launch_dir_root"] / "ApiPack"
+    pack_dir.mkdir(parents=True)
+    _create_minimal_jar(pack_dir / "mods" / "orig.jar")
+    manifest = {
+        "name": "ApiPack",
+        "mc_version": "1.21.1",
+        "build": "fabric",
+    }
+    (pack_dir / "launch.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    monkeypatch.setattr(db, "list_profiles", lambda: [])
+
+    app = FastAPI()
+    app.include_router(launch_dirs_router)
+    client = TestClient(app)
+
+    # Stage files for add
+    uploads_dir = isolated_storage["uploads_dir"]
+    session_id = "aaaaabbbbbcccccdddddeeeeefffff11"
+    files_dir = uploads_dir / session_id / "files"
+    files_dir.mkdir(parents=True)
+    _create_minimal_jar(files_dir / "new.jar")
+
+    resp = client.post("/api/launch-dirs/ApiPack/files", json={"session_id": session_id})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert (pack_dir / "mods" / "new.jar").exists()
+    assert any(f["path"] == "mods/new.jar" for f in data["directory"]["files"])
+
+    # Delete via path param
+    del_resp = client.delete("/api/launch-dirs/ApiPack/files/mods/new.jar")
+    assert del_resp.status_code == 200
+    assert not (pack_dir / "mods" / "new.jar").exists()
+
+    # 404 for missing
+    del_missing = client.delete("/api/launch-dirs/ApiPack/files/nonexistent.txt")
+    assert del_missing.status_code == 404
+
+
+def test_api_add_and_delete_files_blocked_when_running(isolated_storage, monkeypatch):
+    pack_dir = isolated_storage["launch_dir_root"] / "RunningPack"
+    pack_dir.mkdir(parents=True)
+    _create_minimal_jar(pack_dir / "mods" / "mod.jar")
+    manifest = {
+        "name": "RunningPack",
+        "mc_version": "1.21.1",
+        "build": "fabric",
+    }
+    (pack_dir / "launch.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    profile_id = "12345678901234567890123456789012"
+    profile = Profile(
+        id=profile_id,
+        name="Running Server",
+        build=BuildType.FABRIC,
+        mc_version="1.21.1",
+        loader_version="latest",
+        launch_dir="RunningPack",
+        java_path="java",
+        ram_mb=2048,
+        port=25565,
+        rcon_port=25575,
+        rcon_password="secretpassword",
+    )
+    monkeypatch.setattr(db, "list_profiles", lambda: [profile])
+    monkeypatch.setattr(db, "get_runtime_state", lambda pid: RuntimeState(profile_id=profile_id, status=ProfileStatus.RUNNING))
+
+    app = FastAPI()
+    app.include_router(launch_dirs_router)
+    client = TestClient(app)
+
+    # Add files blocked with 409
+    resp = client.post("/api/launch-dirs/RunningPack/files", json={"session_id": "99999999999999999999999999999999"})
+    assert resp.status_code == 409
+    assert "is running" in resp.json()["detail"]
+
+    # Delete file blocked with 409
+    del_resp = client.delete("/api/launch-dirs/RunningPack/files/mods/mod.jar")
+    assert del_resp.status_code == 409
+    assert "is running" in del_resp.json()["detail"]
+
+
