@@ -18,7 +18,7 @@ from mcpanel.models import Profile, BuildType, ProfileStatus, ModDownload
 from mcpanel.config import PROFILES_DIR
 from mcpanel.core import (
     runtime, loader, ports, process, modpacks, backups, rcon, mod_storage,
-    server_properties,
+    server_properties, launch_dirs, workspace,
 )
 from mcpanel.core.mod_downloads import source_key, legacy_cache_key
 from mcpanel import db
@@ -493,9 +493,13 @@ PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 def _profile_icon_paths(profile_id: str) -> tuple[Path, Path]:
     """(stored source icon, live server icon) for a profile."""
+    try:
+        live_dir = workspace.server_dir_for_id(profile_id)
+    except (FileNotFoundError, launch_dirs.LaunchDirError, OSError):
+        live_dir = PROFILES_DIR / profile_id / "server"
     return (
         PROFILES_DIR / profile_id / "server_icon.png",
-        PROFILES_DIR / profile_id / "server" / "server-icon.png",
+        live_dir / "server-icon.png",
     )
 
 
@@ -518,7 +522,10 @@ def _validate_server_icon(data: bytes) -> None:
 
 
 def _replacement_pending(profile: Profile) -> bool:
-    metadata = PROFILES_DIR / profile.id / "server" / "profile_meta.json"
+    try:
+        metadata = workspace.server_dir(profile) / "profile_meta.json"
+    except launch_dirs.LaunchDirError:
+        metadata = PROFILES_DIR / profile.id / "server" / "profile_meta.json"
     if not metadata.is_file():
         return False
     try:
@@ -608,6 +615,7 @@ async def update_existing_profile(
     description: str = Form(""),
     mod_downloads: str = Form("[]"),
     modpack_name: Optional[str] = Form(None),
+    launch_dir: Optional[str] = Form(None),
     java_path: str = Form("java"),
     ram_mb: int = Form(2048),
     port: Optional[int] = Form(None),
@@ -661,6 +669,34 @@ async def update_existing_profile(
         requested_pack = modpacks.sanitize_pack_name(modpack_name) if modpack_name and modpack_name.strip() else None
         if requested_pack and not modpacks.get_pack(requested_pack):
             raise HTTPException(status_code=422, detail="The selected mod pack no longer exists.")
+        requested_launch = launch_dirs.sanitize_name(launch_dir) if launch_dir and launch_dir.strip() else None
+        if requested_launch:
+            manifest = launch_dirs.get_launch_dir(requested_launch)
+            if not manifest:
+                raise HTTPException(status_code=422, detail="The selected launch directory no longer exists.")
+            if not launch_dirs.is_compatible(manifest, build.value, mc_version):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"Launch directory '{requested_launch}' targets "
+                        f"{manifest.get('mc_version')} {manifest.get('build')}, not {mc_version} {build.value}."
+                    ),
+                )
+            other_profile = launch_dirs.assigned_profile(requested_launch, exclude_profile_id=profile_id)
+            if other_profile:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Launch directory '{requested_launch}' is already used by profile '{other_profile.name}'.",
+                )
+        version_changed = existing.build != build or existing.mc_version != mc_version
+        effective_launch = requested_launch
+        if version_changed and not requested_launch:
+            # An assigned directory cannot follow a version/loader switch.
+            effective_launch = None
+        if effective_launch != existing.launch_dir and state and state.status in (
+            ProfileStatus.RUNNING, ProfileStatus.STARTING, ProfileStatus.STOPPING
+        ):
+            raise HTTPException(status_code=409, detail="Stop the server before changing its launch directory.")
         effective_git_url = None if incompatible_change else clean_git_url
         effective_pack = existing.modpack_name if incompatible_change else requested_pack
         effective_downloads = (
@@ -686,6 +722,7 @@ async def update_existing_profile(
             git_url=effective_git_url,
             description=(description or "").strip(),
             modpack_name=effective_pack,
+            launch_dir=effective_launch,
             mod_downloads=effective_download_models,
             java_path=java_path,
             ram_mb=ram_mb,
@@ -718,7 +755,16 @@ async def update_existing_profile(
                 raise HTTPException(status_code=409, detail=message)
             if effective_pack and not modpacks.get_pack(effective_pack):
                 raise HTTPException(status_code=422, detail="The selected mod pack no longer exists.")
+            if effective_launch:
+                other_profile = launch_dirs.assigned_profile(effective_launch, exclude_profile_id=profile_id)
+                if other_profile:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Launch directory '{effective_launch}' is already used by profile '{other_profile.name}'.",
+                    )
             db.update_profile(updated_profile)
+            if existing.launch_dir and existing.launch_dir != effective_launch:
+                await asyncio.to_thread(workspace.release_world_links, existing)
             root = mod_storage.profile_root(profile_id)
             if not incompatible_change:
                 retained = {source_key(item, index) for index, item in enumerate(effective_download_models)}
@@ -936,6 +982,9 @@ async def delete_profile(profile_id: str, delete_files: bool = False):
 
     if backups.is_backup_running(profile_id):
         raise HTTPException(status_code=409, detail="Cannot delete this profile while a backup is running.")
+
+    if profile.launch_dir:
+        await asyncio.to_thread(workspace.release_world_links, profile)
 
     # Remove files before deleting the DB row so a failed disk cleanup is retryable.
     if delete_files:

@@ -308,19 +308,27 @@ function panelApp() {
 
         async openEditModal(profileId) {
             try {
-                const [response, packsResponse] = await Promise.all([
+                const [response, packsResponse, launchDirsResponse] = await Promise.all([
                     fetch(`/api/profiles/${encodeURIComponent(profileId)}/settings`),
-                    fetch('/api/modpacks')
+                    fetch('/api/modpacks'),
+                    fetch('/api/launch-dirs')
                 ]);
                 if (response.status === 401) { window.location.assign('/login'); return; }
                 if (!response.ok) throw new Error(await responseMessage(response, 'Could not load profile settings.'));
                 if (packsResponse.status === 401) { window.location.assign('/login'); return; }
                 if (!packsResponse.ok) throw new Error(await responseMessage(packsResponse, 'Could not load mod packs.'));
+                if (launchDirsResponse.status === 401) { window.location.assign('/login'); return; }
+                if (!launchDirsResponse.ok) throw new Error(await responseMessage(launchDirsResponse, 'Could not load launch directories.'));
                 const profileData = await response.json();
                 const packData = await packsResponse.json();
+                const launchDirsData = await launchDirsResponse.json();
                 this.editModalOpen = true;
                 this.$nextTick(() => {
-                    window.sshmc.emit('edit-profile', { profile: profileData, packs: packData.packs || [] });
+                    window.sshmc.emit('edit-profile', {
+                        profile: profileData,
+                        packs: packData.packs || [],
+                        launchDirs: launchDirsData.directories || []
+                    });
                 });
             } catch (error) {
                 window.sshmc.emit('toast', { message: error.message || 'Could not load profile settings.', type: 'error' });

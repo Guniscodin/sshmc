@@ -17,6 +17,11 @@
                     <i class="fa-solid fa-box"></i> {{ item.profile.modpack_name }}
                 </span>
                 {% endif %}
+                {% if item.profile.launch_dir %}
+                <span class="source-badge" data-source="launch" title="Launching from imported directory {{ item.profile.launch_dir }}">
+                    <i class="fa-solid fa-folder-tree"></i> {{ item.profile.launch_dir }}
+                </span>
+                {% endif %}
             </div>
         </div>
         <div>

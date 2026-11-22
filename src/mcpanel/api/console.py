@@ -75,9 +75,14 @@ async def websocket_console(websocket: WebSocket, profile_id: str):
             return False
 
     try:
-        # Minecraft writes its own structured log in the server directory. The
+        # Minecraft writes its own structured log in its working directory. The
         # detached relay log remains a fallback for early boot/process errors.
-        server_log = PROFILES_DIR / profile_id / "server" / "logs" / "latest.log"
+        from mcpanel.core import launch_dirs, workspace
+        try:
+            server_dir = workspace.server_dir_for_id(profile_id)
+        except (FileNotFoundError, launch_dirs.LaunchDirError, OSError):
+            server_dir = PROFILES_DIR / profile_id / "server"
+        server_log = server_dir / "logs" / "latest.log"
         relay_log = PROFILES_DIR / profile_id / "logs" / "latest.log"
         log_path = server_log if server_log.is_file() else relay_log
 

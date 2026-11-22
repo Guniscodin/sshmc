@@ -147,7 +147,10 @@ async def upload_modpack_file(
     request: Request,
     filename: str,
     relative_path: str | None = None,
+    kind: str = "modpack",
 ):
+    if kind not in {"modpack", "launch"}:
+        raise HTTPException(status_code=400, detail="Unknown upload kind.")
     root, session = _safe_session_path(session_id)
     if (
         filename in {"", ".", ".."} or ".." in filename or "/" in filename or "\\" in filename
@@ -156,6 +159,7 @@ async def upload_modpack_file(
         raise HTTPException(status_code=400, detail="The filename must be a plain name without path characters.")
     is_jar = filename.lower().endswith(".jar")
     normalized_path = ""
+    normalized_parts: tuple[str, ...] = ()
     if relative_path:
         posix = PurePosixPath(relative_path)
         windows = PureWindowsPath(relative_path)
@@ -166,13 +170,16 @@ async def upload_modpack_file(
             raise HTTPException(status_code=400, detail="The uploaded path contains an unsafe component.")
         if parts[-1] != filename:
             raise HTTPException(status_code=400, detail="The filename does not match the uploaded path.")
-        if not is_jar:
+        if kind == "launch":
+            normalized_parts = parts
+            normalized_path = "/".join(parts)
+        elif not is_jar:
             matching_root = next((index for index, part in enumerate(parts) if part in {"config", "datapacks"}), None)
             if matching_root is None:
                 raise HTTPException(status_code=415, detail="Only JARs and files under config/ or datapacks/ are accepted.")
             parts = parts[matching_root:]
             normalized_path = "/".join(parts)
-    if not is_jar and not normalized_path:
+    if kind == "modpack" and not is_jar and not normalized_path:
         raise HTTPException(status_code=415, detail="Only .jar files are accepted outside config/ and datapacks/.")
 
     try:
@@ -183,7 +190,11 @@ async def upload_modpack_file(
     if content_length > max_file_bytes:
         raise HTTPException(status_code=413, detail="This file exceeds its configured upload limit.")
 
-    relative_destination = Path("files") / (Path("mods") / filename if is_jar else Path(normalized_path))
+    relative_destination = (
+        Path("files") / Path(*(normalized_parts or (filename,)))
+        if kind == "launch"
+        else Path("files") / (Path("mods") / filename if is_jar else Path(normalized_path))
+    )
     destination = session / relative_destination
     partial = destination.with_name(destination.name + "." + uuid.uuid4().hex + ".part")
     try:

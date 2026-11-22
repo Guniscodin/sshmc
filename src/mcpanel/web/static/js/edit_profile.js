@@ -1,7 +1,7 @@
 // --- Edit Profile Logic ---
         function editApp() {
             return {
-                profile: {}, packs: [],
+                profile: {}, packs: [], launchDirs: [],
                 loaders: [],
                 isLoading: false,
                 loaderPending: false,
@@ -16,6 +16,7 @@
                         this._offEdit = window.sshmc.on('edit-profile', (e) => {
                             if (e.detail) {
                                 if (e.detail.packs) this.packs = e.detail.packs;
+                                if (e.detail.launchDirs) this.launchDirs = e.detail.launchDirs;
                                 this.setProfile(e.detail.profile || e.detail);
                             }
                         });
@@ -35,6 +36,7 @@
                         this.profile.backup_server_settings_on_change = false;
                     }
                     this.profile.modpack_name = profile.modpack_name || '';
+                    this.profile.launch_dir = profile.launch_dir || '';
                     this.profile.mod_downloads = (profile.mod_downloads || []).map(item => ({ ...item, filename: item.filename || '', sha256: item.sha256 || '', skip_on_start: !!item.skip_on_start }));
                     if (!this.profile.mod_downloads.length) this.profile.mod_downloads = [{ url: '', filename: '', sha256: '', skip_on_start: false }];
                     this.loaderPending = false;
@@ -46,6 +48,16 @@
                 },
                 needsReset() {
                     return this.pendingReplacement || this.profile.build !== this.originalBuild || this.profile.mc_version !== this.originalMcVersion || this.profile.loader_version !== this.originalLoaderVersion;
+                },
+                compatibleLaunchDirs() {
+                    const version = (this.profile.mc_version || '').trim();
+                    return (this.launchDirs || []).filter(directory =>
+                        directory.build === this.profile.build
+                        && directory.mc_version === version
+                        && (!directory.assigned_profile_id || directory.assigned_profile_id === this.profile.id));
+                },
+                resetLaunchDir() {
+                    this.profile.launch_dir = '';
                 },
                 packWarnings() {
                     const pack = this.packs.find(item => item.name === this.profile.modpack_name);
@@ -111,8 +123,11 @@
                     })) return;
                     this.isSaving = true;
                     if (replacing) this.profile.modpack_name = this.originalModpackName;
+                    if (this.profile.launch_dir && !this.compatibleLaunchDirs().some(directory => directory.name === this.profile.launch_dir)) {
+                        this.profile.launch_dir = '';
+                    }
                     const formData = new FormData();
-                    const fields = ['name', 'build', 'mc_version', 'loader_version', 'git_url', 'modpack_name', 'java_path', 'ram_mb', 'port', 'backup_worlds_on_change', 'backup_mods_on_change', 'backup_config_on_change', 'backup_datapacks_on_change', 'backup_server_settings_on_change', 'backup_on_restart', 'max_backups'];
+                    const fields = ['name', 'build', 'mc_version', 'loader_version', 'git_url', 'modpack_name', 'launch_dir', 'java_path', 'ram_mb', 'port', 'backup_worlds_on_change', 'backup_mods_on_change', 'backup_config_on_change', 'backup_datapacks_on_change', 'backup_server_settings_on_change', 'backup_on_restart', 'max_backups'];
                     for (const key of fields) {
                         const value = this.profile[key];
                         formData.append(key, typeof value === 'boolean' ? String(value) : (value ?? ''));

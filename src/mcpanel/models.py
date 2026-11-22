@@ -70,6 +70,7 @@ class ProfileBase(BaseModel):
     loader_version: str = Field(default="latest") 
     git_url: Optional[str] = Field(default=None, description="Optional URL to mods/configs repo")
     modpack_name: Optional[str] = Field(default=None, description="Optional shared mod pack name")
+    launch_dir: Optional[str] = Field(default=None, description="Optional imported directory the server launches from")
     description: str = Field(default="", max_length=100, description="Short server description shown on the card and used as the MOTD")
     mod_downloads: list[ModDownload] = Field(default_factory=list, max_length=200)
     backup_worlds_on_change: bool = Field(

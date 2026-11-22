@@ -158,6 +158,9 @@
                         <button type="button" class="btn btn-secondary btn-sm" @click="$refs.folderPicker.click()">
                             <i class="fa-solid fa-folder-open"></i> Choose folder
                         </button>
+                        <button type="button" class="btn btn-secondary btn-sm" @click="document.getElementById('launch-library-title')?.scrollIntoView({ behavior: 'smooth' })">
+                            <i class="fa-solid fa-folder-tree"></i> Import entire directory
+                        </button>
                     </div>
                     <div class="modpack-upload-status" x-show="uploading || uploadId || uploadSession || importResult || uploadError || skippedFiles.length" x-cloak>
                         <div class="modpack-progress-row" x-show="uploading || uploadId || uploadSession">
@@ -270,6 +273,96 @@
                     </div>
                     <p class="form-hint" x-show="!packs.length && !loadingPacks">No mod packs imported yet.</p>
                 </section>
+
+                <!-- Launch Directory Library -->
+                <section class="modpack-library" x-data="launchDirsApp()" x-init="init()" aria-labelledby="launch-library-title">
+                    <div class="modpack-section-heading">
+                        <div>
+                            <h2 id="launch-library-title">Launch Directories</h2>
+                            <p>Import a complete server pack folder. A profile can run directly from a compatible folder.</p>
+                        </div>
+                        <span class="modpack-count" x-text="`${directories.length} directories`"></span>
+                    </div>
+                    <div class="modpack-dropzone" :class="{ 'is-dragging': dragging }"
+                         @dragover.prevent="dragging = true" @dragleave.prevent="dragging = false"
+                         @drop.prevent="dragging = false; handleDrop($event)"
+                         @click="pickFolder()" @keydown.enter="pickFolder()" @keydown.space.prevent="pickFolder()"
+                         tabindex="0" role="button" aria-label="Choose a server pack folder to import">
+                        <i class="fa-solid fa-folder-tree"></i>
+                        <strong>Choose a complete server pack folder</strong>
+                        <span>Preserves mods, config, datapacks, kubejs, scripts and other pack folders. Worlds, logs and server runtime files are excluded.</span>
+                        <input x-ref="launchFolderPicker" type="file" webkitdirectory directory multiple hidden @click.stop @change="handleFiles(Array.from($event.target.files)); $event.target.value = ''">
+                    </div>
+                    <div class="modpack-picker-actions">
+                        <button type="button" class="btn btn-secondary btn-sm" @click="pickFolder()">
+                            <i class="fa-solid fa-folder-open"></i> Choose folder
+                        </button>
+                    </div>
+
+                    <div class="modpack-upload-status" x-show="uploading || uploadSession || result || error || selectedCount" x-cloak>
+                        <div class="modpack-progress-row" x-show="uploading || uploadSession">
+                            <span x-text="uploading ? `Uploading ${uploadedCount} of ${selectedCount} files…` : `${uploadedCount} of ${selectedCount} files ready`"></span>
+                            <button type="button" class="btn btn-ghost btn-sm" @click="discardUpload()" x-show="!importing">Cancel</button>
+                        </div>
+                        <progress max="100" :value="selectedCount ? Math.round(uploadedCount / selectedCount * 100) : 0" x-show="uploading || uploadSession"></progress>
+                        <div class="modpack-import-fields" x-show="uploadSession && !uploading">
+                            <label>Directory name
+                                <input type="text" x-model="name" maxlength="64" placeholder="e.g. Better-MC-1.21">
+                            </label>
+                            <label>Label
+                                <input type="text" x-model="label" maxlength="100" placeholder="Readable name">
+                            </label>
+                            <label>Minecraft version
+                                <input type="text" x-model="mcVersion" maxlength="32" placeholder="1.21.1">
+                            </label>
+                            <label>Loader
+                                <select x-model="build">
+                                    <option value="vanilla">Vanilla</option>
+                                    <option value="fabric">Fabric</option>
+                                    <option value="forge">Forge</option>
+                                    <option value="neoforge">NeoForge</option>
+                                </select>
+                            </label>
+                            <button type="button" class="btn btn-primary" @click="importDirectory()" :disabled="importing || !name.trim() || !mcVersion.trim()">
+                                <span x-show="!importing"><i class="fa-solid fa-box-open"></i> Import directory</span>
+                                <span x-show="importing"><i class="fa-solid fa-spinner fa-spin"></i> Importing…</span>
+                            </button>
+                        </div>
+                        <div class="modpack-conflict" x-show="conflict" x-cloak>
+                            <button type="button" class="btn btn-danger" @click="importDirectory(true)" :disabled="importing">Replace existing directory</button>
+                            <button type="button" class="btn btn-ghost" @click="conflict = false; name = ''">Choose another name</button>
+                        </div>
+                        <div class="modpack-result" x-show="result" x-cloak>
+                            <strong x-text="result ? `${result.file_count} files imported into ${result.label || result.name}` : ''"></strong>
+                            <span x-text="result ? `${result.mc_version} ${result.build} · ${formatBytes(result.bytes)}` : ''"></span>
+                            <ul x-show="result && result.warnings && result.warnings.length">
+                                <template x-for="(warning, index) in (result ? result.warnings : [])" :key="index">
+                                    <li x-text="warning"></li>
+                                </template>
+                            </ul>
+                        </div>
+                        <p class="form-error" x-show="error" x-text="error"></p>
+                    </div>
+
+                    <div class="modpack-list" x-show="directories.length">
+                        <template x-for="directory in directories" :key="directory.name">
+                            <article class="modpack-card">
+                                <div class="modpack-card-content">
+                                    <strong x-text="directory.label || directory.name"></strong>
+                                    <span x-text="`${directory.mc_version} ${directory.build} · ${directory.file_count} files · ${formatBytes(directory.bytes)}`"></span>
+                                    <span class="source-badge" x-show="directory.assigned_profile_name" x-text="`Used by ${directory.assigned_profile_name}`"></span>
+                                    <span x-show="directory.folders && directory.folders.length" x-text="'Folders: ' + directory.folders.join(', ')"></span>
+                                    <div class="modpack-card-actions">
+                                        <button type="button" class="btn btn-danger btn-icon btn-sm" @click="deleteDirectory(directory)" :aria-label="'Delete ' + directory.name" title="Delete directory">
+                                            <i class="fa-solid fa-trash"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                            </article>
+                        </template>
+                    </div>
+                    <p class="form-hint" x-show="!directories.length && !loading">No launch directories imported yet.</p>
+                </section>
             </section>
 
             <!-- MONITORING TAB -->
@@ -304,6 +397,7 @@
     <script src="{{ static_url('js/profile_forms.js') }}"></script>
     <script src="{{ static_url('js/modpack_upload.js') }}"></script>
     <script src="{{ static_url('js/modpacks.js') }}"></script>
+    <script src="{{ static_url('js/launch_dirs.js') }}"></script>
     <script src="{{ static_url('js/edit_profile.js') }}"></script>
     <script src="{{ static_url('js/mods.js') }}"></script>
     <script src="{{ static_url('js/players.js') }}"></script>

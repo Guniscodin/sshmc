@@ -20,7 +20,7 @@ import httpx
 from fastapi import HTTPException
 
 from mcpanel import db
-from mcpanel.core import mod_storage, rcon, server_properties
+from mcpanel.core import launch_dirs, mod_storage, rcon, server_properties, workspace
 from mcpanel.models import Profile, ProfileStatus
 
 logger = logging.getLogger(__name__)
@@ -73,7 +73,10 @@ def _dashed(value) -> str:
 
 
 def _server_dir(profile_id: str) -> Path:
-    server = mod_storage.profile_root(profile_id) / "server"
+    try:
+        server = workspace.server_dir_for_id(profile_id)
+    except (FileNotFoundError, launch_dirs.LaunchDirError, OSError):
+        server = mod_storage.profile_root(profile_id) / "server"
     if server.is_symlink():
         raise HTTPException(status_code=400, detail="The server directory cannot be a symbolic link.")
     return server

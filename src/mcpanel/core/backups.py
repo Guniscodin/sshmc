@@ -12,7 +12,10 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from mcpanel.config import BACKUP_MIN_FREE_BYTES, BACKUP_WARNING_BYTES, BACKUPS_ROOT, PROFILES_DIR
+from mcpanel.config import (
+    BACKUP_MIN_FREE_BYTES, BACKUP_WARNING_BYTES, BACKUPS_ROOT, LAUNCH_DIRS_DIR, PROFILES_DIR,
+)
+from mcpanel.core import launch_dirs, workspace
 from mcpanel.models import Profile
 
 logger = logging.getLogger(__name__)
@@ -23,6 +26,14 @@ _SETTINGS = (
 )
 _active_lock = threading.Lock()
 _active: dict[str, dict] = {}
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
 
 
 class BackupError(Exception):
@@ -160,22 +171,30 @@ def _selected_sources(profile: Profile, selection: dict[str, bool]) -> list[tupl
     except ValueError as exc:
         raise BackupError("The server folder is outside the profile data directory.") from exc
     choices = []
+    try:
+        content_dir = workspace.server_dir(profile).resolve()
+    except launch_dirs.LaunchDirError:
+        content_dir = server.resolve()
+    allowed_roots = (profile_directory.resolve(), LAUNCH_DIRS_DIR.resolve())
+    if not any(_is_within(content_dir, root) for root in allowed_roots):
+        content_dir = server.resolve()
     if selection.get("worlds"):
         choices.extend((name, server / name) for name in ("world", "world_nether", "world_the_end"))
     if selection.get("mods"):
-        choices.append(("mods", server / "mods"))
+        choices.append(("mods", content_dir / "mods"))
     if selection.get("config"):
-        choices.append(("config", server / "config"))
+        choices.append(("config", content_dir / "config"))
     if selection.get("datapacks"):
-        choices.append(("datapacks", server / "datapacks"))
+        choices.append(("datapacks", content_dir / "datapacks"))
     if selection.get("server_settings"):
-        choices.extend((name, server / name) for name in _SETTINGS)
+        choices.extend((name, content_dir / name) for name in _SETTINGS)
     result = []
     for name, path in choices:
         if path.is_symlink():
             continue
+        root = server.resolve() if name in ("world", "world_nether", "world_the_end") else content_dir
         try:
-            path.resolve().relative_to(server.resolve())
+            path.resolve().relative_to(root)
         except ValueError:
             continue
         if path.is_dir() or path.is_file():

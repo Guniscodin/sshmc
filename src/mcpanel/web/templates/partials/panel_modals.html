@@ -262,6 +262,30 @@
                     </template>
                 </div>
 
+                <div class="form-group">
+                    <label for="edit-launch-dir">Launch Directory</label>
+                    <select id="edit-launch-dir" x-model="profile.launch_dir" :disabled="pendingReplacement">
+                        <option value="">Default profile directory</option>
+                        <template x-for="directory in compatibleLaunchDirs()" :key="directory.name">
+                            <option :value="directory.name" x-text="`${directory.label || directory.name} — ${directory.mc_version} ${directory.build}`"></option>
+                        </template>
+                    </select>
+                    <div class="form-hint">
+                        Runs the server directly from the imported folder. Its mods and config replace Git, mod-pack and direct-download sources while selected. The world stays in this profile's own directory.
+                    </div>
+                    <div class="form-hint" x-show="profile.launch_dir && !compatibleLaunchDirs().some(item => item.name === profile.launch_dir)">
+                        The selected launch directory no longer matches this version and loader. It will be cleared when you save.
+                    </div>
+                    <div class="form-hint" x-show="profile.launch_dir">
+                        <button type="button" class="btn btn-ghost btn-sm" @click="resetLaunchDir()">
+                            <i class="fa-solid fa-rotate-left"></i> Reset to default profile directory
+                        </button>
+                    </div>
+                    <div class="form-hint" x-show="!profile.launch_dir && !launchDirs.length">
+                        No launch directories imported yet. Import a complete server folder in the Launch Directories section.
+                    </div>
+                </div>
+
                 <!-- WORLD BACKUPS -->
                 <div class="form-group">
                     <label id="edit-backups-label">World Backups</label>

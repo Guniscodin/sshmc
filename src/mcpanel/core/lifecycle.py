@@ -6,7 +6,7 @@ from pathlib import Path
 
 from mcpanel.models import Profile, RuntimeState, ProfileStatus
 from mcpanel.config import PROFILES_DIR
-from mcpanel.core import runtime, git_sync, loader, mod_downloads, modpacks, backups, mod_sources
+from mcpanel.core import runtime, git_sync, loader, mod_downloads, modpacks, backups, mod_sources, launch_dirs, workspace
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +18,10 @@ class LifecycleError(Exception):
 
 def _needs_wipe(profile: Profile, server_dir: Path) -> bool:
     """Checks if the current server installation matches the profile settings."""
+    if profile.launch_dir:
+        # Imported directories are user content and must never be wiped by a
+        # version change. Incompatible assignments are cleared by the API.
+        return False
     meta_file = server_dir / "profile_meta.json"
     if not meta_file.exists():
         return False # Fresh install, no need to wipe
@@ -56,6 +60,24 @@ def _wipe_server_directory(profile: Profile) -> None:
             target.unlink()
             logger.debug(f"Deleted {target}")
 
+def _launch_loader_stale(profile: Profile, server_dir: Path) -> bool:
+    """True when a launch directory holds runtime files from another build."""
+    if not profile.launch_dir:
+        return False
+    meta_file = server_dir / "profile_meta.json"
+    if not meta_file.is_file():
+        return (server_dir / "server.jar").exists() or (server_dir / "run.sh").exists()
+    try:
+        meta = json.loads(meta_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return True
+    return (
+        meta.get("build") != profile.build.value
+        or meta.get("mc_version") != profile.mc_version
+        or meta.get("loader_version") != profile.loader_version
+    )
+
+
 async def restart_profile(
     profile: Profile,
     current_state: RuntimeState,
@@ -63,7 +85,7 @@ async def restart_profile(
     skip_mod_download_indexes: set[int] | None = None,
 ) -> RuntimeState:
     """The main restart pipeline."""
-    server_dir = PROFILES_DIR / profile.id / "server"
+    server_dir = workspace.server_dir(profile)
     repo_dir = PROFILES_DIR / profile.id / "repo"
     server_dir.mkdir(parents=True, exist_ok=True)
 
@@ -79,7 +101,7 @@ async def restart_profile(
 
     # 2. Back up only the categories explicitly selected for this pending replacement.
     version_change_pending = _needs_wipe(profile, server_dir)
-    should_wipe = force_wipe or version_change_pending
+    should_wipe = (force_wipe or version_change_pending) and not profile.launch_dir
     if version_change_pending:
         requested_backup = any((
             profile.backup_worlds_on_change,
@@ -103,25 +125,39 @@ async def restart_profile(
                 raise LifecycleError(f"Replacement aborted because the selected backup failed: {exc}") from exc
     # Resolve every mod/data source and complete preflight before changing the
     # live source folders or intentionally replacing the existing world.
-    try:
-        result = await mod_sources.build_profile_sources(
-            profile, repo_dir, server_dir, skip_link_indexes=skip_mod_download_indexes
-        )
-        for warning in result["warnings"]:
-            runtime.record_startup_warning(profile, warning)
-    except mod_sources.SourcePreflightError as exc:
-        raise LifecycleError(str(exc), preflight=exc) from exc
-    except (git_sync.GitSyncError, modpacks.ModPackError) as exc:
-        raise LifecycleError(f"Could not resolve mod sources: {exc}") from exc
-    except mod_downloads.ModDownloadFailure:
-        current_state.status = ProfileStatus.STOPPED
-        raise
-    except Exception as exc:
-        logger.exception("Could not stage mod sources for %s", profile.name)
-        raise LifecycleError(f"Could not stage profile mod sources: {exc}") from exc
+    if profile.launch_dir:
+        manifest = launch_dirs.get_launch_dir(profile.launch_dir)
+        if not manifest:
+            raise LifecycleError(
+                f"Launch directory '{profile.launch_dir}' is missing. Reset the profile to its default directory."
+            )
+        if not launch_dirs.is_compatible(manifest, profile):
+            raise LifecycleError(
+                f"Launch directory '{profile.launch_dir}' targets {manifest.get('mc_version')} {manifest.get('build')}, "
+                f"but the profile uses {profile.mc_version} {profile.build.value}."
+            )
+    else:
+        try:
+            result = await mod_sources.build_profile_sources(
+                profile, repo_dir, server_dir, skip_link_indexes=skip_mod_download_indexes
+            )
+            for warning in result["warnings"]:
+                runtime.record_startup_warning(profile, warning)
+        except mod_sources.SourcePreflightError as exc:
+            raise LifecycleError(str(exc), preflight=exc) from exc
+        except (git_sync.GitSyncError, modpacks.ModPackError) as exc:
+            raise LifecycleError(f"Could not resolve mod sources: {exc}") from exc
+        except mod_downloads.ModDownloadFailure:
+            current_state.status = ProfileStatus.STOPPED
+            raise
+        except Exception as exc:
+            logger.exception("Could not stage mod sources for %s", profile.name)
+            raise LifecycleError(f"Could not stage profile mod sources: {exc}") from exc
 
     if should_wipe:
         await asyncio.to_thread(_wipe_server_directory, profile)
+    elif profile.launch_dir and (force_wipe or _launch_loader_stale(profile, server_dir)):
+        await asyncio.to_thread(workspace.clean_runtime_artifacts, profile)
     if version_change_pending:
         # The backup_*_on_change flags are a one-shot selection consumed by the
         # backup above, not persistent preferences. Resetting them to the

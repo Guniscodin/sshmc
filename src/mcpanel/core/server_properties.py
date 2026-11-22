@@ -20,6 +20,17 @@ MAX_SAVED_SETTINGS_BYTES = 1024 * 1024
 
 
 def properties_path(profile_id: str) -> Path:
+    # A profile may launch directly from an imported directory; keep reading
+    # and writing the properties file the server process actually loads.
+    from mcpanel import db
+    from mcpanel.core import launch_dirs, workspace
+
+    profile = db.get_profile(profile_id)
+    if profile and profile.launch_dir:
+        try:
+            return workspace.server_dir(profile) / "server.properties"
+        except launch_dirs.LaunchDirError:
+            pass
     return PROFILES_DIR / profile_id / "server" / "server.properties"
 
 

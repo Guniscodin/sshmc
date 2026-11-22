@@ -8,7 +8,7 @@ from pathlib import Path
 
 from mcpanel.models import Profile, RuntimeState, ProfileStatus
 from mcpanel.config import PROFILES_DIR
-from mcpanel.core import process, rcon, housekeeping, backups, server_properties
+from mcpanel.core import process, rcon, housekeeping, backups, server_properties, workspace
 from mcpanel import db
 
 logger = logging.getLogger(__name__)
@@ -63,7 +63,7 @@ def _load_saved_server_settings(profile_id: str) -> dict[str, str]:
 
 def _generate_server_properties(profile: Profile, server_dir: Path) -> None:
     """Generates or updates server.properties with our custom profile settings."""
-    props_path = server_properties.properties_path(profile.id)
+    props_path = server_dir / "server.properties"
     logger.info(f"Updating server.properties (Port: {profile.port}, RCON Port: {profile.rcon_port})")
     
     properties = server_properties.read_properties(props_path)
@@ -129,7 +129,7 @@ def _build_java_command(profile: Profile, server_dir: Path) -> list[str]:
 
 async def start_server(profile: Profile) -> RuntimeState:
     """Starts a server and returns its new RuntimeState."""
-    server_dir = PROFILES_DIR / profile.id / "server"
+    server_dir = workspace.server_dir(profile)
     log_path = PROFILES_DIR / profile.id / "logs" / "latest.log"
     
     if not server_dir.exists():
@@ -147,6 +147,7 @@ async def start_server(profile: Profile) -> RuntimeState:
             with open(eula_path, "w") as f:
                 f.write("eula=true\n")
         _generate_server_properties(profile, server_dir)
+        workspace.ensure_world_links(profile)
         _apply_server_icon(profile, server_dir)
 
     await asyncio.to_thread(_prepare_server_files)

@@ -10,7 +10,7 @@ from fastapi.templating import Jinja2Templates
 from pathlib import Path
 
 from mcpanel import db
-from mcpanel.api import profiles, lifecycle, console, modpacks as modpack_api, monitoring as monitoring_api, mods as mods_api, storage as storage_api, players as players_api
+from mcpanel.api import profiles, lifecycle, console, modpacks as modpack_api, monitoring as monitoring_api, mods as mods_api, storage as storage_api, players as players_api, launch_dirs as launch_dirs_api
 from mcpanel.models import ProfileStatus
 from mcpanel.core import process, runtime, modpacks, monitoring, backups, storage
 from mcpanel.config import (
@@ -292,6 +292,7 @@ app.include_router(profiles.router)
 app.include_router(lifecycle.router)
 app.include_router(console.router)
 app.include_router(modpack_api.router)
+app.include_router(launch_dirs_api.router)
 app.include_router(monitoring_api.router)
 app.include_router(mods_api.router)
 app.include_router(storage_api.router)

@@ -11,6 +11,7 @@ DATA_DIR = Path(os.getenv("MCPANEL_DATA_DIR", BASE_DIR / "data")).resolve()
 PROFILES_DIR = DATA_DIR / "profiles"
 UPLOADS_DIR = DATA_DIR / "uploads"
 MODPACKS_DIR = DATA_DIR / "modpacks"
+LAUNCH_DIRS_DIR = DATA_DIR / "launch_dirs"
 DB_PATH = DATA_DIR / "panel.db"
 LOGS_DIR = DATA_DIR / "logs"
 PID_FILE = DATA_DIR / "sshmc.pid"

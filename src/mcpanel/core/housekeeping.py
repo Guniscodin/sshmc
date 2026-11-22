@@ -58,7 +58,13 @@ def _mtime_or_minus_inf(path: Path) -> float:
 
 
 def prune_server_artifacts(profile_id: str) -> None:
-    server_dir = PROFILES_DIR / profile_id / "server"
+    from mcpanel import db
+    from mcpanel.core import launch_dirs, workspace
+    try:
+        profile = db.get_profile(profile_id)
+        server_dir = workspace.server_dir(profile) if profile else PROFILES_DIR / profile_id / "server"
+    except (OSError, launch_dirs.LaunchDirError):
+        server_dir = PROFILES_DIR / profile_id / "server"
     if server_dir.is_symlink():
         logger.warning("Skipping server artifact cleanup for symbolic-link server directory %s", profile_id)
         return
