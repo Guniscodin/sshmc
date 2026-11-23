@@ -169,6 +169,66 @@ async def test_whitelist_operations(mock_profile):
 
 
 @pytest.mark.anyio
+async def test_case_only_whitelist_rename(mock_profile):
+    profile, server_dir = mock_profile
+
+    added = await players.add_whitelist(profile, "Gunornot")
+    assert added["name"] == "Gunornot"
+
+    # Offline UUIDs include the spelling, so these are genuinely distinct.
+    lowered = await players.add_whitelist(profile, "gunornot")
+    assert lowered["name"] == "gunornot"
+    assert lowered["uuid"] != added["uuid"]
+
+    # Renaming onto the other entry's exact name is still a conflict...
+    with pytest.raises(HTTPException) as exc:
+        await players.rename_whitelist(profile, "Gunornot", "gunornot")
+    assert exc.value.status_code == 409
+
+    # ...but a case-only rename is allowed and keeps the submitted spelling.
+    await players.remove_whitelist(profile, "gunornot")
+    renamed = await players.rename_whitelist(profile, "Gunornot", "GUNORNOT")
+    assert renamed["name"] == "GUNORNOT"
+    state = players.read_state(profile)
+    assert [p["name"] for p in state["whitelist"]["players"]] == ["GUNORNOT"]
+
+
+@pytest.mark.anyio
+async def test_online_mode_keeps_submitted_whitelist_case(mock_profile, monkeypatch):
+    """The panel stores what the user typed, not the account's canonical spelling."""
+    profile, server_dir = mock_profile
+    (server_dir / "server.properties").write_text(
+        "online-mode=true\nwhite-list=false\n", encoding="utf-8"
+    )
+    mojang_uuid = "069a79f4-44e9-4726-a5be-fca90e38aaf5"
+    monkeypatch.setattr(
+        players, "_resolve_uuid", lambda profile_id, name, online: (mojang_uuid, "Gunornot")
+    )
+
+    added = await players.add_whitelist(profile, "gunornot")
+    assert added["name"] == "gunornot"
+    assert added["uuid"] == mojang_uuid
+
+    renamed = await players.rename_whitelist(profile, "gunornot", "GUNORNOT")
+    assert renamed["name"] == "GUNORNOT"
+    assert renamed["uuid"] == mojang_uuid
+    state = players.read_state(profile)
+    assert [p["name"] for p in state["whitelist"]["players"]] == ["GUNORNOT"]
+
+
+@pytest.mark.anyio
+async def test_case_only_operator_rename(mock_profile):
+    profile, server_dir = mock_profile
+
+    await players.add_operator(profile, "Gunornot", 3)
+    renamed = await players.rename_operator(profile, "Gunornot", "gunornot")
+    assert renamed["name"] == "gunornot"
+    assert renamed["level"] == 3
+    state = players.read_state(profile)
+    assert [o["name"] for o in state["operators"]] == ["gunornot"]
+
+
+@pytest.mark.anyio
 async def test_operator_operations(mock_profile):
     profile, server_dir = mock_profile
 
@@ -337,6 +397,12 @@ async def test_live_server_rcon_and_rollback(mock_profile, monkeypatch):
     assert renamed["name"] == "LiveRenamed"
     assert "whitelist add LiveRenamed" in rcon_commands
     assert "whitelist remove LivePlayer" in rcon_commands
+
+    # 2b. A case-only rename is allowed on a live server too.
+    case_renamed = await players.rename_whitelist(profile, "LiveRenamed", "liverenamed")
+    assert case_renamed["name"] == "liverenamed"
+    live_names = [p["name"] for p in players.read_state(profile)["whitelist"]["players"]]
+    assert live_names == ["liverenamed"]
 
     # 3. Add operator live (vanilla /op takes no level arg; level is patched into ops.json after)
     # Default op-permission-level is 4, so live /op can only assign level 4.

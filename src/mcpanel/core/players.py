@@ -225,11 +225,28 @@ def _resolve_uuid(profile_id: str, name: str, online_mode: bool) -> tuple[str, s
     )
 
 
-def _match(entries: list[dict], name: str, online_mode: bool = True) -> dict | None:
+def _match(entries: list[dict], name: str) -> dict | None:
+    """Match a stored display name exactly.
+
+    Display names are case-sensitive in the panel: "Gunornot" and "gunornot"
+    are different entries, and changing only the capitalization of an entry is
+    a rename, not a duplicate.
+    """
     for entry in entries:
-        entry_name = str(entry.get("name", ""))
-        matches = (entry_name.lower() == name.lower()) if online_mode else (entry_name == name)
-        if matches:
+        if str(entry.get("name", "")) == name:
+            return entry
+    return None
+
+
+def _match_ci(entries: list[dict], name: str) -> dict | None:
+    """Case-insensitive name match, used only when reading what the live server wrote.
+
+    Minecraft resolves online accounts case-insensitively and may write the
+    account's canonical spelling, so command output cannot be matched exactly.
+    """
+    folded = name.lower()
+    for entry in entries:
+        if str(entry.get("name", "")).lower() == folded:
             return entry
     return None
 
@@ -274,9 +291,8 @@ async def _rcon(profile: Profile, command: str) -> str:
 async def _wait_for_entry(profile_id: str, filename: str, name: str) -> dict | None:
     """The server writes player files synchronously with the command, but give
     slow disks a short window before calling the command failed."""
-    online = _online_mode(profile_id)
     for _ in range(6):
-        entry = _match(await asyncio.to_thread(_read_entries, profile_id, filename), name, online)
+        entry = _match_ci(await asyncio.to_thread(_read_entries, profile_id, filename), name)
         if entry is not None:
             return entry
         await asyncio.sleep(0.1)
@@ -430,23 +446,33 @@ async def add_whitelist(profile: Profile, name: str) -> dict:
             entry = await _wait_for_entry(profile.id, WHITELIST_FILE, name)
             if entry is None:
                 raise _command_error(response, name, "whitelist")
+            # The server may store the account's canonical spelling. Keep the
+            # spelling the user typed so the panel never silently changes case.
+            if str(entry.get("name", "")) != name:
+                def _patch_name() -> None:
+                    entries = _read_entries(profile.id, WHITELIST_FILE)
+                    target = _match_uuid(entries, entry.get("uuid")) or _match_ci(entries, name)
+                    if target is not None:
+                        target["name"] = name
+                        _write_entries(profile.id, WHITELIST_FILE, entries)
+                await asyncio.to_thread(_patch_name)
+                entry["name"] = name
             logger.info("Players: added '%s' to the whitelist of '%s' (live)", name, profile.name)
             return _whitelist_view(entry)
 
         def _add() -> dict:
             entries = _read_entries(profile.id, WHITELIST_FILE)
             online = _online_mode(profile.id)
-            existing = _match(entries, name, online)
+            existing = _match(entries, name)
             if existing is not None:
                 return _whitelist_view(existing)
-            uid, canonical = _resolve_uuid(profile.id, name, online)
-            canonical_match = _match(entries, canonical, online)
-            if canonical_match is not None:
-                return _whitelist_view(canonical_match)
+            uid, _canonical = _resolve_uuid(profile.id, name, online)
             uuid_match = _match_uuid(entries, uid)
             if uuid_match is not None:
                 return _whitelist_view(uuid_match)
-            entry = {"uuid": uid, "name": canonical}
+            # Store the exact spelling that was submitted; the UUID is what
+            # Minecraft uses to identify the player.
+            entry = {"uuid": uid, "name": name}
             entries.append(entry)
             _write_entries(profile.id, WHITELIST_FILE, entries)
             return _whitelist_view(entry)
@@ -473,8 +499,7 @@ async def remove_whitelist(profile: Profile, name: str) -> None:
 
         def _remove() -> None:
             entries = _read_entries(profile.id, WHITELIST_FILE)
-            online = _online_mode(profile.id)
-            target = _match(entries, name, online)
+            target = _match(entries, name)
             if target is None:
                 raise HTTPException(status_code=404, detail=f"'{name}' is not on the whitelist.")
             entries.remove(target)
@@ -502,25 +527,52 @@ async def rename_whitelist(profile: Profile, name: str, new_name: str) -> dict:
 
         def _target() -> dict:
             entries = _read_entries(profile.id, WHITELIST_FILE)
-            online = _online_mode(profile.id)
-            target = _match(entries, name, online)
+            target = _match(entries, name)
             if target is None:
                 raise HTTPException(status_code=404, detail=f"'{name}' is not on the whitelist.")
-            conflict = _match(entries, new_name, online)
+            conflict = _match(entries, new_name)
             if conflict is not None and conflict is not target:
                 raise HTTPException(status_code=409, detail=f"'{new_name}' is already on the whitelist.")
             return target
 
         target = await asyncio.to_thread(_target)
+
+        def _rename_entry() -> dict:
+            entries = _read_entries(profile.id, WHITELIST_FILE)
+            current = _match(entries, name)
+            if current is None:
+                raise HTTPException(status_code=404, detail=f"'{name}' is not on the whitelist.")
+            conflict = _match(entries, new_name)
+            if conflict is not None and conflict is not current:
+                raise HTTPException(status_code=409, detail=f"'{new_name}' is already on the whitelist.")
+            uid, _canonical = _resolve_uuid(profile.id, new_name, _online_mode(profile.id))
+            uid_conflict = _match_uuid(entries, uid)
+            if uid_conflict is not None and uid_conflict is not current:
+                existing_name = uid_conflict.get("name") or new_name
+                raise HTTPException(status_code=409, detail=f"'{existing_name}' is already on the whitelist.")
+            current["uuid"] = uid
+            current["name"] = new_name
+            _write_entries(profile.id, WHITELIST_FILE, entries)
+            return _whitelist_view(current)
+
         if new_name == name:
             return _whitelist_view(target)
 
         if phase == "running":
+            if name.lower() == new_name.lower():
+                # Minecraft treats names case-insensitively, so there is no
+                # new record to add. Change the stored display name directly;
+                # the server reloads it on its next restart.
+                entry = await asyncio.to_thread(_rename_entry)
+                logger.info("Players: renamed '%s' to '%s' on the whitelist of '%s' (live)", name, entry["name"], profile.name)
+                return _whitelist_view(entry)
             response = await _rcon(profile, f"whitelist add {new_name}")
             entry = await _wait_for_rename(profile.id, WHITELIST_FILE, new_name, name, target.get("uuid"))
             if entry is None:
                 raise _command_error(response, new_name, "whitelist")
-            if _dashed(entry.get("uuid")) != _dashed(target.get("uuid")):
+            if str(entry.get("name", "")) != new_name:
+                entry = await asyncio.to_thread(_rename_entry)
+            elif _dashed(entry.get("uuid")) != _dashed(target.get("uuid")):
                 response = await _rcon(profile, f"whitelist remove {name}")
                 if not await _wait_for_uuid_absent(profile.id, WHITELIST_FILE, target.get("uuid")):
                     await _rollback(profile, f"whitelist remove {new_name}")
@@ -528,29 +580,7 @@ async def rename_whitelist(profile: Profile, name: str, new_name: str) -> dict:
             logger.info("Players: renamed '%s' to '%s' on the whitelist of '%s' (live)", name, entry["name"], profile.name)
             return _whitelist_view(entry)
 
-        def _rename() -> dict:
-            entries = _read_entries(profile.id, WHITELIST_FILE)
-            online = _online_mode(profile.id)
-            current = _match(entries, name, online)
-            if current is None:
-                raise HTTPException(status_code=404, detail=f"'{name}' is not on the whitelist.")
-            conflict = _match(entries, new_name, online)
-            if conflict is not None and conflict is not current:
-                raise HTTPException(status_code=409, detail=f"'{new_name}' is already on the whitelist.")
-            uid, canonical = _resolve_uuid(profile.id, new_name, online)
-            conflict = _match(entries, canonical, online)
-            if conflict is not None and conflict is not current:
-                raise HTTPException(status_code=409, detail=f"'{canonical}' is already on the whitelist.")
-            uid_conflict = _match_uuid(entries, uid)
-            if uid_conflict is not None and uid_conflict is not current:
-                existing_name = uid_conflict.get("name") or canonical
-                raise HTTPException(status_code=409, detail=f"'{existing_name}' is already on the whitelist.")
-            current["uuid"] = uid
-            current["name"] = canonical
-            _write_entries(profile.id, WHITELIST_FILE, entries)
-            return _whitelist_view(current)
-
-        entry = await asyncio.to_thread(_rename)
+        entry = await asyncio.to_thread(_rename_entry)
         logger.info("Players: renamed '%s' to '%s' on the whitelist of '%s'", name, entry["name"], profile.name)
         return entry
 
@@ -573,27 +603,30 @@ async def add_operator(profile: Profile, name: str, level: int | None) -> dict:
             entry = await _wait_for_entry(profile.id, OPS_FILE, name)
             if entry is None:
                 raise _command_error(response, name, "op")
-            # Patch the desired level directly into ops.json (vanilla /op uses server default)
+            # Patch the desired level directly into ops.json (vanilla /op uses
+            # server default) and keep the submitted spelling.
             def _patch_add_level() -> None:
                 entries = _read_entries(profile.id, OPS_FILE)
-                target = _match(entries, name)
+                target = _match_uuid(entries, entry.get("uuid")) or _match_ci(entries, name)
                 if target is not None:
                     target["level"] = level
+                    target["name"] = name
                     _write_entries(profile.id, OPS_FILE, entries)
             await asyncio.to_thread(_patch_add_level)
             entry["level"] = level
+            entry["name"] = name
             logger.info("Players: made '%s' an operator (level %d) on '%s' (live)", name, level, profile.name)
             return _operator_view(entry)
 
         def _add() -> dict:
             entries = _read_entries(profile.id, OPS_FILE)
             online = _online_mode(profile.id)
-            existing = _match(entries, name, online)
+            existing = _match(entries, name)
             if existing is not None:
                 existing["level"] = level
                 _write_entries(profile.id, OPS_FILE, entries)
                 return _operator_view(existing)
-            uid, canonical = _resolve_uuid(profile.id, name, online)
+            uid, _canonical = _resolve_uuid(profile.id, name, online)
             uid_match = _match_uuid(entries, uid)
             if uid_match is not None:
                 uid_match["level"] = level
@@ -601,7 +634,7 @@ async def add_operator(profile: Profile, name: str, level: int | None) -> dict:
                 return _operator_view(uid_match)
             entry = {
                 "uuid": uid,
-                "name": canonical,
+                "name": name,
                 "level": level,
                 "bypassesPlayerLimit": False,
             }
@@ -650,18 +683,20 @@ async def update_operator(
             # Patch the desired level directly into ops.json (vanilla /op uses server default)
             def _patch_update_level() -> None:
                 entries = _read_entries(profile.id, OPS_FILE)
-                target = _match(entries, name)
-                if target is not None and level is not None:
-                    target["level"] = level
+                target = _match_uuid(entries, entry.get("uuid")) or _match_ci(entries, name)
+                if target is not None:
+                    target["name"] = name
+                    if level is not None:
+                        target["level"] = level
                     _write_entries(profile.id, OPS_FILE, entries)
             await asyncio.to_thread(_patch_update_level)
             entry["level"] = level
+            entry["name"] = name
             return _operator_view(entry)
 
         def _update() -> dict:
             entries = _read_entries(profile.id, OPS_FILE)
-            online = _online_mode(profile.id)
-            target = _match(entries, name, online)
+            target = _match(entries, name)
             if target is None:
                 raise HTTPException(status_code=404, detail=f"'{name}' is not an operator.")
             if level is not None:
@@ -688,16 +723,34 @@ async def rename_operator(profile: Profile, name: str, new_name: str) -> dict:
 
         def _target() -> dict:
             entries = _read_entries(profile.id, OPS_FILE)
-            online = _online_mode(profile.id)
-            target = _match(entries, name, online)
+            target = _match(entries, name)
             if target is None:
                 raise HTTPException(status_code=404, detail=f"'{name}' is not an operator.")
-            conflict = _match(entries, new_name, online)
+            conflict = _match(entries, new_name)
             if conflict is not None and conflict is not target:
                 raise HTTPException(status_code=409, detail=f"'{new_name}' is already an operator.")
             return target
 
         target = await asyncio.to_thread(_target)
+
+        def _rename_entry() -> dict:
+            entries = _read_entries(profile.id, OPS_FILE)
+            current = _match(entries, name)
+            if current is None:
+                raise HTTPException(status_code=404, detail=f"'{name}' is not an operator.")
+            conflict = _match(entries, new_name)
+            if conflict is not None and conflict is not current:
+                raise HTTPException(status_code=409, detail=f"'{new_name}' is already an operator.")
+            uid, _canonical = _resolve_uuid(profile.id, new_name, _online_mode(profile.id))
+            uid_conflict = _match_uuid(entries, uid)
+            if uid_conflict is not None and uid_conflict is not current:
+                existing_name = uid_conflict.get("name") or new_name
+                raise HTTPException(status_code=409, detail=f"'{existing_name}' is already an operator.")
+            current["uuid"] = uid
+            current["name"] = new_name
+            _write_entries(profile.id, OPS_FILE, entries)
+            return _operator_view(current)
+
         if new_name == name:
             return _operator_view(target)
 
@@ -714,19 +767,27 @@ async def rename_operator(profile: Profile, name: str, new_name: str) -> dict:
                     status_code=409,
                     detail=f"The server is running. Stop the server to rename an operator with a non-default level ({level}).",
                 )
+            if name.lower() == new_name.lower():
+                # A capitalization change is not a new operator; patch the
+                # stored display name and keep the current level.
+                entry = await asyncio.to_thread(_rename_entry)
+                logger.info("Players: renamed operator '%s' to '%s' on '%s' (live)", name, entry["name"], profile.name)
+                return _operator_view(entry)
             response = await _rcon(profile, f"op {new_name}")
             entry = await _wait_for_rename(profile.id, OPS_FILE, new_name, name, target.get("uuid"))
             if entry is None:
                 raise _command_error(response, new_name, "op")
-            # Patch the preserved level directly into ops.json
+            # Patch the preserved level and submitted spelling into ops.json
             def _patch_rename_level() -> None:
                 entries = _read_entries(profile.id, OPS_FILE)
-                t = _match(entries, new_name)
+                t = _match_uuid(entries, entry.get("uuid")) or _match_ci(entries, new_name)
                 if t is not None:
                     t["level"] = level
+                    t["name"] = new_name
                     _write_entries(profile.id, OPS_FILE, entries)
             await asyncio.to_thread(_patch_rename_level)
             entry["level"] = level
+            entry["name"] = new_name
             if _dashed(entry.get("uuid")) != _dashed(target.get("uuid")):
                 response = await _rcon(profile, f"deop {name}")
                 if not await _wait_for_uuid_absent(profile.id, OPS_FILE, target.get("uuid")):
@@ -735,29 +796,7 @@ async def rename_operator(profile: Profile, name: str, new_name: str) -> dict:
             logger.info("Players: renamed operator '%s' to '%s' on '%s' (live)", name, entry["name"], profile.name)
             return _operator_view(entry)
 
-        def _rename() -> dict:
-            entries = _read_entries(profile.id, OPS_FILE)
-            online = _online_mode(profile.id)
-            current = _match(entries, name, online)
-            if current is None:
-                raise HTTPException(status_code=404, detail=f"'{name}' is not an operator.")
-            conflict = _match(entries, new_name, online)
-            if conflict is not None and conflict is not current:
-                raise HTTPException(status_code=409, detail=f"'{new_name}' is already an operator.")
-            uid, canonical = _resolve_uuid(profile.id, new_name, online)
-            conflict = _match(entries, canonical, online)
-            if conflict is not None and conflict is not current:
-                raise HTTPException(status_code=409, detail=f"'{canonical}' is already an operator.")
-            uid_conflict = _match_uuid(entries, uid)
-            if uid_conflict is not None and uid_conflict is not current:
-                existing_name = uid_conflict.get("name") or canonical
-                raise HTTPException(status_code=409, detail=f"'{existing_name}' is already an operator.")
-            current["uuid"] = uid
-            current["name"] = canonical
-            _write_entries(profile.id, OPS_FILE, entries)
-            return _operator_view(current)
-
-        entry = await asyncio.to_thread(_rename)
+        entry = await asyncio.to_thread(_rename_entry)
         logger.info("Players: renamed operator '%s' to '%s' on '%s'", name, entry["name"], profile.name)
         return entry
 
@@ -776,8 +815,7 @@ async def remove_operator(profile: Profile, name: str) -> None:
 
         def _remove() -> None:
             entries = _read_entries(profile.id, OPS_FILE)
-            online = _online_mode(profile.id)
-            target = _match(entries, name, online)
+            target = _match(entries, name)
             if target is None:
                 raise HTTPException(status_code=404, detail=f"'{name}' is not an operator.")
             entries.remove(target)

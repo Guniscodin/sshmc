@@ -187,8 +187,12 @@ window.playersApp = function playersApp() {
             if (this.busy) return;
             this.busy = true;
             this.error = '';
+            let saved = false;
             try {
                 await action();
+                saved = true;
+                // A successful change must never leave an error banner behind.
+                this.error = '';
                 if (successMessage) showToast(successMessage, 'success');
             } catch (error) {
                 this.error = error.message || 'That change could not be saved.';
@@ -197,6 +201,7 @@ window.playersApp = function playersApp() {
                 this.busy = false;
                 // Silent: a failed action must keep its error visible.
                 await this.loadState(true);
+                if (saved) this.error = '';
             }
         },
 
