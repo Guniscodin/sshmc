@@ -117,6 +117,27 @@ window.serverSettingsApp = function serverSettingsApp() {
                     if (e.detail?.tab === 'settings') this.refreshProfiles();
                 });
             }
+            // Register poller callback to detect server status changes while settings tab is active
+            if (window.sshmc && window.sshmc.poller) {
+                window.sshmc.poller.registerTabCallback('settings', (data) => this.onHeartbeat(data));
+            }
+        },
+
+        async onHeartbeat(data) {
+            // Update serverRunning state and reload gamerules if server status changed
+            if (!this.profileId || !data?.statuses) return;
+
+            const currentStatus = data.statuses[this.profileId] || 'stopped';
+            const wasRunning = this.serverRunning;
+            const isRunning = currentStatus === 'running';
+
+            // Update serverRunning from heartbeat
+            this.serverRunning = isRunning;
+
+            // If server just started (was not running, now running), reload gamerules
+            if (!wasRunning && isRunning) {
+                await this.loadGamerules();
+            }
         },
 
         async readJson(response, fallback) {
