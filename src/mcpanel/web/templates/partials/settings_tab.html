@@ -37,7 +37,7 @@
     <div x-show="profileId && profile" class="stack-md">
         <div class="form-hint callout-box" role="alert" x-show="onlineMode === false">
             <i class="fa-solid fa-triangle-exclamation text-destructive"></i>
-            <span><strong>Offline mode is on.</strong> Anyone can join using any player\'s name, so name-based whitelist and operator entries can be impersonated. Turn on Online Mode below to require Mojang-verified accounts.</span>
+            <span><strong>Offline mode is on.</strong> Anyone can join using any player's name, so name-based whitelist and operator entries can be impersonated. Turn on Online Mode below to require Mojang-verified accounts.</span>
         </div>
         <!-- SERVER IDENTITY: icon + description -->
         <div class="card identity-card" x-show="!loading">
@@ -103,7 +103,7 @@
 
         <!-- LIVE GAME RULES CARD -->
         <div class="card settings-section-card gamerules-card" x-show="!loading" x-data="{ sectionOpen: true }">
-            <button type="button" class="settings-section-header settings-section-toggle flex-between flex-wrap gap-2" @click="sectionOpen = !sectionOpen" :aria-expanded="sectionOpen">
+            <div class="settings-section-header settings-section-toggle flex-between flex-wrap gap-2" style="cursor: pointer;" @click="sectionOpen = !sectionOpen">
                 <div class="settings-section-toggle-left">
                     <h3 class="m-0">
                         <i class="fa-solid fa-bolt text-warning"></i>
@@ -112,13 +112,15 @@
                     </h3>
                     <p class="form-hint m-0">Tweak world mechanics, player death rules, and mob behavior in real time.</p>
                 </div>
-                <div class="flex items-center gap-2" @click.stop>
-                    <button type="button" class="btn btn-ghost btn-sm" @click="loadGamerules()" :disabled="loadingGamerules || !serverRunning" title="Refresh live gamerules from server">
+                <div class="flex items-center gap-2">
+                    <button type="button" class="btn btn-ghost btn-sm" @click.stop="loadGamerules(true)" :disabled="loadingGamerules || !serverRunning" title="Refresh live gamerules from server">
                         <i class="fa-solid fa-rotate" :class="{ 'fa-spin': loadingGamerules }"></i> Refresh
                     </button>
-                    <i class="fa-solid fa-chevron-down settings-section-chevron" :class="{ 'is-open': sectionOpen }"></i>
+                    <button type="button" class="btn btn-ghost btn-sm btn-icon" @click.stop="sectionOpen = !sectionOpen" :aria-expanded="sectionOpen" aria-label="Toggle Live Game Rules">
+                        <i class="fa-solid fa-chevron-down settings-section-chevron" :class="{ 'is-open': sectionOpen }"></i>
+                    </button>
                 </div>
-            </button>
+            </div>
 
             <div x-show="sectionOpen">
 
@@ -130,6 +132,8 @@
 
             <!-- Gamerules content when server is running -->
             <div x-show="serverRunning" class="stack-sm">
+                <div class="form-error" x-show="gamerulesError" x-text="gamerulesError" role="alert"></div>
+
                 <!-- Filter bar: Category pills + text filter -->
                 <div class="gamerules-toolbar flex items-center justify-between flex-wrap gap-2">
                     <div class="pill-group">

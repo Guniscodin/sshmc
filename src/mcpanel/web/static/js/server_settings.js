@@ -28,6 +28,7 @@ window.serverSettingsApp = function serverSettingsApp() {
         gameruleCategory: 'all',
         gameruleSearch: '',
         gamerulesLoaded: false,
+        gamerulesError: '',
         onlineMode: true,
 
         categories: [
@@ -172,9 +173,20 @@ window.serverSettingsApp = function serverSettingsApp() {
         },
 
         async selectProfile() {
-            if (!this.profileId) { this.profile = null; this.fields = []; this.gamerules = []; this.searchQuery = ''; return; }
+            if (!this.profileId) {
+                this.profile = null;
+                this.fields = [];
+                this.gamerules = [];
+                this.gamerulesLoaded = false;
+                this.gamerulesError = '';
+                this.searchQuery = '';
+                return;
+            }
             this.syncSelectedProfile();
             this.searchQuery = '';
+            this.gamerules = [];
+            this.gamerulesLoaded = false;
+            this.gamerulesError = '';
             // Reset identity state from the previous profile so the icon
             // preview can't fetch the new profile's icon before settings load.
             this.hasIcon = false;
@@ -457,25 +469,41 @@ window.serverSettingsApp = function serverSettingsApp() {
             }
         },
 
-        async loadGamerules() {
-            if (!this.profileId) { this.gamerules = []; return; }
+        async loadGamerules(manual = false) {
+            if (!this.profileId) {
+                this.gamerules = [];
+                this.gamerulesError = '';
+                return;
+            }
             const currentProfileId = this.profileId;
             this.loadingGamerules = true;
+            this.gamerulesError = '';
             try {
                 const response = await fetch(`/api/profiles/${encodeURIComponent(currentProfileId)}/gamerules`);
                 if (response.status === 401) { window.location.assign('/login'); return; }
                 const data = await this.readJson(response, 'Could not load gamerules.');
                 // Ignore response if user switched profiles while loading
                 if (currentProfileId !== this.profileId) return;
-                if (response.ok && Array.isArray(data.rules)) {
+                if (!response.ok) {
+                    const msg = typeof data.detail === 'string' ? data.detail : 'Could not load gamerules.';
+                    this.gamerulesError = msg;
+                    if (manual) showToast(msg, 'error');
+                    return;
+                }
+                if (Array.isArray(data.rules)) {
                     this.gamerules = data.rules;
                     this.gamerulesLoaded = true;
+                    this.gamerulesError = '';
                     if (data.server_running !== undefined) {
                         this.serverRunning = !!data.server_running;
                     }
                 }
             } catch (err) {
                 console.error('Failed to load gamerules:', err);
+                if (currentProfileId === this.profileId) {
+                    this.gamerulesError = err.message || 'Could not load gamerules.';
+                    if (manual) showToast(this.gamerulesError, 'error');
+                }
             } finally {
                 if (currentProfileId === this.profileId) {
                     this.loadingGamerules = false;
