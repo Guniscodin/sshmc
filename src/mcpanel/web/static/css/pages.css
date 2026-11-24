@@ -1,7 +1,7 @@
 /* --- PROFILES PAGE --- */
 .profile-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr));
     gap: var(--space-4);
 }
 
@@ -90,6 +90,11 @@
     font-size: var(--font-xs);
 }
 
+/* pages.css loads after components.css, so .grid-1 needs a scoped override here. */
+.profile-quick-stats.grid-1 {
+    grid-template-columns: 1fr;
+}
+
 .profile-stat-row {
     display: flex;
     justify-content: space-between;
@@ -140,7 +145,8 @@
     border-color: var(--primary-subtle);
 }
 
-.profile-details[open] > summary i {
+/* Only the trailing chevron rotates; icons inside the label stay upright. */
+.profile-details[open] > summary > i {
     transform: rotate(180deg);
 }
 
@@ -214,7 +220,7 @@
 /* --- MONITORING PAGE --- */
 .monitoring-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
     gap: var(--space-4);
 }
 
@@ -393,6 +399,14 @@
     gap: var(--space-3);
 }
 
+/* On mobile the fixed top bar occupies the first 56px of the viewport, so the
+   sticky toolbar must stop below it instead of sliding over it. */
+@media (max-width: 768px) {
+    .mods-search-toolbar {
+        top: 56px;
+    }
+}
+
 .mods-search-row {
     display: flex;
     gap: var(--space-3);
@@ -417,7 +431,7 @@
 
 .mods-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
     gap: var(--space-4);
     margin-top: var(--space-4);
 }
@@ -441,6 +455,7 @@
     right: var(--space-2);
     width: 24px;
     height: 24px;
+    padding: 0;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -865,7 +880,7 @@
 
 .monitor-worlds-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
     gap: var(--space-2);
 }
 
@@ -984,7 +999,8 @@
     padding-bottom: var(--space-3);
 }
 
-.settings-section-header h3 {
+.settings-section-header h3,
+.settings-section-title {
     font-size: var(--font-base);
     font-weight: var(--fw-semibold);
     color: var(--text-primary);
@@ -997,6 +1013,7 @@
 .settings-section-toggle {
     width: 100%;
     display: flex;
+    flex-direction: row;
     align-items: flex-start;
     justify-content: space-between;
     gap: var(--space-3);
@@ -1873,6 +1890,17 @@
     border-bottom: 1px solid var(--border-subtle);
 }
 
+.gamerules-search {
+    flex: 1 1 220px;
+    max-width: 320px;
+}
+
+.input-sm {
+    width: 100%;
+    padding: var(--space-1) var(--space-2);
+    font-size: var(--font-xs);
+}
+
 .pill-group {
     display: flex;
     align-items: center;
@@ -1897,14 +1925,14 @@
 }
 
 .pill-btn.is-active {
-    background-color: var(--primary-color);
-    border-color: var(--primary-color);
+    background-color: var(--primary);
+    border-color: var(--primary);
     color: #ffffff;
     font-weight: var(--fw-semibold);
 }
 
 .gamerule-item-card {
-    background-color: var(--surface-card);
+    background-color: var(--surface);
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-sm);
     padding: var(--space-3);
@@ -2035,8 +2063,6 @@ body.login-page {
     flex-direction: column;
     gap: var(--space-5);
     animation: loginSlideUp var(--transition-base) both;
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
 }
 
 .login-brand {

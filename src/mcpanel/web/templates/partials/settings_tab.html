@@ -1,5 +1,5 @@
 <!-- SERVER SETTINGS TAB -->
-<section class="page-container" x-show="activeTab === 'settings'" x-data="serverSettingsApp()" x-init="init()" aria-labelledby="server-settings-title">
+<section class="page-container" x-show="activeTab === 'settings'" x-data="serverSettingsApp()" x-init="init()" x-cloak aria-labelledby="server-settings-title">
     <div class="page-header">
         <div class="page-header-info">
             <span class="page-eyebrow">server.properties</span>
@@ -217,7 +217,7 @@
         <!-- Grouped Category Cards -->
         <template x-for="cat in categories" :key="cat.id">
             <div class="card settings-section-card" x-show="!loading && categoryVisible(cat.id)" x-data="{ sectionOpen: true }">
-                <button type="button" class="settings-section-header settings-section-toggle" @click="sectionOpen = !sectionOpen" :aria-expanded="sectionOpen">
+                <div role="button" tabindex="0" class="settings-section-header settings-section-toggle" @click="sectionOpen = !sectionOpen" @keydown.enter.space="sectionOpen = !sectionOpen" :aria-expanded="sectionOpen">
                     <div class="settings-section-toggle-left">
                         <h3 class="m-0">
                             <i class="fa-solid text-primary-color" :class="cat.icon"></i>
@@ -226,7 +226,7 @@
                         <p class="form-hint m-0" x-text="cat.description"></p>
                     </div>
                     <i class="fa-solid fa-chevron-down settings-section-chevron" :class="{ 'is-open': sectionOpen }"></i>
-                </button>
+                </div>
                 <div x-show="sectionOpen">
                 <div class="grid-2 mt-4">
                     <template x-for="field in fieldsByCategory(cat.id)" :key="field.key">

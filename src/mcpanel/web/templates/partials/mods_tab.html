@@ -1,4 +1,4 @@
-<section class="page-container" x-show="activeTab === 'mods'" x-data='modsApp({% if data and data|length > 0 %}{{ data[0].profile.id | tojson }}, {{ data[0].profile.name | tojson }}, {{ data[0].profile.build.value | tojson }}, {{ data[0].profile.mc_version | tojson }}{% endif %})' x-init="init()" aria-labelledby="mods-title">
+<section class="page-container" x-show="activeTab === 'mods'" x-data='modsApp({% if data and data|length > 0 %}{{ data[0].profile.id | tojson }}, {{ data[0].profile.name | tojson }}, {{ data[0].profile.build.value | tojson }}, {{ data[0].profile.mc_version | tojson }}{% endif %})' x-init="init()" x-cloak aria-labelledby="mods-title">
     <div class="page-header">
         <div class="page-header-info">
             <span class="page-eyebrow">Modrinth Library</span>
@@ -250,7 +250,7 @@
     </div>
 
     <!-- Mod Details Modal / Drawer -->
-    <div class="mod-drawer-backdrop" x-show="detail" @click.self="detail = null" x-cloak>
+    <div class="mod-drawer-backdrop" x-show="detail" @click.self="detail = null" @keydown.escape="detail = null" x-cloak>
         <article class="mod-drawer-panel">
             <div class="mod-drawer-header">
                 <div class="flex items-center gap-3">

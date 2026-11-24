@@ -31,7 +31,7 @@
     <div class="dashboard-layout">
         <!-- SIDEBAR -->
         <aside class="sidebar" :class="{ 'sidebar-collapsed': sidebarCollapsed, 'mobile-open': mobileNavOpen }">
-            <div class="sidebar-header" @click="sidebarCollapsed && toggleSidebar()">
+            <div class="sidebar-header" @click="sidebarCollapsed && toggleSidebar()" @keydown.enter.space="sidebarCollapsed && toggleSidebar()" tabindex="0" role="button" :aria-label="sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'">
                 <div class="sidebar-brand" x-show="!sidebarCollapsed">
                     <i class="fa-solid fa-server"></i>
                     <span>SSHMC</span>
@@ -85,7 +85,7 @@
         <!-- MAIN CONTENT -->
         <main class="main-content">
             <!-- PROFILES TAB -->
-            <section class="page-container" x-show="activeTab === 'profiles'" aria-labelledby="profiles-title">
+            <section class="page-container" x-show="activeTab === 'profiles'" x-cloak aria-labelledby="profiles-title">
                 <div class="page-header">
                     <div class="page-header-info">
                         <span class="page-eyebrow">Minecraft Instances</span>
@@ -434,7 +434,6 @@
 
     <!-- Notification Toast Container -->
     <div id="toast-container" class="toast-container" aria-live="polite"></div>
-    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
     <!-- Modal Dialogs -->
     {% include "partials/panel_modals.html" %}
