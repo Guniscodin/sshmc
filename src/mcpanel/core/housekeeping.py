@@ -128,19 +128,24 @@ def prune_unreferenced_mod_caches(profile) -> int:
     # 1. Modrinth JAR cache: keep jars cited by the manifest (cache_filename
     #    or <sha256>.jar), everything else is dead weight.
     manifest_path = root / "mods.json"
-    referenced: set[str] = set()
+    referenced: set[str] | None = set()
     try:
         if manifest_path.is_file() and not manifest_path.is_symlink():
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            for item in manifest.get("mods", []) if isinstance(manifest, dict) else []:
-                if not isinstance(item, dict):
-                    continue
-                cache_name = item.get("cache_filename")
-                if isinstance(cache_name, str) and Path(cache_name).name == cache_name:
-                    referenced.add(cache_name)
-                sha256 = item.get("sha256")
-                if isinstance(sha256, str):
-                    referenced.add(f"{sha256}.jar")
+            mods_list = manifest.get("mods", []) if isinstance(manifest, dict) else None
+            if not isinstance(mods_list, list):
+                logger.warning("Unexpected mod manifest shape for cache pruning (%s); keeping the Modrinth cache untouched.", manifest_path)
+                referenced = None
+            else:
+                for item in mods_list:
+                    if not isinstance(item, dict):
+                        continue
+                    cache_name = item.get("cache_filename")
+                    if isinstance(cache_name, str) and Path(cache_name).name == cache_name:
+                        referenced.add(cache_name)
+                    sha256 = item.get("sha256")
+                    if isinstance(sha256, str):
+                        referenced.add(f"{sha256}.jar")
     except (OSError, json.JSONDecodeError):
         logger.warning("Could not parse the mod manifest for cache pruning (%s); keeping the Modrinth cache untouched.", manifest_path)
         referenced = None

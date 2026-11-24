@@ -8,9 +8,11 @@ from mcpanel.core import lifecycle, runtime, mod_downloads, backups, mod_storage
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/lifecycle", tags=["lifecycle"])
 
+
 @router.get("/startup-events")
 async def startup_events():
     return {"events": runtime.drain_startup_events()}
+
 
 @router.post("/{profile_id}/cancel-start")
 async def cancel_start_profile(profile_id: str):
@@ -32,18 +34,19 @@ def _remember_skipped_downloads(profile, indexes: list[int]) -> None:
     if changed:
         db.update_profile(profile)
 
+
 @router.post("/{profile_id}/start")
 async def start_profile(profile_id: str, skip_mod_download_indexes: list[int] = Query(default=[])):
     """Starts a stopped server."""
     profile = db.get_profile(profile_id)
     state = db.get_runtime_state(profile_id)
-    
+
     if not profile or not state:
         raise HTTPException(status_code=404, detail="Profile not found")
     if backups.is_backup_running(profile_id):
         raise HTTPException(status_code=409, detail="This profile is backing up. Wait for the backup to finish.")
-        
-    if state.pid and state.pid_create_time and runtime.process.is_process_alive(state.pid, state.pid_create_time):
+
+    if state.pid and state.pid_create_time and runtime.process.is_server_alive(state.pid, state.pid_create_time):
         raise HTTPException(status_code=409, detail="A server process is already running for this profile.")
     state.pid = None
     state.pid_create_time = None
@@ -70,7 +73,7 @@ async def start_profile(profile_id: str, skip_mod_download_indexes: list[int] = 
         )
         new_state = db.get_runtime_state(profile_id) or new_state
         return {"status": new_state.status.value, "state": new_state}
-        
+
     except mod_downloads.ModDownloadFailure as e:
         state = db.get_runtime_state(profile_id) or state
         state.status = ProfileStatus.STOPPED
@@ -106,7 +109,7 @@ async def start_profile(profile_id: str, skip_mod_download_indexes: list[int] = 
                 relay_log = PROFILES_DIR / profile_id / "logs" / "latest.log"
                 relay_log.parent.mkdir(parents=True, exist_ok=True)
                 with open(relay_log, "a", encoding="utf-8") as f:
-                    f.write(f"\n[SSHMC] Mod source preflight failed:\n")
+                    f.write("\n[SSHMC] Mod source preflight failed:\n")
                     for conflict in e.preflight.conflicts:
                         f.write(f"  - {conflict}\n")
                     for warning in e.preflight.warnings:
@@ -129,12 +132,13 @@ async def start_profile(profile_id: str, skip_mod_download_indexes: list[int] = 
         db.update_runtime_state(state)
         raise HTTPException(status_code=500, detail="Internal server error during startup.")
 
+
 @router.post("/{profile_id}/stop")
 async def stop_profile(profile_id: str):
     """Gracefully stops a running server."""
     profile = db.get_profile(profile_id)
     state = db.get_runtime_state(profile_id)
-    
+
     if not profile or not state:
         raise HTTPException(status_code=404, detail="Profile not found")
     if backups.is_backup_running(profile_id):
@@ -160,6 +164,7 @@ async def stop_profile(profile_id: str):
         db.update_runtime_state(state)
         raise HTTPException(status_code=500, detail="Failed to stop server.")
 
+
 @router.post("/{profile_id}/restart")
 async def restart_profile(
     profile_id: str,
@@ -169,7 +174,7 @@ async def restart_profile(
     """Restarts a server, syncing git and optionally wiping the world."""
     profile = db.get_profile(profile_id)
     state = db.get_runtime_state(profile_id)
-    
+
     if not profile or not state:
         raise HTTPException(status_code=404, detail="Profile not found")
     if backups.is_backup_running(profile_id):
@@ -189,11 +194,15 @@ async def restart_profile(
             db.update_runtime_state(state)
             raise HTTPException(status_code=500, detail="Could not stop server before restart.") from e
         db.update_runtime_state(state)
-        if state.pid and state.pid_create_time and runtime.process.is_process_alive(state.pid, state.pid_create_time):
+        if state.pid and state.pid_create_time and runtime.process.is_server_alive(state.pid, state.pid_create_time):
             raise HTTPException(status_code=409, detail="Server is still running; restart cancelled.")
+        state.pid = None
+        state.pid_create_time = None
     elif state.status in [ProfileStatus.STOPPED, ProfileStatus.CRASHED]:
-        if state.pid and state.pid_create_time and runtime.process.is_process_alive(state.pid, state.pid_create_time):
+        if state.pid and state.pid_create_time and runtime.process.is_server_alive(state.pid, state.pid_create_time):
             raise HTTPException(status_code=409, detail="A server process is still running; stop it first.")
+        state.pid = None
+        state.pid_create_time = None
     else:
         raise HTTPException(status_code=409, detail="Server is already starting or stopping.")
 
@@ -220,7 +229,7 @@ async def restart_profile(
         )
         new_state = db.get_runtime_state(profile_id) or new_state
         return {"status": new_state.status.value, "state": new_state}
-        
+
     except mod_downloads.ModDownloadFailure as e:
         state = db.get_runtime_state(profile_id) or state
         state.status = ProfileStatus.STOPPED
@@ -255,7 +264,7 @@ async def restart_profile(
                 relay_log = PROFILES_DIR / profile_id / "logs" / "latest.log"
                 relay_log.parent.mkdir(parents=True, exist_ok=True)
                 with open(relay_log, "a", encoding="utf-8") as f:
-                    f.write(f"\n[SSHMC] Mod source preflight failed:\n")
+                    f.write("\n[SSHMC] Mod source preflight failed:\n")
                     for conflict in e.preflight.conflicts:
                         f.write(f"  - {conflict}\n")
                     for warning in e.preflight.warnings:

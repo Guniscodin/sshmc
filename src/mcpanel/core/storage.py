@@ -55,7 +55,10 @@ def _count_chunks_in_region_file(region_path: Path) -> int:
     return sum(1 for offset in offsets if offset != 0)
 
 
-def _world_folder_stats(server_dir: Path) -> dict[str, dict]:
+def _world_folder_stats(
+    server_dir: Path,
+    world_names: tuple[str, ...] | list[str] = WORLD_FOLDERS,
+) -> dict[str, dict]:
     """Compute per-world stats for every known world folder under a server dir.
 
     Returns a mapping of world_name -> {bytes, chunks, region_files,
@@ -63,7 +66,7 @@ def _world_folder_stats(server_dir: Path) -> dict[str, dict]:
     timestamp.
     """
     stats: dict[str, dict] = {}
-    for world_name in WORLD_FOLDERS:
+    for world_name in world_names:
         world_dir = server_dir / world_name
         entry: dict = {
             "bytes": 0,
@@ -80,7 +83,7 @@ def _world_folder_stats(server_dir: Path) -> dict[str, dict]:
         try:
             for path in world_dir.rglob("*"):
                 try:
-                    info = path.stat()
+                    info = path.lstat()
                 except OSError:
                     continue
                 if not stat.S_ISREG(info.st_mode):
@@ -116,6 +119,7 @@ def _world_folder_stats(server_dir: Path) -> dict[str, dict]:
         stats[world_name] = entry
     return stats
 
+
 # Monitoring payload derived from the last storage scan: one shared walk,
 # two consumers.
 _sizes_snapshot: list[dict] = []
@@ -125,13 +129,19 @@ _refresh_event: asyncio.Event | None = None
 _scan_task: asyncio.Task | None = None
 
 
-def _empty_profile(profile_id: str, name: str, status: str = "stopped", orphaned: bool = False) -> dict:
+def _empty_profile(
+    profile_id: str,
+    name: str,
+    status: str = "stopped",
+    orphaned: bool = False,
+    world_names: tuple[str, ...] = WORLD_FOLDERS,
+) -> dict:
     return {
         "id": profile_id, "name": name, "status": status, "orphaned": orphaned,
         "total_bytes": 0, "server_bytes": 0, "world_bytes": 0, "launch_dir_bytes": 0,
         "worlds": {
-            name: {"bytes": 0, "chunks": 0, "region_files": 0, "last_modified": None}
-            for name in WORLD_FOLDERS
+            world_name: {"bytes": 0, "chunks": 0, "region_files": 0, "last_modified": None}
+            for world_name in world_names
         },
         "server_logs_bytes": 0,
         "relay_logs_bytes": 0, "crash_reports_bytes": 0, "backups_bytes": 0,
@@ -154,7 +164,7 @@ def _profile_bucket(entry: dict, parts: tuple[str, ...], size: int):
     if folder == "server":
         entry["server_bytes"] += size
         child = parts[3] if len(parts) > 3 else ""
-        if child in WORLD_FOLDERS:
+        if child in entry["worlds"]:
             # World breakdown (bytes/chunks/region_files/last_modified) is
             # computed in the post-pass via _world_folder_stats to avoid
             # double-walking world directories. Keep key None so world files
@@ -209,7 +219,7 @@ def _scan_root(root: Path, inventory: dict, known_profiles: dict[str, dict]) -> 
                         parts = ()
                     if root == DATA_DIR:
                         total += size
-                        if parts and parts[0] == "panel.db":
+                        if parts and parts[0] in {"panel.db", "panel.db-wal", "panel.db-shm"}:
                             inventory["database_bytes"] += size
                         elif parts and parts[0] == "logs":
                             inventory["panel_logs_bytes"] += size
@@ -274,10 +284,13 @@ def _scan_root(root: Path, inventory: dict, known_profiles: dict[str, dict]) -> 
 
 
 def _scan_storage() -> dict:
+    from mcpanel.core import workspace
+
     profiles = {}
     launch_dir_owners: dict[str, str] = {}
     for profile, state in db.list_profiles_with_states():
-        entry = _empty_profile(profile.id, profile.name)
+        profile_worlds = tuple(dict.fromkeys(workspace.world_names(profile)))
+        entry = _empty_profile(profile.id, profile.name, world_names=profile_worlds)
         entry["status"] = state.status.value if state else "stopped"
         profiles[profile.id] = entry
         if profile.launch_dir:
@@ -304,7 +317,7 @@ def _scan_storage() -> dict:
     # once; monitoring consumes the result via profile_sizes_snapshot().
     for entry in profiles.values():
         server_dir = PROFILES_DIR / entry["id"] / "server"
-        world_stats = _world_folder_stats(server_dir)
+        world_stats = _world_folder_stats(server_dir, tuple(entry["worlds"]))
         entry["worlds"] = world_stats
         entry["world_bytes"] = sum(world["bytes"] for world in world_stats.values())
 

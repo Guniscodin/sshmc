@@ -34,7 +34,7 @@ def _profile_is_running(profile_id: str) -> bool:
         return False
     if state.status in (ProfileStatus.RUNNING, ProfileStatus.STARTING, ProfileStatus.STOPPING):
         return True
-    return bool(state.pid and state.pid_create_time and process.is_process_alive(state.pid, state.pid_create_time))
+    return bool(state.pid and state.pid_create_time and process.is_server_alive(state.pid, state.pid_create_time))
 
 
 def _claim_stopped_profile(profile_id: str):
@@ -184,8 +184,9 @@ async def clear_profile_logs(profile_id: str):
 
 @router.delete("/profiles/{profile_id}/worlds/{world_name}")
 async def delete_profile_world(profile_id: str, world_name: str):
-    _profile(profile_id)
-    if world_name not in _WORLD_FOLDERS:
+    profile = _profile(profile_id)
+    allowed_worlds = set(workspace.world_names(profile)) | _WORLD_FOLDERS
+    if world_name not in allowed_worlds:
         raise HTTPException(400, "Unknown world folder.")
     _, server = _safe_profile_server(profile_id)
     world = server / world_name
@@ -221,7 +222,7 @@ async def delete_orphaned_profile_files(profile_id: str):
     state = db.get_runtime_state(profile_id)
     if state and (
         state.status in (ProfileStatus.RUNNING, ProfileStatus.STARTING, ProfileStatus.STOPPING)
-        or (state.pid and state.pid_create_time and process.is_process_alive(state.pid, state.pid_create_time))
+        or (state.pid and state.pid_create_time and process.is_server_alive(state.pid, state.pid_create_time))
     ):
         raise HTTPException(409, "Cannot remove files while the server process is running.")
     target = PROFILES_DIR / profile_id

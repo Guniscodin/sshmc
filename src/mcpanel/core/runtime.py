@@ -24,10 +24,12 @@ _DEPENDENCY_FAILURE_MARKERS = (
     "requires any version of ",
 )
 
+
 def drain_startup_events() -> list[dict[str, str]]:
     events = list(_startup_events)
     _startup_events.clear()
     return events
+
 
 def _record_startup_event(profile: Profile, message: str) -> None:
     _startup_events.append({"profile_id": profile.id, "profile_name": profile.name, "message": message})
@@ -36,6 +38,7 @@ def _record_startup_event(profile: Profile, message: str) -> None:
 
 def record_startup_warning(profile: Profile, message: str) -> None:
     _record_startup_event(profile, message)
+
 
 async def _terminate_starting_process(pid: int, create_time: float) -> bool:
     """Stop the whole detached launch group, including run.sh's Java child."""
@@ -48,6 +51,7 @@ async def _terminate_starting_process(pid: int, create_time: float) -> bool:
         exited = await asyncio.to_thread(process.wait_for_group_exit, pid, 5)
     return exited
 
+
 async def shutdown_starting_servers() -> None:
     """Stop startup watchers without stopping the detached Minecraft processes."""
     global _panel_shutting_down
@@ -58,14 +62,16 @@ async def shutdown_starting_servers() -> None:
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
 
+
 def _load_saved_server_settings(profile_id: str) -> dict[str, str]:
     return server_properties.read_saved_settings(profile_id)
+
 
 def _generate_server_properties(profile: Profile, server_dir: Path) -> None:
     """Generates or updates server.properties with our custom profile settings."""
     props_path = server_dir / "server.properties"
     logger.info(f"Updating server.properties (Port: {profile.port}, RCON Port: {profile.rcon_port})")
-    
+
     properties = server_properties.read_properties(props_path)
 
     # Apply the user's saved server settings, then let the panel-managed keys
@@ -93,6 +99,7 @@ def _generate_server_properties(profile: Profile, server_dir: Path) -> None:
 
     server_properties.write_properties(props_path, properties)
 
+
 def _apply_server_icon(profile: Profile, server_dir: Path) -> None:
     """Copies the profile's uploaded 64x64 icon into the server folder."""
     icon_source = PROFILES_DIR / profile.id / "server_icon.png"
@@ -105,14 +112,15 @@ def _apply_server_icon(profile: Profile, server_dir: Path) -> None:
     except OSError as exc:
         logger.warning("Could not apply the server icon: %s", exc)
 
+
 def _build_java_command(profile: Profile, server_dir: Path) -> list[str]:
     """Constructs the startup command. Handles modern Forge/NeoForge run.sh."""
     run_sh = server_dir / "run.sh"
-    
+
     if run_sh.exists():
         # Modern Forge/NeoForge: write RAM to user_jvm_args.txt and run run.sh
         jvm_args_path = server_dir / "user_jvm_args.txt"
-        with open(jvm_args_path, "w") as f:
+        with open(jvm_args_path, "w", encoding="utf-8") as f:
             f.write(f"-Xmx{profile.ram_mb}M\n")
             f.write(f"-Xms{profile.ram_mb}M\n")
         logger.info("Using run.sh for server execution (Forge/NeoForge)")
@@ -127,11 +135,12 @@ def _build_java_command(profile: Profile, server_dir: Path) -> list[str]:
             "nogui"
         ]
 
+
 async def start_server(profile: Profile) -> RuntimeState:
     """Starts a server and returns its new RuntimeState."""
     server_dir = workspace.server_dir(profile)
     log_path = PROFILES_DIR / profile.id / "logs" / "latest.log"
-    
+
     if not server_dir.exists():
         raise FileNotFoundError(f"Server directory missing for {profile.name}. Run sync first.")
 
@@ -144,7 +153,7 @@ async def start_server(profile: Profile) -> RuntimeState:
         eula_path = server_dir / "eula.txt"
         if not eula_path.exists():
             logger.info("Generating eula.txt (eula=true)")
-            with open(eula_path, "w") as f:
+            with open(eula_path, "w", encoding="utf-8") as f:
                 f.write("eula=true\n")
         _generate_server_properties(profile, server_dir)
         workspace.ensure_world_links(profile)
@@ -157,7 +166,13 @@ async def start_server(profile: Profile) -> RuntimeState:
     cmd = await asyncio.to_thread(_build_java_command, profile, server_dir)
 
     await asyncio.to_thread(process.prepare_server_log, log_path)
-    start_offset = log_path.stat().st_size if log_path.exists() else 0
+    if log_path.exists():
+        log_stat = log_path.stat()
+        start_offset = log_stat.st_size
+        start_identity: tuple[int, int] | None = (log_stat.st_dev, log_stat.st_ino)
+    else:
+        start_offset = 0
+        start_identity = None
     pid, create_time = await asyncio.to_thread(
         process.spawn_detached_process, cmd, server_dir, log_path
     )
@@ -172,33 +187,38 @@ async def start_server(profile: Profile) -> RuntimeState:
 
     # Readiness is watched in the background so an HTTP request (and Uvicorn's
     # graceful shutdown) never waits five minutes for a broken mod set.
-    task = asyncio.create_task(_watch_startup(profile, state, log_path, start_offset))
+    task = asyncio.create_task(_watch_startup(profile, state, log_path, start_offset, start_identity))
     _startup_tasks[profile.id] = task
     task.add_done_callback(lambda done, profile_id=profile.id: _startup_tasks.pop(profile_id, None) if _startup_tasks.get(profile_id) is done else None)
     return state
 
-async def _watch_startup(profile: Profile, state: RuntimeState, log_path: Path, start_offset: int) -> None:
+
+async def _watch_startup(
+    profile: Profile,
+    state: RuntimeState,
+    log_path: Path,
+    start_offset: int,
+    start_identity: tuple[int, int] | None = None,
+) -> None:
     pid, create_time = state.pid, state.pid_create_time
     if not pid or not create_time:
         return
     deadline = asyncio.get_running_loop().time() + 300
     log_position = start_offset
-    try:
-        log_identity = (log_path.stat().st_dev, log_path.stat().st_ino)
-    except OSError:
-        log_identity = None
+    log_identity = start_identity
     recent_output = ""
     try:
         while asyncio.get_running_loop().time() < deadline:
+            read_full_chunk = False
             if log_path.exists():
                 try:
                     current_stat = log_path.stat()
                     current_identity = (current_stat.st_dev, current_stat.st_ino)
-                    if log_identity is not None and current_identity != log_identity:
+                    if (log_identity is not None and current_identity != log_identity) or current_stat.st_size < log_position:
                         log_position = 0
                     log_identity = current_identity
                 except OSError:
-                    current_identity = log_identity
+                    pass
                 # Bound each read; the watcher keeps only the tail anyway, and
                 # an unlucky poll after a log burst shouldn't allocate MBs here.
                 with open(log_path, "rb") as log_file:
@@ -206,6 +226,7 @@ async def _watch_startup(profile: Profile, state: RuntimeState, log_path: Path, 
                     new_bytes = log_file.read(256 * 1024)
                     log_position += len(new_bytes)
                 if new_bytes:
+                    read_full_chunk = len(new_bytes) == 256 * 1024
                     recent_output = (recent_output + new_bytes.decode("utf-8", errors="replace"))[-8000:]
                     dependency_error = next((marker for marker in _DEPENDENCY_FAILURE_MARKERS if marker.lower() in recent_output.lower()), None)
                     if dependency_error:
@@ -230,7 +251,7 @@ async def _watch_startup(profile: Profile, state: RuntimeState, log_path: Path, 
                         state.status = ProfileStatus.RUNNING
                         db.update_runtime_state(state)
                         return
-            if not process.is_process_alive(pid, create_time):
+            if not read_full_chunk and not process.is_process_alive(pid, create_time):
                 # The relay (group leader) is gone. If Java survived inside the
                 # group, nothing is watching the console, rotation or shutdown
                 # hooks — killing the orphan avoids a server that holds the game
@@ -248,7 +269,7 @@ async def _watch_startup(profile: Profile, state: RuntimeState, log_path: Path, 
                 _record_startup_event(profile, message)
                 logger.error("Minecraft exited before readiness for %s: %s", profile.name, tail or "No startup log output.")
                 return
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0 if read_full_chunk else 0.5)
 
         await _terminate_starting_process(pid, create_time)
         state.status = ProfileStatus.CRASHED
@@ -266,6 +287,7 @@ async def _watch_startup(profile: Profile, state: RuntimeState, log_path: Path, 
                 state.pid_create_time = None
             db.update_runtime_state(state)
         raise
+
 
 async def cancel_startup(profile_id: str) -> RuntimeState | None:
     state = db.get_runtime_state(profile_id)
@@ -285,6 +307,7 @@ async def cancel_startup(profile_id: str) -> RuntimeState | None:
             db.update_runtime_state(state)
     return db.get_runtime_state(profile_id)
 
+
 async def stop_server(profile: Profile, state: RuntimeState) -> RuntimeState:
     """
     Graceful shutdown sequence:
@@ -299,8 +322,8 @@ async def stop_server(profile: Profile, state: RuntimeState) -> RuntimeState:
         state.status = ProfileStatus.STOPPED
         return state
 
-    # FAST-FAIL: If the process is already dead, skip timeouts
-    if not process.is_process_alive(state.pid, state.pid_create_time):
+    # FAST-FAIL: If the process (and any verified surviving server group) is already dead, skip timeouts
+    if not process.is_server_alive(state.pid, state.pid_create_time):
         logger.info(f"Process {state.pid} is already dead. Marking as stopped.")
         state.status = ProfileStatus.STOPPED
         state.pid = None
@@ -309,7 +332,7 @@ async def stop_server(profile: Profile, state: RuntimeState) -> RuntimeState:
 
     logger.info(f"Stopping server '{profile.name}' (PID: {state.pid})...")
     state.status = ProfileStatus.STOPPING
-    
+
     # 1. RCON Attempt: send "stop" if the server is reachable. The JVM may
     # have received the command even when RCON then fails (response timeout,
     # dropped connection), so give it a grace window to save and exit before
@@ -317,9 +340,9 @@ async def stop_server(profile: Profile, state: RuntimeState) -> RuntimeState:
     command_delivered = False
     try:
         await rcon.send_command(
-            host="127.0.0.1", 
-            port=profile.rcon_port, 
-            password=profile.rcon_password, 
+            host="127.0.0.1",
+            port=profile.rcon_port,
+            password=profile.rcon_password,
             command="stop"
         )
         command_delivered = True

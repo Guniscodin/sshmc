@@ -105,6 +105,7 @@ async def _download_item(client, job, profile_id, cache_dir, version, job_id):
             continue
     part = cache_dir / f".{job_id}-{uuid.uuid4().hex}.part"
     destination = None
+    created_destination = False
     entry = {"name": name, "status": "downloading", "progress": 0}
     job["items"].append(entry)
     digests = {key: hashlib.new(key) for key in algorithms}
@@ -112,7 +113,8 @@ async def _download_item(client, job, profile_id, cache_dir, version, job_id):
         cache_dir.mkdir(parents=True, exist_ok=True)
         async with client.stream("GET", file["url"]) as response:
             response.raise_for_status()
-            total = int(response.headers.get("content-length", 0) or 0)
+            raw_length = response.headers.get("content-length") or ""
+            total = int(raw_length) if raw_length.isdigit() else 0
             received = 0
             async with aiofiles.open(part, "xb") as output:
                 async for chunk in response.aiter_bytes(1024 * 256):
@@ -134,6 +136,7 @@ async def _download_item(client, job, profile_id, cache_dir, version, job_id):
         else:
             try:
                 os.link(part, destination)
+                created_destination = True
             except FileExistsError:
                 # Another concurrent job finished between the exists() check and
                 # the link. The cache filename is the SHA-256 of the content,
@@ -144,14 +147,14 @@ async def _download_item(client, job, profile_id, cache_dir, version, job_id):
         entry.update(status="done", progress=100)
     except Exception as exc:
         part.unlink(missing_ok=True)
-        if destination and destination.is_file() and not destination.is_symlink():
+        if created_destination and destination and destination.is_file() and not destination.is_symlink():
             try:
                 manifest = await load_manifest(profile_id)
                 if not any(item.get("cache_filename") == destination.name for item in manifest.get("mods", [])):
                     destination.unlink(missing_ok=True)
             except Exception:
                 logger.warning("Could not clean up an unused failed Modrinth cache file %s", destination)
-        entry.update(status="failed", error=str(exc))
+        entry.update(status="failed", error=str(exc) or type(exc).__name__)
     finally:
         part.unlink(missing_ok=True)
 
@@ -159,7 +162,11 @@ async def _download_item(client, job, profile_id, cache_dir, version, job_id):
 async def _download_job(job_id, profile_id, root_version, versions):
     job = JOBS[job_id]
     manifest = await load_manifest(profile_id)
-    installed = {item.get("project_id") for item in manifest.get("mods", [])}
+    installed = {
+        item.get("project_id")
+        for item in manifest.get("mods", [])
+        if isinstance(item, dict) and not item.get("pending_removal")
+    }
     additions = [root_version, *[item for item in versions if item.get("project_id") not in installed]]
     seen = set()
     unique_additions = []
@@ -196,7 +203,7 @@ async def run_download_job(job_id, profile_id, version, versions):
     except Exception as exc:
         logger.exception("Mod install job %s failed", job_id)
         if job_id in JOBS:
-            JOBS[job_id].update(status="failed", error=str(exc))
+            JOBS[job_id].update(status="failed", error=str(exc) or type(exc).__name__)
     finally:
         if job_id in JOBS:
             JOBS[job_id]["finished_at"] = time()

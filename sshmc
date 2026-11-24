@@ -59,7 +59,7 @@ panel_command() {
 is_our_panel() {
     command_line=$(panel_command "$1")
     case "$command_line" in
-        *"$ROOT/src"*"mcpanel.main:app"*) return 0 ;;
+        *"mcpanel.main:app"*"$ROOT/src"*|*"$ROOT/src"*"mcpanel.main:app"*) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -74,8 +74,17 @@ start_panel() {
         echo "One or more SSHMC Python packages are missing. Run: ./sshmc install" >&2
         exit 1
     fi
+    panel_port=${MCPANEL_PORT:-8000}
+    if ! valid_port "$panel_port"; then
+        echo "MCPANEL_PORT must be a number from 1 to 65535." >&2
+        exit 2
+    fi
     cd "$ROOT"
     mkdir -p "$DATA_DIR"
+    if [ -L "$PID_FILE" ]; then
+        echo "PID file cannot be a symbolic link: $PID_FILE" >&2
+        exit 1
+    fi
     if [ -f "$PID_FILE" ]; then
         old_pid=$(cat "$PID_FILE" 2>/dev/null || true)
         case "$old_pid" in ''|*[!0-9]*) old_pid='' ;; esac
@@ -91,9 +100,9 @@ start_panel() {
     fi
     umask 077
     printf '%s\n' "$$" > "$PID_FILE"
-    echo "Starting SSHMC on ${MCPANEL_HOST:-127.0.0.1}:${MCPANEL_PORT:-8000}. Press Ctrl+C to stop the panel."
+    echo "Starting SSHMC on ${MCPANEL_HOST:-127.0.0.1}:$panel_port. Press Ctrl+C to stop the panel."
     exec "$uvicorn" mcpanel.main:app --app-dir "$ROOT/src" \
-        --host "${MCPANEL_HOST:-127.0.0.1}" --port "${MCPANEL_PORT:-8000}" \
+        --host "${MCPANEL_HOST:-127.0.0.1}" --port "$panel_port" \
         --timeout-graceful-shutdown 5
 }
 
@@ -116,6 +125,10 @@ install_panel() {
 }
 
 stop_panel() {
+    if [ -L "$PID_FILE" ]; then
+        echo "PID file cannot be a symbolic link: $PID_FILE" >&2
+        exit 1
+    fi
     if [ ! -f "$PID_FILE" ]; then
         echo "No CLI-managed SSHMC process was found. If it was started manually, stop it with Ctrl+C or use the GUI shutdown button." >&2
         exit 1
@@ -159,7 +172,7 @@ tunnel_panel() {
         exit 2
     fi
     echo "Forwarding 127.0.0.1:$local_port to $ssh_host:127.0.0.1:$panel_port. Press Ctrl+C to close the tunnel."
-    exec ssh -N -T -L "$local_port:127.0.0.1:$panel_port" "$ssh_host"
+    exec ssh -N -T -L "$local_port:127.0.0.1:$panel_port" -- "$ssh_host"
 }
 
 case "${1:-help}" in
@@ -168,5 +181,4 @@ case "${1:-help}" in
     stop) shift; [ "$#" -eq 0 ] || { echo "Usage: ./sshmc stop" >&2; exit 2; }; stop_panel ;;
     tunnel) shift; tunnel_panel "$@" ;;
     help|-h|--help) usage ;;
-    *) echo "Unknown command: $1" >&2; usage >&2; exit 2 ;;
-esac
+    *) echo "Unknown command: $1" >&2; usage >&2; exit 2; esac

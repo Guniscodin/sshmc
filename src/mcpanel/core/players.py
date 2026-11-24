@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import time
 import uuid as uuid_module
 from pathlib import Path
 
@@ -37,7 +38,9 @@ _MOJANG_ENDPOINTS = (
     "https://api.minecraftservices.com/minecraft/profile/lookup/name/{name}",
     "https://api.mojang.com/users/profiles/minecraft/{name}",
 )
-_uuid_cache: dict[str, tuple[str, str]] = {}
+_UUID_CACHE_TTL_SECONDS = 600.0
+_UUID_CACHE_MAX_ENTRIES = 1024
+_uuid_cache: dict[str, tuple[float, str, str]] = {}
 _locks: dict[str, asyncio.Lock] = {}
 
 
@@ -175,9 +178,14 @@ def _usercache_uuid(profile_id: str, name: str) -> tuple[str, str] | None:
 
 def _mojang_lookup(name: str) -> tuple[str, str] | None:
     """Resolve an online-mode username. Returns (uuid, canonical_name)."""
-    cached = _uuid_cache.get(name.lower())
+    now = time.monotonic()
+    key = name.lower()
+    cached = _uuid_cache.get(key)
     if cached:
-        return cached
+        expires_at, uid, canonical = cached
+        if expires_at > now:
+            return uid, canonical
+        _uuid_cache.pop(key, None)
     with httpx.Client(timeout=6.0, follow_redirects=True) as client:
         for template in _MOJANG_ENDPOINTS:
             try:
@@ -201,7 +209,15 @@ def _mojang_lookup(name: str) -> tuple[str, str] | None:
             uid = _dashed(payload.get("id"))
             canonical = str(payload.get("name") or name)
             if uid:
-                _uuid_cache[name.lower()] = (uid, canonical)
+                if len(_uuid_cache) >= _UUID_CACHE_MAX_ENTRIES:
+                    expired_keys = [k for k, (exp, _, _) in _uuid_cache.items() if exp <= now]
+                    for k in expired_keys:
+                        _uuid_cache.pop(k, None)
+                    if len(_uuid_cache) >= _UUID_CACHE_MAX_ENTRIES:
+                        oldest_key = next(iter(_uuid_cache), None)
+                        if oldest_key is not None:
+                            _uuid_cache.pop(oldest_key, None)
+                _uuid_cache[key] = (now + _UUID_CACHE_TTL_SECONDS, uid, canonical)
                 return uid, canonical
     raise HTTPException(
         status_code=502,
@@ -291,8 +307,12 @@ async def _rcon(profile: Profile, command: str) -> str:
 async def _wait_for_entry(profile_id: str, filename: str, name: str) -> dict | None:
     """The server writes player files synchronously with the command, but give
     slow disks a short window before calling the command failed."""
+    online = await asyncio.to_thread(_online_mode, profile_id)
     for _ in range(6):
-        entry = _match_ci(await asyncio.to_thread(_read_entries, profile_id, filename), name)
+        entries = await asyncio.to_thread(_read_entries, profile_id, filename)
+        entry = _match(entries, name)
+        if entry is None and online:
+            entry = _match_ci(entries, name)
         if entry is not None:
             return entry
         await asyncio.sleep(0.1)
@@ -451,7 +471,7 @@ async def add_whitelist(profile: Profile, name: str) -> dict:
             if str(entry.get("name", "")) != name:
                 def _patch_name() -> None:
                     entries = _read_entries(profile.id, WHITELIST_FILE)
-                    target = _match_uuid(entries, entry.get("uuid")) or _match_ci(entries, name)
+                    target = _match_uuid(entries, entry.get("uuid")) or _match(entries, name)
                     if target is not None:
                         target["name"] = name
                         _write_entries(profile.id, WHITELIST_FILE, entries)
@@ -489,12 +509,26 @@ async def remove_whitelist(profile: Profile, name: str) -> None:
         if phase in ("starting", "stopping"):
             raise HTTPException(status_code=409, detail=f"The server is {phase}. Try again when it has finished.")
         if phase == "running":
+            def _was_whitelisted() -> bool:
+                entries = _read_entries(profile.id, WHITELIST_FILE)
+                if _match(entries, name) is not None:
+                    return True
+                return _online_mode(profile.id) and _match_ci(entries, name) is not None
+
+            was_present = await asyncio.to_thread(_was_whitelisted)
             response = await _rcon(profile, f"whitelist remove {name}")
             if await _wait_for_entry(profile.id, WHITELIST_FILE, name) is not None:
                 raise _command_error(response, name, "remove from the whitelist")
-            # On older/legacy versions (1.13 and earlier), whitelist remove does
-            # not kick online players, so kick them explicitly.
-            await _rcon(profile, f"kick {name} Removed from whitelist")
+            if was_present:
+                # On older/legacy versions (1.13 and earlier), whitelist remove does
+                # not kick online players, so kick them explicitly.
+                try:
+                    await _rcon(profile, f"kick {name} Removed from whitelist")
+                except HTTPException as exc:
+                    logger.warning(
+                        "Players: removed '%s' from whitelist of '%s', but follow-up kick failed: %s",
+                        name, profile.name, exc.detail,
+                    )
             return
 
         def _remove() -> None:
@@ -571,8 +605,15 @@ async def rename_whitelist(profile: Profile, name: str, new_name: str) -> dict:
             if entry is None:
                 raise _command_error(response, new_name, "whitelist")
             if str(entry.get("name", "")) != new_name:
-                entry = await asyncio.to_thread(_rename_entry)
-            elif _dashed(entry.get("uuid")) != _dashed(target.get("uuid")):
+                def _patch_renamed_name() -> None:
+                    entries = _read_entries(profile.id, WHITELIST_FILE)
+                    added = _match_uuid(entries, entry.get("uuid")) or _match(entries, new_name)
+                    if added is not None:
+                        added["name"] = new_name
+                        _write_entries(profile.id, WHITELIST_FILE, entries)
+                await asyncio.to_thread(_patch_renamed_name)
+                entry["name"] = new_name
+            if _dashed(entry.get("uuid")) != _dashed(target.get("uuid")):
                 response = await _rcon(profile, f"whitelist remove {name}")
                 if not await _wait_for_uuid_absent(profile.id, WHITELIST_FILE, target.get("uuid")):
                     await _rollback(profile, f"whitelist remove {new_name}")
@@ -607,7 +648,7 @@ async def add_operator(profile: Profile, name: str, level: int | None) -> dict:
             # server default) and keep the submitted spelling.
             def _patch_add_level() -> None:
                 entries = _read_entries(profile.id, OPS_FILE)
-                target = _match_uuid(entries, entry.get("uuid")) or _match_ci(entries, name)
+                target = _match_uuid(entries, entry.get("uuid")) or _match(entries, name)
                 if target is not None:
                     target["level"] = level
                     target["name"] = name
@@ -669,6 +710,12 @@ async def update_operator(
                     status_code=409,
                     detail="Minecraft has no command for the bypass limit, so stop the server to change it.",
                 )
+            def _existing_op() -> dict | None:
+                entries = _read_entries(profile.id, OPS_FILE)
+                return _match(entries, name)
+
+            if await asyncio.to_thread(_existing_op) is None:
+                raise HTTPException(status_code=404, detail=f"'{name}' is not an operator.")
             if level is not None:
                 default_level = _default_op_level(profile.id)
                 if level != default_level:
@@ -683,7 +730,7 @@ async def update_operator(
             # Patch the desired level directly into ops.json (vanilla /op uses server default)
             def _patch_update_level() -> None:
                 entries = _read_entries(profile.id, OPS_FILE)
-                target = _match_uuid(entries, entry.get("uuid")) or _match_ci(entries, name)
+                target = _match_uuid(entries, entry.get("uuid")) or _match(entries, name)
                 if target is not None:
                     target["name"] = name
                     if level is not None:
@@ -780,7 +827,7 @@ async def rename_operator(profile: Profile, name: str, new_name: str) -> dict:
             # Patch the preserved level and submitted spelling into ops.json
             def _patch_rename_level() -> None:
                 entries = _read_entries(profile.id, OPS_FILE)
-                t = _match_uuid(entries, entry.get("uuid")) or _match_ci(entries, new_name)
+                t = _match_uuid(entries, entry.get("uuid")) or _match(entries, new_name)
                 if t is not None:
                     t["level"] = level
                     t["name"] = new_name

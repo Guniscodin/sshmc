@@ -408,10 +408,8 @@ def _parse_mc_version(version_str: str | None) -> tuple[int, ...]:
         return (0,)
     parts: list[int] = []
     for part in version_str.split("."):
-        try:
-            parts.append(int(part))
-        except ValueError:
-            parts.append(0)
+        match = re.match(r"(\d+)", part.strip())
+        parts.append(int(match.group(1)) if match else 0)
     return tuple(parts)
 
 
@@ -538,10 +536,12 @@ def _replacement_pending(profile: Profile) -> bool:
     except (OSError, json.JSONDecodeError):
         return False
 
+
 @router.get("")
 def list_all_profiles():
     """Returns a list of all profiles."""
     return [p.model_dump(mode="json", exclude={"rcon_password"}) for p in db.list_profiles()]
+
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 def create_new_profile(
@@ -561,7 +561,7 @@ def create_new_profile(
         # Clean up the git_url if the user left it blank (empty string -> None)
         clean_git_url = git_url.strip() if git_url and git_url.strip() else None
         parsed_mod_downloads = _parse_mod_downloads(mod_downloads)
-        
+
         # Construct the strictly-typed Pydantic model
         current_profiles = db.list_profiles()
         used_game_ports = {p.port for p in current_profiles}
@@ -589,11 +589,11 @@ def create_new_profile(
             port=assigned_port,
             rcon_port=assigned_rcon_port,
         )
-        
+
         db.create_profile(profile)
         logger.info(f"API: Created profile '{profile.name}' (ID: {profile.id})")
         return profile.model_dump(mode="json", exclude={"rcon_password"})
-        
+
     except HTTPException:
         raise
     except ValidationError as e:
@@ -603,6 +603,7 @@ def create_new_profile(
     except Exception as e:
         logger.error(f"API Error creating profile: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.put("/{profile_id}")
 async def update_existing_profile(
@@ -636,7 +637,7 @@ async def update_existing_profile(
         raise HTTPException(status_code=409, detail="Profile settings cannot be changed while a backup is running.")
     mc_version = mc_version.strip()
     loader_version = loader_version.strip()
-        
+
     incompatible_change = any((
         existing.build != build,
         existing.mc_version != mc_version,
@@ -647,7 +648,7 @@ async def update_existing_profile(
         ProfileStatus.RUNNING, ProfileStatus.STARTING, ProfileStatus.STOPPING
     ):
         raise HTTPException(status_code=409, detail="Stop the server before changing its build or version.")
-    if incompatible_change and state and state.pid and state.pid_create_time and process.is_process_alive(state.pid, state.pid_create_time):
+    if incompatible_change and state and state.pid and state.pid_create_time and process.is_server_alive(state.pid, state.pid_create_time):
         raise HTTPException(status_code=409, detail="Stop the server before changing its build or version.")
 
     assigned_port = existing.port if port is None else port
@@ -722,7 +723,7 @@ async def update_existing_profile(
         ))
         if sources_changed and state and state.status in (ProfileStatus.STARTING, ProfileStatus.STOPPING):
             raise HTTPException(status_code=409, detail="Mod sources cannot be changed while the profile is starting or stopping.")
-        
+
         updated_profile = Profile(
             id=profile_id,
             name=name,
@@ -748,21 +749,35 @@ async def update_existing_profile(
             max_backups=max_backups,
             created_at=existing.created_at
         )
-        
+
         async with AsyncExitStack() as source_stack:
             for pack_name in sorted({item for item in (existing.modpack_name, effective_pack) if item}):
                 await source_stack.enter_async_context(mod_storage.pack_lock(pack_name))
             await source_stack.enter_async_context(mod_storage.source_lock(profile_id))
             current_state = db.get_runtime_state(profile_id)
-            if (sources_changed or incompatible_change) and current_state and current_state.status in (
+            if incompatible_change and current_state and (
+                current_state.status in (ProfileStatus.RUNNING, ProfileStatus.STARTING, ProfileStatus.STOPPING)
+                or (current_state.pid and current_state.pid_create_time and process.is_server_alive(current_state.pid, current_state.pid_create_time))
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Stop the server before changing its build or version.",
+                )
+            if effective_launch != existing.launch_dir and current_state and current_state.status in (
+                ProfileStatus.RUNNING, ProfileStatus.STARTING, ProfileStatus.STOPPING
+            ):
+                raise HTTPException(status_code=409, detail="Stop the server before changing its launch directory.")
+            if assigned_port != existing.port and current_state and current_state.status in (
+                ProfileStatus.RUNNING, ProfileStatus.STARTING, ProfileStatus.STOPPING
+            ):
+                raise HTTPException(status_code=409, detail="Stop the server before changing its game port.")
+            if sources_changed and current_state and current_state.status in (
                 ProfileStatus.STARTING, ProfileStatus.STOPPING
             ):
-                message = (
-                    "Stop the profile lifecycle operation before changing its build or version."
-                    if incompatible_change
-                    else "Mod sources cannot be changed while the profile is starting or stopping."
+                raise HTTPException(
+                    status_code=409,
+                    detail="Mod sources cannot be changed while the profile is starting or stopping.",
                 )
-                raise HTTPException(status_code=409, detail=message)
             if effective_pack and not modpacks.get_pack(effective_pack):
                 raise HTTPException(status_code=422, detail="The selected mod pack no longer exists.")
             if effective_launch:
@@ -812,7 +827,7 @@ async def update_existing_profile(
         result = updated_profile.model_dump(mode="json", exclude={"rcon_password"})
         result["applies_on_next_restart"] = bool(sources_changed and state and state.status == ProfileStatus.RUNNING)
         return result
-        
+
     except HTTPException:
         raise
     except modpacks.ModPackError as e:
@@ -854,7 +869,7 @@ async def create_profile_backup(profile_id: str, payload: BackupRequest):
         raise HTTPException(status_code=422, detail="Choose at least one item to include in this backup.")
     tracked_process_alive = bool(
         state.pid and state.pid_create_time
-        and process.is_process_alive(state.pid, state.pid_create_time)
+        and process.is_server_alive(state.pid, state.pid_create_time)
     )
     was_running = state.status == ProfileStatus.RUNNING or tracked_process_alive
     try:
@@ -964,6 +979,7 @@ def download_profile_backup(profile_id: str, filename: str):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return FileResponse(path, media_type="application/gzip", filename=filename)
 
+
 @router.delete("/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_profile(profile_id: str, delete_files: bool = False):
     """
@@ -972,7 +988,7 @@ async def delete_profile(profile_id: str, delete_files: bool = False):
     """
     profile = db.get_profile(profile_id)
     state = db.get_runtime_state(profile_id)
-    
+
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
     if backups.is_backup_running(profile_id):
@@ -989,7 +1005,8 @@ async def delete_profile(profile_id: str, delete_files: bool = False):
         except Exception as e:
             logger.error(f"Failed to gracefully stop server during deletion: {e}")
             raise HTTPException(status_code=409, detail="Could not stop the server; profile was not deleted.") from e
-        if state.pid and state.pid_create_time and process.is_process_alive(state.pid, state.pid_create_time):
+        db.update_runtime_state(state)
+        if state.pid and state.pid_create_time and process.is_server_alive(state.pid, state.pid_create_time):
             raise HTTPException(status_code=409, detail="Server process is still running; profile was not deleted.")
 
     if backups.is_backup_running(profile_id):
@@ -1018,8 +1035,9 @@ async def delete_profile(profile_id: str, delete_files: bool = False):
 
     db.delete_profile(profile_id)
     logger.info(f"Deleted profile '{profile.name}' from database.")
-            
+
     return None
+
 
 @router.get("/partials/list")
 def get_profile_list_partial(request: Request):
@@ -1031,12 +1049,13 @@ def get_profile_list_partial(request: Request):
             "profile": p, "state": state, "backups": backups.list_backups(p.id),
             "backup_state": backups.backup_state(p.id), "has_icon": _profile_has_icon(p.id),
         })
-        
+
     return templates.TemplateResponse(
-        request=request, 
-        name="partials/profile_list.html", 
+        request=request,
+        name="partials/profile_list.html",
         context={"data": profile_data}
     )
+
 
 @router.get("/stats")
 def get_dashboard_stats(request: Request):
@@ -1050,13 +1069,14 @@ def get_dashboard_stats(request: Request):
         if s and s.status == ProfileStatus.RUNNING:
             running += 1
             ram += p.ram_mb
-    
+
     html = f"""
     <div class="stat-card"><span class="stat-label">Total Servers</span><span class="stat-value">{total}</span></div>
     <div class="stat-card"><span class="stat-label">Running</span><span class="stat-value text-success">{running}</span></div>
     <div class="stat-card"><span class="stat-label">Allocated RAM</span><span class="stat-value text-primary-color">{ram} MB</span></div>
     """
     return HTMLResponse(content=html)
+
 
 @router.get("/loaders")
 async def get_available_loaders(build: BuildType, mc_version: str):
@@ -1075,7 +1095,7 @@ def get_profile_settings(profile_id: str):
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
     if backups.is_backup_running(profile_id):
-        raise HTTPException(status_code=409, detail="Cannot delete this profile while a backup is running.")
+        raise HTTPException(status_code=409, detail="Profile settings cannot be viewed while a backup is running.")
     settings = profile.model_dump(mode="json", exclude={"rcon_password"})
     settings["server_replacement_pending"] = _replacement_pending(profile)
     settings["modpack_warnings"] = modpacks.loader_warnings(
@@ -1299,6 +1319,8 @@ async def upload_profile_icon(profile_id: str, icon: UploadFile = File(...)):
         raise HTTPException(status_code=422, detail="The server icon must be smaller than 256 KB.")
     _validate_server_icon(data)
     source, live = _profile_icon_paths(profile_id)
+    if source.is_symlink() or live.is_symlink():
+        raise HTTPException(status_code=400, detail="Profile storage cannot be a symbolic link.")
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_bytes(data)
     if live.parent.is_dir() and not live.parent.is_symlink():
@@ -1318,7 +1340,7 @@ def delete_profile_icon(profile_id: str):
         if path.is_symlink():
             raise HTTPException(status_code=400, detail="Profile storage cannot be a symbolic link.")
         path.unlink(missing_ok=True)
-    logger.info("API: Removed server icon for profile '%s'", profile_id)
+    logger.info("API: Removed server icon for profile '%s'", profile.name)
     return None
 
 
@@ -1429,7 +1451,23 @@ async def send_profile_broadcast(profile_id: str, payload: BroadcastPayload):
     }
 
 
+_GAMERULE_ERROR_PHRASES = (
+    "unknown gamerule",
+    "does not exist",
+    "no game rule called",
+    "is available",
+    "incorrect argument",
+    "unknown or incomplete command",
+    "<--[here]",
+)
+
+
 def _parse_gamerule_value(response: str, rule_type: str):
+    if not response:
+        return None
+    lower = response.lower()
+    if any(phrase in lower for phrase in _GAMERULE_ERROR_PHRASES):
+        return None
     m = re.search(r'(?:is currently set to:?\s*|[:=]\s*)(true|false|\d+)', response, re.IGNORECASE)
     if not m:
         m = re.search(r'\b(true|false|\d+)\b', response, re.IGNORECASE)
@@ -1647,14 +1685,7 @@ async def update_profile_gamerule(profile_id: str, rule: str, payload: GameruleU
             lower = response.lower()
             is_failure = any(
                 phrase in lower
-                for phrase in (
-                    "unknown gamerule",
-                    "does not exist",
-                    "no game rule called",
-                    "is available",
-                    "incorrect argument",
-                    "unknown or incomplete command",
-                )
+                for phrase in _GAMERULE_ERROR_PHRASES
             )
             if not is_failure:
                 accepted_alias = alias
@@ -1731,5 +1762,3 @@ async def update_profile_gamerule(profile_id: str, rule: str, payload: GameruleU
         "response": last_response,
         "read_back_verified": True,
     }
-
-

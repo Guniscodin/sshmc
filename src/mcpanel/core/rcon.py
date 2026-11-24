@@ -4,6 +4,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 class RCONError(Exception):
     """Base exception for RCON errors.
 
@@ -15,13 +16,16 @@ class RCONError(Exception):
         super().__init__(message)
         self.command_sent = command_sent
 
+
 class RCONAuthError(RCONError):
     """Raised when authentication fails."""
     pass
 
+
 # RCON Packet Types
 SERVERDATA_AUTH = 3
 SERVERDATA_EXECCOMMAND = 2
+
 
 def _pack_packet(req_id: int, req_type: int, payload: str) -> bytes:
     """Packs an RCON packet into its binary format."""
@@ -31,27 +35,63 @@ def _pack_packet(req_id: int, req_type: int, payload: str) -> bytes:
     # Prepend the total length of the packet
     return struct.pack("<i", len(packet)) + packet
 
+
 async def _read_packet(reader: asyncio.StreamReader) -> tuple[int, int, str]:
     """Reads and unpacks a single RCON response packet."""
     try:
         # Read the length of the incoming packet (first 4 bytes)
         length_data = await reader.readexactly(4)
         length = struct.unpack("<i", length_data)[0]
-        if length < 10 or length > 4096:
+        if length < 10 or length > 16384:
             raise RCONError(f"Invalid RCON packet length: {length}")
-        
+
         # Read the rest of the packet based on the length
         data = await reader.readexactly(length)
-        
+
         # Unpack ID, Type, and Payload (payload ends with two null bytes)
         req_id, req_type = struct.unpack("<ii", data[:8])
         if data[-2:] != b"\x00\x00":
             raise RCONError("Invalid RCON packet terminator")
         payload = data[8:-2].decode("utf-8")
-        
+
         return req_id, req_type, payload
     except (asyncio.IncompleteReadError, UnicodeDecodeError, struct.error) as e:
         raise RCONError("Connection closed unexpectedly while reading packet") from e
+
+
+async def _authenticate(
+    reader: asyncio.StreamReader, writer: asyncio.StreamWriter, password: str, timeout: float
+) -> None:
+    auth_packet = _pack_packet(req_id=1, req_type=SERVERDATA_AUTH, payload=password)
+    try:
+        writer.write(auth_packet)
+        await asyncio.wait_for(writer.drain(), timeout=timeout)
+    except asyncio.TimeoutError as e:
+        raise RCONError("RCON operation timed out.") from e
+    except OSError as e:
+        raise RCONError(f"RCON connection failed during authentication: {e}") from e
+
+    # Read auth response. The Source RCON spec permits an empty
+    # RESPONSE_VALUE packet before the auth response, so keep reading
+    # until the auth response itself arrives (max 3 packets).
+    auth_resp = None
+    for _ in range(3):
+        candidate = await asyncio.wait_for(_read_packet(reader), timeout=timeout)
+        cand_id, cand_type, _ = candidate
+        if cand_id == -1 or cand_type != 0:
+            auth_resp = candidate
+            break
+    if auth_resp is None:
+        raise RCONError("Unexpected RCON authentication response.")
+    auth_id, auth_type, _ = auth_resp
+
+    # According to RCON spec, failed auth returns ID -1
+    if auth_id == -1:
+        logger.error("RCON authentication failed: Bad password.")
+        raise RCONAuthError("Authentication failed: incorrect RCON password.")
+    if auth_id != 1 or auth_type != SERVERDATA_EXECCOMMAND:
+        raise RCONError("Unexpected RCON authentication response.")
+
 
 async def send_command(
     host: str, port: int, password: str, command: str, timeout: float = 5.0
@@ -61,7 +101,7 @@ async def send_command(
     Strictly typed, heavily logged, and async.
     """
     logger.debug(f"Connecting to RCON at {host}:{port}")
-    
+
     try:
         # Open async connection with a strict timeout
         reader, writer = await asyncio.wait_for(
@@ -73,38 +113,14 @@ async def send_command(
 
     try:
         # 1. Authentication Phase
-        auth_packet = _pack_packet(req_id=1, req_type=SERVERDATA_AUTH, payload=password)
-        writer.write(auth_packet)
-        await writer.drain()
-
-        # Read auth response. The Source RCON spec permits an empty
-        # RESPONSE_VALUE packet before the auth response, so keep reading
-        # until the auth response itself arrives (max 3 packets).
-        auth_packet = None
-        for _ in range(3):
-            candidate = await asyncio.wait_for(_read_packet(reader), timeout=timeout)
-            cand_id, cand_type, _ = candidate
-            if cand_id == -1 or cand_type != 0:
-                auth_packet = candidate
-                break
-        if auth_packet is None:
-            raise RCONError("Unexpected RCON authentication response.")
-        auth_id, auth_type, _ = auth_packet
-
-        # According to RCON spec, failed auth returns ID -1
-        if auth_id == -1:
-            logger.error("RCON authentication failed: Bad password.")
-            raise RCONAuthError("Authentication failed: incorrect RCON password.")
-        if auth_id != 1 or auth_type != SERVERDATA_EXECCOMMAND:
-            raise RCONError("Unexpected RCON authentication response.")
-
+        await _authenticate(reader, writer, password, timeout)
         logger.debug("RCON authentication successful.")
 
         # 2. Command Phase
         cmd_packet = _pack_packet(req_id=2, req_type=SERVERDATA_EXECCOMMAND, payload=command)
         try:
             writer.write(cmd_packet)
-            await writer.drain()
+            await asyncio.wait_for(writer.drain(), timeout=timeout)
         except Exception as e:
             # The packet never left the socket, so the server never got it.
             raise RCONError(f"RCON write failed while sending '{command}': {e}", command_sent=False) from e
@@ -120,7 +136,7 @@ async def send_command(
             raise RCONError(str(e), command_sent=True) from e
         if response_id != 2:
             raise RCONError("Unexpected RCON command response.", command_sent=True)
-        
+
         logger.debug(f"RCON command '{command}' executed successfully.")
         return response
 
@@ -155,41 +171,46 @@ async def send_commands(
 
     try:
         # 1. Authentication Phase
-        auth_packet = _pack_packet(req_id=1, req_type=SERVERDATA_AUTH, payload=password)
-        writer.write(auth_packet)
-        await writer.drain()
-
-        auth_packet_resp = None
-        for _ in range(3):
-            candidate = await asyncio.wait_for(_read_packet(reader), timeout=timeout)
-            cand_id, cand_type, _ = candidate
-            if cand_id == -1 or cand_type != 0:
-                auth_packet_resp = candidate
-                break
-        if auth_packet_resp is None:
-            raise RCONError("Unexpected RCON authentication response.")
-        auth_id, auth_type, _ = auth_packet_resp
-
-        if auth_id == -1:
-            logger.error("RCON authentication failed: Bad password.")
-            raise RCONAuthError("Authentication failed: incorrect RCON password.")
-        if auth_id != 1 or auth_type != SERVERDATA_EXECCOMMAND:
-            raise RCONError("Unexpected RCON authentication response.")
+        await _authenticate(reader, writer, password, timeout)
 
         # 2. Sequential Execution Phase — per-command failures are captured
         # individually so one slow/failed query doesn't invalidate the whole batch.
         responses: list[str] = []
+        desynced = False
         for idx, command in enumerate(commands):
+            if desynced:
+                responses.append("")
+                continue
             req_id = idx + 2
             cmd_packet = _pack_packet(req_id=req_id, req_type=SERVERDATA_EXECCOMMAND, payload=command)
             try:
                 writer.write(cmd_packet)
-                await writer.drain()
-                _, _, response = await asyncio.wait_for(_read_packet(reader), timeout=timeout)
+                await asyncio.wait_for(writer.drain(), timeout=timeout)
+            except (asyncio.TimeoutError, OSError) as exc:
+                logger.warning("RCON write for %r failed: %s", command, exc)
+                responses.append("")
+                desynced = True
+                continue
+
+            try:
+                response = ""
+                for _ in range(8):
+                    resp_id, _, payload = await asyncio.wait_for(_read_packet(reader), timeout=timeout)
+                    if resp_id == req_id:
+                        response = payload
+                        break
+                    if resp_id < req_id:
+                        # Late response from an earlier timed-out command; keep reading.
+                        continue
+                    raise RCONError(f"Unexpected RCON response ID {resp_id} (expected {req_id}).")
+                else:
+                    raise RCONError(f"Did not receive RCON response for request {req_id}.")
                 responses.append(response)
-            except (asyncio.TimeoutError, RCONError) as exc:
+            except (asyncio.TimeoutError, RCONError, OSError) as exc:
                 logger.warning("RCON command %r failed: %s", command, exc)
                 responses.append("")
+                if isinstance(exc, OSError):
+                    desynced = True
 
         return responses
     except asyncio.TimeoutError as e:
@@ -201,4 +222,3 @@ async def send_commands(
             await writer.wait_closed()
         except Exception:
             pass
-

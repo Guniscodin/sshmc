@@ -48,6 +48,7 @@ BASE_DIR = Path(__file__).resolve().parent
 _STATIC_DIR = BASE_DIR / "web" / "static"
 _static_version_cache: dict[str, tuple[float, str]] = {}
 
+
 def static_url(path: str) -> str:
     """Generate a versioned URL for static assets based on mtime/sha256."""
     clean_path = path.lstrip("/")
@@ -70,8 +71,10 @@ def static_url(path: str) -> str:
     except OSError:
         return f"/static/{rel_path}"
 
+
 templates = Jinja2Templates(directory=str(BASE_DIR / "web" / "templates"))
 templates.env.globals["static_url"] = static_url
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -81,13 +84,12 @@ async def lifespan(app: FastAPI):
     unlock_panel()
     db.init_db()
     modpacks.cleanup_temporary_data()
-    for profile in db.list_profiles():
-        state = db.get_runtime_state(profile.id)
+    for _, state in db.list_profiles_with_states():
         if not state:
             continue
         alive = bool(
             state.pid and state.pid_create_time
-            and process.is_process_alive(state.pid, state.pid_create_time)
+            and process.is_server_alive(state.pid, state.pid_create_time)
         )
         if alive:
             state.status = ProfileStatus.RUNNING
@@ -161,32 +163,41 @@ async def _signal_panel_shutdown() -> None:
     await asyncio.sleep(0.25)
     os.kill(os.getpid(), signal.SIGTERM)
 
+
+def _reconcile_servers_once() -> None:
+    for _, state in db.list_profiles_with_states():
+        if not state:
+            continue
+        if state.status == ProfileStatus.CRASHED and state.pid and state.pid_create_time:
+            if process.is_server_alive(state.pid, state.pid_create_time):
+                state.status = ProfileStatus.RUNNING
+            else:
+                state.pid = None
+                state.pid_create_time = None
+            db.update_runtime_state(state)
+            continue
+        if state.status != ProfileStatus.RUNNING:
+            continue
+        if not state.pid or not state.pid_create_time or not process.is_server_alive(state.pid, state.pid_create_time):
+            state.status = ProfileStatus.CRASHED
+            state.pid = None
+            state.pid_create_time = None
+            db.update_runtime_state(state)
+
+
 async def _monitor_servers() -> None:
     """Keep persisted RUNNING states aligned with the tracked process."""
     while True:
-        for profile in db.list_profiles():
-            state = db.get_runtime_state(profile.id)
-            if not state:
-                continue
-            if state.status == ProfileStatus.CRASHED and state.pid and state.pid_create_time:
-                if process.is_process_alive(state.pid, state.pid_create_time):
-                    state.status = ProfileStatus.RUNNING
-                else:
-                    state.pid = None
-                    state.pid_create_time = None
-                db.update_runtime_state(state)
-                continue
-            if state.status != ProfileStatus.RUNNING:
-                continue
-            if not state.pid or not state.pid_create_time or not process.is_process_alive(state.pid, state.pid_create_time):
-                state.status = ProfileStatus.CRASHED
-                state.pid = None
-                state.pid_create_time = None
-                db.update_runtime_state(state)
+        try:
+            await asyncio.to_thread(_reconcile_servers_once)
+        except Exception:
+            logger.exception("Error while reconciling server runtime states")
         await asyncio.sleep(2)
+
 
 app = FastAPI(title="SSHMC Panel", lifespan=lifespan)
 app.add_middleware(PanelAuthMiddleware)
+
 
 @app.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
@@ -200,6 +211,7 @@ async def login_page(request: Request):
         name="login.html",
         context={},
     )
+
 
 @app.post("/auth/login")
 async def login(request: Request, password: str = Form(...)):
@@ -228,6 +240,7 @@ async def login(request: Request, password: str = Form(...)):
     )
     return response
 
+
 @app.post("/logout")
 async def logout():
     response = RedirectResponse("/login", status_code=303)
@@ -251,11 +264,10 @@ async def shutdown_panel(background_tasks: BackgroundTasks):
 @app.get("/api/heartbeat")
 async def heartbeat():
     """Lightweight single heartbeat for panel runtime state, startup events, and counts."""
-    profiles = db.list_profiles()
+    profile_states = db.list_profiles_with_states()
     statuses: dict[str, str] = {}
     running = 0
-    for p in profiles:
-        st = db.get_runtime_state(p.id)
+    for p, st in profile_states:
         val = st.status.value if st else "stopped"
         statuses[p.id] = val
         if val == "running":
@@ -264,7 +276,7 @@ async def heartbeat():
     return {
         "statuses": statuses,
         "running_count": running,
-        "total_count": len(profiles),
+        "total_count": len(profile_states),
         "events": events,
     }
 
@@ -275,8 +287,10 @@ class RevalidatingStaticFiles(StaticFiles):
         response.headers["Cache-Control"] = "no-cache"
         return response
 
+
 # Mount static files (CSS/JS) with revalidating headers
 app.mount("/static", RevalidatingStaticFiles(directory=str(BASE_DIR / "web" / "static")), name="static")
+
 
 @app.middleware("http")
 async def add_no_cache_headers_middleware(request: Request, call_next):
@@ -286,6 +300,7 @@ async def add_no_cache_headers_middleware(request: Request, call_next):
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
     return response
+
 
 # Include API Routers
 app.include_router(profiles.router)
@@ -298,15 +313,15 @@ app.include_router(mods_api.router)
 app.include_router(storage_api.router)
 app.include_router(players_api.router)
 
+
 # src/mcpanel/main.py (at the bottom)
 
 @app.get("/")
 async def serve_dashboard(request: Request):
     """Serves the main HTMX dashboard."""
-    all_profiles = db.list_profiles()
+    all_profiles = db.list_profiles_with_states()
     profile_data = []
-    for p in all_profiles:
-        state = db.get_runtime_state(p.id)
+    for p, state in all_profiles:
         profile_data.append({
             "profile": p, "state": state, "backups": backups.list_backups(p.id),
             "backup_state": backups.backup_state(p.id), "has_icon": profiles._profile_has_icon(p.id),
@@ -315,6 +330,6 @@ async def serve_dashboard(request: Request):
     # FIX: Pass request as the first argument (or explicitly as a kwarg)
     return templates.TemplateResponse(
         request=request,
-        name="index.html", 
+        name="index.html",
         context={"data": profile_data}
     )

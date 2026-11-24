@@ -48,7 +48,7 @@ def server_dir_for_id(profile_id: str) -> Path:
     return server_dir(profile)
 
 
-def _world_names(profile: Profile) -> list[str]:
+def world_names(profile: Profile) -> list[str]:
     name = "world"
     try:
         props = server_properties.read_properties(
@@ -57,13 +57,16 @@ def _world_names(profile: Profile) -> list[str]:
     except OSError:
         props = {}
     saved = server_properties.read_saved_settings(profile.id)
-    candidate = (props.get("level-name") or saved.get("level-name") or "world").strip()
+    candidate = (saved.get("level-name") or props.get("level-name") or "world").strip()
     if candidate and _WORLD_NAME.fullmatch(candidate) and candidate not in (".", ".."):
         name = candidate
     names = [name]
     if name == "world":
         names.extend(["world_nether", "world_the_end"])
     return names
+
+
+_world_names = world_names
 
 
 def ensure_world_links(profile: Profile) -> None:
@@ -78,7 +81,7 @@ def ensure_world_links(profile: Profile) -> None:
     launch_dir = launch_dirs.get_launch_dir_path(profile.launch_dir)
     profile_server = default_server_dir(profile)
     profile_server.mkdir(parents=True, exist_ok=True)
-    for name in _world_names(profile):
+    for name in world_names(profile):
         target = (profile_server / name).resolve()
         try:
             target.relative_to(profile_server.resolve())
@@ -118,19 +121,10 @@ def release_world_links(profile: Profile) -> None:
         if entry.is_symlink():
             try:
                 entry.resolve().relative_to(profile_server)
-            except ValueError:
+            except (OSError, RuntimeError, ValueError):
                 continue
             entry.unlink(missing_ok=True)
-    for name in _RUNTIME_FILES:
-        path = launch_dir / name
-        if path.is_symlink() or path.is_file():
-            path.unlink(missing_ok=True)
-    for name in _RUNTIME_DIRS:
-        path = launch_dir / name
-        if path.is_symlink():
-            path.unlink(missing_ok=True)
-        elif path.is_dir():
-            shutil.rmtree(path, ignore_errors=True)
+    clean_runtime_artifacts(profile)
 
 
 def launch_dir_compatible(profile: Profile) -> bool:

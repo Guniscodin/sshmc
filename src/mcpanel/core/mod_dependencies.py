@@ -15,7 +15,7 @@ async def resolve_required_dependencies(provider, root_version, mc_version, load
     projects = []
     skipped = []
     visited = set(installed_projects) | set(reserved_projects)
-    active = set()
+    active = {root_version.get("project_id")} - {None}
     required_versions = {}
     installed_versions = installed_versions or {}
 
@@ -47,7 +47,7 @@ async def resolve_required_dependencies(provider, root_version, mc_version, load
                 continue
             if key in active:
                 raise ValueError("A circular required dependency was found.")
-            if len(visited) >= MAX_DEPENDENCIES:
+            if len(resolved) + len(active) >= MAX_DEPENDENCIES:
                 raise ValueError("This mod requires too many dependencies to install safely.")
             active.add(key)
             try:
@@ -77,6 +77,8 @@ async def resolve_required_dependencies(provider, root_version, mc_version, load
                     else:
                         reason = "already resolved"
                     skipped.append({"project_id": resolved_project, "version_id": resolved_version, "reason": reason})
+                    if resolved_version and resolved_project in installed_versions and installed_versions[resolved_project] != resolved_version:
+                        raise ValueError(f"Dependency {resolved_project} requires a different version than the one already installed.")
                     continue
                 hashes = {
                     (item.get("hashes", {}).get("sha1") or "").lower()

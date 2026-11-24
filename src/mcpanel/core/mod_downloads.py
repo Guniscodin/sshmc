@@ -80,6 +80,7 @@ async def _download_to_cache(
 ) -> None:
     temp_path: Path | None = None
     current_url = url
+    normalized_sha256 = expected_sha256.lower() if expected_sha256 else None
     try:
         destination.parent.mkdir(parents=True, exist_ok=True)
         timeout = httpx.Timeout(connect=15, read=60, write=15, pool=15)
@@ -116,7 +117,7 @@ async def _download_to_cache(
                         os.fsync(output.fileno())
                     if not zipfile.is_zipfile(temp_path):
                         raise ValueError("The downloaded file is not a valid JAR/ZIP archive.")
-                    if expected_sha256 and digest.hexdigest() != expected_sha256:
+                    if normalized_sha256 and digest.hexdigest() != normalized_sha256:
                         raise ValueError("The downloaded file did not match the supplied SHA-256 checksum.")
                     os.replace(temp_path, destination)
                     return
@@ -154,6 +155,7 @@ async def install_configured_mods(
         if index in skip_indexes or download.skip_on_start:
             logger.warning("Skipping configured mod download %s for this start, as requested.", filename)
             continue
+        expected_sha256 = download.sha256.lower() if download.sha256 else None
         key = source_key(download, index)
         cache_folder = cache_root / key
         if cache_folder.is_symlink():
@@ -164,7 +166,7 @@ async def install_configured_mods(
         legacy_folder = cache_root / legacy_cache_key(download)
         legacy_file = legacy_folder / filename
         if key != legacy_folder.name and not cached_file.exists() and not legacy_folder.is_symlink() and legacy_file.is_file() and not legacy_file.is_symlink():
-            valid_legacy = zipfile.is_zipfile(legacy_file) and (not download.sha256 or _sha256(legacy_file) == download.sha256.lower())
+            valid_legacy = zipfile.is_zipfile(legacy_file) and (not expected_sha256 or _sha256(legacy_file) == expected_sha256)
             if valid_legacy:
                 cache_folder.mkdir(parents=True, exist_ok=True)
                 os.replace(legacy_file, cached_file)
@@ -174,7 +176,7 @@ async def install_configured_mods(
                     pass
         if cached_file.exists() and (
             not zipfile.is_zipfile(cached_file)
-            or (download.sha256 and _sha256(cached_file) != download.sha256)
+            or (expected_sha256 and _sha256(cached_file) != expected_sha256)
         ):
             try:
                 cached_file.unlink()
@@ -183,7 +185,7 @@ async def install_configured_mods(
         if not cached_file.exists():
             try:
                 logger.info("Downloading configured mod %s (%s/%s).", filename, index + 1, len(downloads))
-                await _download_to_cache(download.url, cached_file, index, filename, download.sha256)
+                await _download_to_cache(download.url, cached_file, index, filename, expected_sha256)
             except ModDownloadFailure:
                 raise
             except Exception as exc:

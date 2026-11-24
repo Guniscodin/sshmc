@@ -1,6 +1,7 @@
 """Modrinth browsing and safe profile mod installation routes."""
 import asyncio
 import logging
+import shutil
 import uuid
 from pathlib import Path
 from time import time
@@ -264,10 +265,13 @@ async def install_mod(profile_id: str, request: InstallRequest):
         raise HTTPException(502, "Could not load that Modrinth version.") from exc
     if profile.mc_version not in version.get("game_versions", []) or profile.build.value not in version.get("loaders", []):
         raise HTTPException(409, "That mod version is incompatible with this profile.")
-    dependencies = []
     resolved_dependencies = []
     manifest = await _load_manifest(profile_id)
-    installed_projects = {item.get("project_id") for item in manifest.get("mods", []) if isinstance(item, dict)}
+    installed_projects = {
+        item.get("project_id")
+        for item in manifest.get("mods", [])
+        if isinstance(item, dict) and not item.get("pending_removal")
+    }
     reserved_projects = {
         project_id for job in _jobs.values()
         if job.get("profile_id") == profile_id and job.get("status") in {"queued", "downloading"}
@@ -303,7 +307,11 @@ async def install_mod(profile_id: str, request: InstallRequest):
             installed_projects | {version.get("project_id")},
             reserved_projects,
             local_hashes,
-            {item.get("project_id"): item.get("version_id") for item in manifest.get("mods", []) if item.get("project_id") and item.get("version_id")},
+            {
+                item.get("project_id"): item.get("version_id")
+                for item in manifest.get("mods", [])
+                if isinstance(item, dict) and not item.get("pending_removal") and item.get("project_id") and item.get("version_id")
+            },
         )
     except (httpx.HTTPError, ValueError) as exc:
         raise HTTPException(409, f"A required dependency is unavailable or incompatible: {exc}. No mods were installed.") from exc
@@ -358,7 +366,11 @@ async def install_mod(profile_id: str, request: InstallRequest):
         if state and state.status in (ProfileStatus.STARTING, ProfileStatus.STOPPING):
             raise HTTPException(409, "Mod sources cannot be changed while the server is starting or stopping.")
         latest_manifest = await _load_manifest(profile_id)
-        latest_projects = {item.get("project_id") for item in latest_manifest.get("mods", []) if isinstance(item, dict)}
+        latest_projects = {
+            item.get("project_id")
+            for item in latest_manifest.get("mods", [])
+            if isinstance(item, dict) and not item.get("pending_removal")
+        }
         installed_projects.update(latest_projects)
         if version.get("project_id") in installed_projects:
             raise HTTPException(409, "This mod is already installed in this profile.")
@@ -411,15 +423,18 @@ async def remove_profile_mod(profile_id: str, digest: str):
         running = bool(state and state.status == ProfileStatus.RUNNING)
         if owner == "modrinth":
             if running:
+                if not modrinth_entry:
+                    raise HTTPException(404, "Modrinth manifest entry not found.")
                 # Server is running: mark pending_removal in the manifest; apply on next Start.
                 from mcpanel.core.mod_storage import update_manifest as _update_manifest
+
                 async def _mark_pending(manifest):
                     for item in manifest.get("mods", []):
                         if isinstance(item, dict) and item.get("sha256") == digest:
                             item["pending_removal"] = True
                             break
+
                 await _update_manifest(profile_id, _mark_pending)
-                removed = modrinth_entry or {}
             else:
                 removed = await remove_manifest_mod(profile_id, digest)
                 if not removed:
@@ -464,7 +479,6 @@ async def remove_profile_mod(profile_id: str, digest: str):
             db.update_profile(profile)
             cache_root = mod_storage.profile_root(profile_id) / "downloaded_mods"
             if cache_root.is_dir() and not cache_root.is_symlink():
-                import shutil
                 legacy_keys = [mod_downloads.legacy_cache_key(item) for item in removed_links]
                 for cache_key in (source_key, *legacy_keys):
                     cache_folder = cache_root / cache_key

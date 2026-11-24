@@ -10,11 +10,13 @@ from mcpanel.core import runtime, git_sync, loader, mod_downloads, modpacks, bac
 
 logger = logging.getLogger(__name__)
 
+
 class LifecycleError(Exception):
     """Raised when a lifecycle operation (start/stop/restart) fails."""
     def __init__(self, message: str, preflight: mod_sources.SourcePreflightError | None = None):
         super().__init__(message)
         self.preflight = preflight
+
 
 def _needs_wipe(profile: Profile, server_dir: Path) -> bool:
     """Checks if the current server installation matches the profile settings."""
@@ -24,12 +26,12 @@ def _needs_wipe(profile: Profile, server_dir: Path) -> bool:
         return False
     meta_file = server_dir / "profile_meta.json"
     if not meta_file.exists():
-        return False # Fresh install, no need to wipe
-    
+        return False  # Fresh install, no need to wipe
+
     try:
-        with open(meta_file, "r") as f:
+        with open(meta_file, "r", encoding="utf-8") as f:
             old_data = json.load(f)
-        
+
         # If any of these changed, the world/mods are likely incompatible
         return (
             old_data.get("build") != profile.build.value or
@@ -40,13 +42,15 @@ def _needs_wipe(profile: Profile, server_dir: Path) -> bool:
         logger.error(f"Failed to read profile_meta.json: {e}")
         return False
 
+
 def _wipe_server_directory(profile: Profile) -> None:
     """Removes the world folders, loader libraries and caches; mods/configs are owned by the source staging layer."""
-    server_dir = PROFILES_DIR / profile.id / "server"
+    server_dir = workspace.server_dir(profile)
     logger.warning(f"Wiping server directory for profile '{profile.name}' due to build changes.")
 
     # Clear old world/mod content and loader-specific caches before reinstalling.
-    for folder in ["world", "world_nether", "world_the_end", "libraries", ".fabric", "versions"]:
+    folders_to_remove = dict.fromkeys([*workspace.world_names(profile), "libraries", ".fabric", "versions"])
+    for folder in folders_to_remove:
         target = server_dir / folder
         if target.exists():
             shutil.rmtree(target)
@@ -59,6 +63,7 @@ def _wipe_server_directory(profile: Profile) -> None:
         if target.exists():
             target.unlink()
             logger.debug(f"Deleted {target}")
+
 
 def _launch_loader_stale(profile: Profile, server_dir: Path) -> bool:
     """True when a launch directory holds runtime files from another build."""
@@ -110,19 +115,19 @@ async def restart_profile(
             profile.backup_datapacks_on_change,
             profile.backup_server_settings_on_change,
         ))
-        try:
-            if requested_backup:
+        if requested_backup:
+            try:
                 active_backup = backups.begin_backup(profile.id)
                 try:
                     await asyncio.to_thread(backups.create_change_backup, profile, active_backup["cancel"])
                 finally:
                     backups.finish_backup(profile.id)
-        except backups.BackupError as exc:
-            raise LifecycleError(f"Replacement aborted because the selected backup could not be created: {exc}") from exc
-        except Exception as exc:
-            logger.exception("Unexpected backup error for %s", profile.name)
-            if requested_backup:
+            except backups.BackupError as exc:
+                raise LifecycleError(f"Replacement aborted because the selected backup could not be created: {exc}") from exc
+            except Exception as exc:
+                logger.exception("Unexpected backup error for %s", profile.name)
                 raise LifecycleError(f"Replacement aborted because the selected backup failed: {exc}") from exc
+
     # Resolve every mod/data source and complete preflight before changing the
     # live source folders or intentionally replacing the existing world.
     if profile.launch_dir:
@@ -158,6 +163,7 @@ async def restart_profile(
         await asyncio.to_thread(_wipe_server_directory, profile)
     elif profile.launch_dir and (force_wipe or _launch_loader_stale(profile, server_dir)):
         await asyncio.to_thread(workspace.clean_runtime_artifacts, profile)
+
     if version_change_pending:
         # The backup_*_on_change flags are a one-shot selection consumed by the
         # backup above, not persistent preferences. Resetting them to the
@@ -175,7 +181,7 @@ async def restart_profile(
     # 5. Install Loader (only if jar is missing or we just wiped)
     server_jar = server_dir / "server.jar"
     run_sh = server_dir / "run.sh"
-    
+
     if not server_jar.exists() and not run_sh.exists():
         try:
             await loader.install_server(
@@ -186,15 +192,20 @@ async def restart_profile(
                 java_path=profile.java_path
             )
             # Save the metadata so we know what version is installed
-            with open(server_dir / "profile_meta.json", "w") as f:
+            with open(server_dir / "profile_meta.json", "w", encoding="utf-8") as f:
                 json.dump({
                     "build": profile.build.value,
                     "mc_version": profile.mc_version,
                     "loader_version": profile.loader_version
                 }, f)
-                
+
         except loader.LoaderInstallError as e:
             logger.error(f"Restart aborted: Loader install failed. {e}")
+            for artifact in ("server.jar", "run.sh", "user_jvm_args.txt", "profile_meta.json"):
+                try:
+                    (server_dir / artifact).unlink(missing_ok=True)
+                except OSError as cleanup_err:
+                    logger.warning("Failed to clean up partial artifact %s: %s", artifact, cleanup_err)
             current_state.status = ProfileStatus.CRASHED
             raise LifecycleError(f"Failed to install server loader: {e}") from e
 

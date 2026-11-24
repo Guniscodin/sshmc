@@ -121,6 +121,9 @@ def load_source_manifest(profile_id: str) -> dict:
 
 
 def write_json_atomic(path: Path, value: dict) -> None:
+    if path.is_symlink():
+        raise OSError(f"{path.name} cannot be a symbolic link.")
+    path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.part")
     try:
         with temp.open("x", encoding="utf-8") as output:

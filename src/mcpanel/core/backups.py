@@ -167,32 +167,32 @@ def _selected_sources(profile: Profile, selection: dict[str, bool]) -> list[tupl
     if server.is_symlink():
         raise BackupError("The server folder is a symbolic link; refusing to archive it.")
     try:
-        server.resolve().relative_to(profile_directory.resolve())
+        server_resolved = server.resolve()
+        server_resolved.relative_to(profile_directory.resolve())
     except ValueError as exc:
         raise BackupError("The server folder is outside the profile data directory.") from exc
-    choices = []
+    choices: list[tuple[str, Path, Path]] = []
     try:
         content_dir = workspace.server_dir(profile).resolve()
     except launch_dirs.LaunchDirError:
-        content_dir = server.resolve()
+        content_dir = server_resolved
     allowed_roots = (profile_directory.resolve(), LAUNCH_DIRS_DIR.resolve())
     if not any(_is_within(content_dir, root) for root in allowed_roots):
-        content_dir = server.resolve()
+        content_dir = server_resolved
     if selection.get("worlds"):
-        choices.extend((name, server / name) for name in ("world", "world_nether", "world_the_end"))
+        choices.extend((name, server / name, server_resolved) for name in workspace.world_names(profile))
     if selection.get("mods"):
-        choices.append(("mods", content_dir / "mods"))
+        choices.append(("mods", content_dir / "mods", content_dir))
     if selection.get("config"):
-        choices.append(("config", content_dir / "config"))
+        choices.append(("config", content_dir / "config", content_dir))
     if selection.get("datapacks"):
-        choices.append(("datapacks", content_dir / "datapacks"))
+        choices.append(("datapacks", content_dir / "datapacks", content_dir))
     if selection.get("server_settings"):
-        choices.extend((name, content_dir / name) for name in _SETTINGS)
+        choices.extend((name, content_dir / name, content_dir) for name in _SETTINGS)
     result = []
-    for name, path in choices:
+    for name, path, root in choices:
         if path.is_symlink():
             continue
-        root = server.resolve() if name in ("world", "world_nether", "world_the_end") else content_dir
         try:
             path.resolve().relative_to(root)
         except ValueError:
@@ -371,12 +371,24 @@ def maybe_auto_backup(profile: Profile, label: str = "auto") -> dict | None:
     if not getattr(profile, "backup_on_restart", False):
         return None
     try:
-        result = create_manual_backup(profile, dict(AUTO_BACKUP_SELECTION), label, was_running=False, cancel=None)
+        active = begin_backup(profile.id)
+    except BackupInProgress:
+        logger.warning("Skipping automatic world backup for profile '%s': another backup is already running.", profile.name)
+        return None
+    except Exception as exc:
+        logger.warning("Automatic world backup failed for profile '%s': %s", profile.name, exc)
+        return None
+    try:
+        result = create_manual_backup(
+            profile, dict(AUTO_BACKUP_SELECTION), label, was_running=False, cancel=active["cancel"]
+        )
         logger.info("Automatic world backup for profile '%s': %s", profile.name, result["name"])
         return result
     except Exception as exc:
         logger.warning("Automatic world backup failed for profile '%s': %s", profile.name, exc)
         return None
+    finally:
+        finish_backup(profile.id)
 
 
 def _sidecar_path(archive: Path) -> Path:

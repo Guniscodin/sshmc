@@ -237,7 +237,7 @@ def _wrapper_prefix(entries: list[tuple[zipfile.ZipInfo, tuple[str, ...]]]) -> s
     if len(prefixes) != 1 or any(len(parts) == 1 for parts in files):
         return None
     prefix = next(iter(prefixes))
-    if prefix in {"mods", "config", "datapacks"}:
+    if prefix.casefold() in {"mods", "config", "datapacks"}:
         return None
     return prefix
 
@@ -280,6 +280,22 @@ def _actual_pack_jar_stats(pack_dir: Path) -> tuple[list[dict], dict[str, int]]:
         pass
     jars.sort(key=lambda item: str(item["filename"]).casefold())
     return jars, loader_counts
+
+
+def _tree_bytes(root: Path) -> int:
+    total = 0
+    for current, directories, filenames in os.walk(root, followlinks=False):
+        current_path = Path(current)
+        directories[:] = [name for name in directories if not (current_path / name).is_symlink()]
+        for filename in filenames:
+            path = current_path / filename
+            if path.is_symlink() or not path.is_file():
+                continue
+            try:
+                total += path.stat().st_size
+            except OSError:
+                continue
+    return total
 
 
 def _valid_jar(path: Path) -> bool:
@@ -411,6 +427,7 @@ def _copy_session_files(
             current_path = Path(current)
             directories[:] = [name for name in directories if not (current_path / name).is_symlink()]
             relative_dir = current_path.relative_to(files_dir)
+            _ensure_safe_child(stage, stage / relative_dir)
             (stage / relative_dir).mkdir(parents=True, exist_ok=True)
             for filename in filenames:
                 source = current_path / filename
@@ -533,6 +550,8 @@ def add_files_to_pack(
                     if old.is_file() and not old.is_symlink():
                         _ensure_in_data(old).unlink()
             warnings = _copy_session_files(files_dir, stage, validated_jars=validated_jars)
+            if _tree_bytes(stage) > MAX_MODPACK_EXTRACTED_BYTES:
+                raise ModPackError("The mod pack exceeds the configured expanded-size limit.")
             target_loader = manifest.get("target_loader", "unknown")
             result = _publish_stage(stage, existing.name, target_loader, existing, warnings)
             _remove_session(session)
@@ -556,6 +575,8 @@ def delete_pack_jar(raw_pack_name: str, filename: str) -> None:
         if not _manifest(pack_dir):
             raise FileNotFoundError("Mod pack not found.")
         mods_dir = pack_dir / "mods"
+        if mods_dir.is_symlink():
+            raise ModPackError("Mods folder cannot be a symbolic link.")
         target = mods_dir / filename
         if target.is_symlink() or not target.is_file():
             raise FileNotFoundError(filename)

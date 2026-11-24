@@ -278,6 +278,38 @@ def _excluded(parts: tuple[str, ...]) -> bool:
     return False
 
 
+def _resolve_case_insensitive(base: Path, parts: tuple[str, ...]) -> Path | None:
+    curr = base
+    for part in parts:
+        exact = curr / part
+        if exact.exists() or exact.is_symlink():
+            curr = exact
+            continue
+        if not curr.is_dir() or curr.is_symlink():
+            return None
+        matched = None
+        try:
+            for child in curr.iterdir():
+                if child.name.casefold() == part.casefold():
+                    matched = child
+                    break
+        except OSError:
+            return None
+        if matched is None:
+            return None
+        curr = matched
+    return curr
+
+
+def _has_symlink_prefix(base: Path, parts: tuple[str, ...]) -> bool:
+    curr = base
+    for part in parts:
+        curr = curr / part
+        if curr.is_symlink():
+            return True
+    return False
+
+
 def import_session(
     session_id: str,
     raw_name: str,
@@ -374,9 +406,12 @@ def _import_session(
             if source.suffix.lower() == ".jar" and not zipfile.is_zipfile(source):
                 warnings.append(f"Skipped invalid JAR archive: {source.name}")
                 continue
+            source_size = source.stat().st_size
+            if total_bytes + source_size > MAX_MODPACK_EXTRACTED_BYTES:
+                raise LaunchDirError("The directory exceeds the configured expanded-size limit.")
             shutil.copyfile(source, target)
             copied += 1
-            total_bytes += source.stat().st_size
+            total_bytes += source_size
             if len(parts) > 1:
                 top_folders.add(parts[0])
         if not copied:
@@ -384,6 +419,8 @@ def _import_session(
                 "No importable server files were found. World saves, logs, and server runtime files are excluded."
             )
         file_count, total_bytes, folders, files = _actual_launch_dir_stats(stage)
+        if total_bytes > MAX_MODPACK_EXTRACTED_BYTES:
+            raise LaunchDirError("The directory exceeds the configured expanded-size limit.")
         manifest = {
             "name": name,
             "label": (label or raw_name or "").strip() or name,
@@ -440,96 +477,108 @@ def _add_files_to_launch_dir(
 
     session, files_dir = _session_files(session_id)
     warnings: list[str] = []
-    try:
-        candidates: list[tuple[tuple[str, ...], Path]] = []
-        for current, directories, filenames in os.walk(files_dir, followlinks=False):
-            current_path = Path(current)
-            directories[:] = [
-                item for item in directories
-                if not (current_path / item).is_symlink()
-            ]
-            for filename in filenames:
-                source = current_path / filename
-                if source.is_symlink() or not source.is_file():
-                    continue
-                relative = source.relative_to(files_dir)
-                posix = PurePosixPath(*relative.parts)
-                windows = PureWindowsPath(str(relative))
-                if posix.is_absolute() or windows.is_absolute() or windows.drive:
-                    warnings.append(f"Skipped unsafe path: {relative}")
-                    continue
-                parts = _safe_relative(tuple(relative.parts))
-                if not parts:
-                    warnings.append(f"Skipped unsafe path: {relative}")
-                    continue
-                candidates.append((parts, source))
-                if len(candidates) > MAX_ENTRIES:
-                    raise LaunchDirError(f"This upload contains more than {MAX_ENTRIES} files.")
+    candidates: list[tuple[tuple[str, ...], Path]] = []
+    for current, directories, filenames in os.walk(files_dir, followlinks=False):
+        current_path = Path(current)
+        directories[:] = [
+            item for item in directories
+            if not (current_path / item).is_symlink()
+        ]
+        for filename in filenames:
+            source = current_path / filename
+            if source.is_symlink() or not source.is_file():
+                continue
+            relative = source.relative_to(files_dir)
+            posix = PurePosixPath(*relative.parts)
+            windows = PureWindowsPath(str(relative))
+            if posix.is_absolute() or windows.is_absolute() or windows.drive:
+                warnings.append(f"Skipped unsafe path: {relative}")
+                continue
+            parts = _safe_relative(tuple(relative.parts))
+            if not parts:
+                warnings.append(f"Skipped unsafe path: {relative}")
+                continue
+            candidates.append((parts, source))
+            if len(candidates) > MAX_ENTRIES:
+                raise LaunchDirError(f"This upload contains more than {MAX_ENTRIES} files.")
 
-        stripped = _strip_wrapper([parts for parts, _ in candidates])
-        written: dict[tuple[str, ...], tuple[tuple[str, ...], Path]] = {}
-        for parts, (_, source) in zip(stripped, candidates, strict=True):
-            if len(parts) == 1 and parts[0].lower().endswith(".jar"):
-                parts = ("mods", parts[0])
-            key = tuple(part.casefold() for part in parts)
-            if key in written:
-                warnings.append(f"Skipped duplicate path: {'/'.join(parts)}")
-                continue
-            written[key] = (parts, source)
+    stripped = _strip_wrapper([parts for parts, _ in candidates])
+    written: dict[tuple[str, ...], tuple[tuple[str, ...], Path]] = {}
+    for parts, (_, source) in zip(stripped, candidates, strict=True):
+        if len(parts) == 1 and parts[0].lower().endswith(".jar"):
+            parts = ("mods", parts[0])
+        key = tuple(part.casefold() for part in parts)
+        if key in written:
+            warnings.append(f"Skipped duplicate path: {'/'.join(parts)}")
+            continue
+        written[key] = (parts, source)
 
-        conflicts = []
-        for parts, (orig_parts, _) in written.items():
-            if _excluded(orig_parts):
-                continue
-            target = pack_dir.joinpath(*orig_parts)
-            try:
-                target.resolve().relative_to(pack_dir.resolve())
-            except ValueError:
-                continue
-            if target.exists() and not target.is_symlink() and target.is_file():
+    _, current_bytes, _, _ = _actual_launch_dir_stats(pack_dir)
+    conflicts: list[str] = []
+    replaced_bytes = 0
+    incoming_bytes = 0
+    validated_uploads: list[tuple[Path, Path, Path | None]] = []
+
+    for orig_parts, source in written.values():
+        if _excluded(orig_parts):
+            continue
+        if _has_symlink_prefix(pack_dir, orig_parts):
+            raise LaunchDirError(
+                f"Cannot write '{'/'.join(orig_parts)}' through a symbolic link."
+            )
+        target = pack_dir.joinpath(*orig_parts)
+        try:
+            target.resolve().relative_to(pack_dir.resolve())
+        except ValueError:
+            warnings.append(f"Skipped unsafe path: {'/'.join(orig_parts)}")
+            continue
+        if source.suffix.lower() == ".jar" and not zipfile.is_zipfile(source):
+            warnings.append(f"Skipped invalid JAR archive: {source.name}")
+            continue
+
+        existing_target = _resolve_case_insensitive(pack_dir, orig_parts)
+        if existing_target is not None:
+            if existing_target.is_symlink() or existing_target.is_dir():
+                raise LaunchDirError(
+                    f"Cannot overwrite '{'/'.join(orig_parts)}' because a directory or symbolic link exists at that path."
+                )
+            if existing_target.is_file():
                 conflicts.append("/".join(orig_parts))
+                replaced_bytes += existing_target.stat().st_size
 
-        if conflicts and not replace_files:
-            raise LaunchDirFileConflicts(sorted(conflicts))
+        incoming_bytes += source.stat().st_size
+        validated_uploads.append((source, target, existing_target))
 
-        added_count = 0
-        for parts, source in written.values():
-            if _excluded(parts):
-                continue
-            target = pack_dir.joinpath(*parts)
-            try:
-                target.resolve().relative_to(pack_dir.resolve())
-            except ValueError:
-                warnings.append(f"Skipped unsafe path: {'/'.join(parts)}")
-                continue
-            if source.suffix.lower() == ".jar" and not zipfile.is_zipfile(source):
-                warnings.append(f"Skipped invalid JAR archive: {source.name}")
-                continue
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, target)
-            added_count += 1
+    if conflicts and not replace_files:
+        raise LaunchDirFileConflicts(sorted(conflicts))
 
-        file_count, total_bytes, folders, files = _actual_launch_dir_stats(pack_dir)
-        if total_bytes > MAX_MODPACK_EXTRACTED_BYTES:
-            raise LaunchDirError("The directory exceeds the configured expanded-size limit.")
+    if current_bytes - replaced_bytes + incoming_bytes > MAX_MODPACK_EXTRACTED_BYTES:
+        raise LaunchDirError("The directory exceeds the configured expanded-size limit.")
 
-        manifest["file_count"] = file_count
-        manifest["bytes"] = total_bytes
-        manifest["folders"] = folders
-        manifest["files"] = files
-        manifest["updated"] = True
-        manifest["file_count_added"] = added_count
-        if warnings:
-            existing_warnings = manifest.get("warnings") or []
-            manifest["warnings"] = (existing_warnings + warnings)[:250]
+    added_count = 0
+    for source, target, existing_target in validated_uploads:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if existing_target is not None and existing_target != target:
+            existing_target.unlink(missing_ok=True)
+        shutil.copyfile(source, target)
+        added_count += 1
 
-        temporary = pack_dir / f".{MANIFEST_NAME}.tmp"
-        temporary.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-        os.replace(temporary, pack_dir / MANIFEST_NAME)
-        shutil.rmtree(session, ignore_errors=True)
-        return manifest
-    except Exception:
-        raise
+    file_count, total_bytes, folders, files = _actual_launch_dir_stats(pack_dir)
+    manifest["file_count"] = file_count
+    manifest["bytes"] = total_bytes
+    manifest["folders"] = folders
+    manifest["files"] = files
+    manifest["updated"] = True
+    manifest["file_count_added"] = added_count
+    if warnings:
+        existing_warnings = manifest.get("warnings") or []
+        manifest["warnings"] = (existing_warnings + warnings)[:250]
+
+    temporary = pack_dir / f".{MANIFEST_NAME}.tmp"
+    temporary.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, pack_dir / MANIFEST_NAME)
+    shutil.rmtree(session, ignore_errors=True)
+    return manifest
 
 
 def delete_launch_dir_file(raw_name: str, file_path: str) -> dict:

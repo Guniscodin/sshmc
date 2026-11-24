@@ -54,7 +54,7 @@ async def websocket_console(websocket: WebSocket, profile_id: str):
                 msg = await websocket.receive()
                 if msg.get("type") == "websocket.disconnect":
                     break
-        except (WebSocketDisconnect, asyncio.CancelledError):
+        except (WebSocketDisconnect, RuntimeError, asyncio.CancelledError):
             pass
         finally:
             disconnect_event.set()
@@ -74,6 +74,7 @@ async def websocket_console(websocket: WebSocket, profile_id: str):
         except asyncio.TimeoutError:
             return False
 
+    f = None
     try:
         # Minecraft writes its own structured log in its working directory. The
         # detached relay log remains a fallback for early boot/process errors.
@@ -84,57 +85,75 @@ async def websocket_console(websocket: WebSocket, profile_id: str):
             server_dir = PROFILES_DIR / profile_id / "server"
         server_log = server_dir / "logs" / "latest.log"
         relay_log = PROFILES_DIR / profile_id / "logs" / "latest.log"
-        log_path = server_log if server_log.is_file() else relay_log
 
+        def _pick_log():
+            if server_log.is_file() and not server_log.is_symlink():
+                return server_log
+            if relay_log.is_file() and not relay_log.is_symlink():
+                return relay_log
+            return None
+
+        log_path = _pick_log()
         attempts = 0
-        while not server_log.exists() and not relay_log.exists() and attempts < 30:
+        while log_path is None and attempts < 30:
             if await _interruptible_sleep(1.0):
                 return
             attempts += 1
-            log_path = server_log if server_log.is_file() else relay_log
+            log_path = _pick_log()
 
-        if not log_path.exists():
+        if log_path is None:
             try:
                 await websocket.send_text("--- Log file not found. Has the server started yet? ---")
                 await websocket.close()
-            except (WebSocketDisconnect, asyncio.CancelledError):
+            except (WebSocketDisconnect, RuntimeError, asyncio.CancelledError):
                 pass
             return
 
-        async with aiofiles.open(log_path, mode="rb") as f:
-            file_size = os.path.getsize(log_path)
-            initial_offset = max(0, file_size - 64 * 1024)
-            await f.seek(initial_offset)
-            if initial_offset:
-                await f.readline()  # Drop a partial first line from the bounded tail.
-            while not disconnect_event.is_set() and not _SHUTDOWN_EVENT.is_set():
-                line = await f.readline()
-                if line:
-                    try:
-                        await websocket.send_text(line.decode("utf-8", errors="replace").rstrip())
-                    except (WebSocketDisconnect, asyncio.CancelledError):
+        f = await aiofiles.open(log_path, mode="rb")
+        file_size = os.path.getsize(log_path)
+        initial_offset = max(0, file_size - 64 * 1024)
+        await f.seek(initial_offset)
+        if initial_offset:
+            await f.readline()  # Drop a partial first line from the bounded tail.
+        while not disconnect_event.is_set() and not _SHUTDOWN_EVENT.is_set():
+            line = await f.readline()
+            if line:
+                try:
+                    await websocket.send_text(line.decode("utf-8", errors="replace").rstrip())
+                except (WebSocketDisconnect, RuntimeError, asyncio.CancelledError):
+                    break
+            else:
+                try:
+                    if log_path.is_symlink():
                         break
-                else:
-                    try:
-                        path_stat = os.stat(log_path)
-                        handle_stat = os.fstat(f.fileno())
-                        if (path_stat.st_dev, path_stat.st_ino) != (handle_stat.st_dev, handle_stat.st_ino):
-                            await f.close()
-                            f = await aiofiles.open(log_path, mode="rb")
-                            continue
-                    except OSError:
-                        pass
-                    if await _interruptible_sleep(0.5):
-                        break
-    except (asyncio.CancelledError, WebSocketDisconnect):
+                    path_stat = os.stat(log_path)
+                    handle_stat = os.fstat(f.fileno())
+                    if (path_stat.st_dev, path_stat.st_ino) != (handle_stat.st_dev, handle_stat.st_ino):
+                        await f.close()
+                        f = await aiofiles.open(log_path, mode="rb")
+                        continue
+                    current_pos = await f.tell()
+                    if path_stat.st_size < current_pos:
+                        await f.seek(0)
+                        continue
+                except OSError:
+                    pass
+                if await _interruptible_sleep(0.5):
+                    break
+    except (asyncio.CancelledError, WebSocketDisconnect, RuntimeError):
         pass  # Server is shutting down or client disconnected; close silently.
     except Exception as e:
         logger.error(f"Console WebSocket error: {e}")
     finally:
+        if f is not None:
+            try:
+                await f.close()
+            except Exception:
+                pass
         disconnect_event.set()
         ACTIVE_WEBSOCKETS.discard(websocket)
         watch_task.cancel()
         try:
             await watch_task
-        except (asyncio.CancelledError, WebSocketDisconnect):
+        except (asyncio.CancelledError, WebSocketDisconnect, RuntimeError):
             pass

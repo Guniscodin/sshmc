@@ -16,8 +16,10 @@ from mcpanel.models import BuildType
 
 logger = logging.getLogger(__name__)
 
+
 class LoaderInstallError(Exception):
     pass
+
 
 # Generous ceiling for server installers/jars (~300 MB in practice).
 MAX_SERVER_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024
@@ -57,20 +59,31 @@ async def _download_file(url: str, dest: Path) -> None:
         if temp_path:
             temp_path.unlink(missing_ok=True)
 
+
 async def install_vanilla(mc_version: str, dest_dir: Path) -> None:
     """Fetches the Mojang manifest and downloads the vanilla server jar."""
     logger.info(f"Installing Vanilla {mc_version}")
     manifest_url = "https://launchermeta.mojang.com/mc/game/version_manifest_v2.json"
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(manifest_url)
-        resp.raise_for_status()
-        manifest = resp.json()
-        version_url = next((v["url"] for v in manifest["versions"] if v["id"] == mc_version), None)
-        if not version_url:
-            raise LoaderInstallError(f"Minecraft version {mc_version} not found in manifest.")
-        version_data = (await client.get(version_url)).json()
-        server_jar_url = version_data["downloads"]["server"]["url"]
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=httpx.Timeout(30.0, connect=15.0)) as client:
+            resp = await client.get(manifest_url)
+            resp.raise_for_status()
+            manifest = resp.json()
+            version_url = next((v["url"] for v in manifest["versions"] if v["id"] == mc_version), None)
+            if not version_url:
+                raise LoaderInstallError(f"Minecraft version {mc_version} not found in manifest.")
+            version_resp = await client.get(version_url)
+            version_resp.raise_for_status()
+            version_data = version_resp.json()
+            server_jar_url = version_data["downloads"]["server"]["url"]
+    except httpx.HTTPStatusError as e:
+        raise LoaderInstallError(f"Failed to fetch Mojang manifest for {mc_version} (HTTP {e.response.status_code})") from e
+    except httpx.RequestError as e:
+        raise LoaderInstallError(f"Network error fetching Mojang manifest for {mc_version}: {e}") from e
+    except (KeyError, TypeError, ValueError) as e:
+        raise LoaderInstallError(f"Mojang manifest did not provide a server JAR for {mc_version}.") from e
     await _download_file(server_jar_url, dest_dir / "server.jar")
+
 
 async def install_fabric(mc_version: str, loader_version: str, dest_dir: Path) -> None:
     """Fetches the Fabric server launcher."""
@@ -80,6 +93,7 @@ async def install_fabric(mc_version: str, loader_version: str, dest_dir: Path) -
     # the current stable installer, so profiles only need to select a loader.
     url = f"https://meta.fabricmc.net/v2/versions/loader/{mc_version}/{loader_version}/stable/server/jar"
     await _download_file(url, dest_dir / "server.jar")
+
 
 def _run_forge_installer(installer_path: Path, dest_dir: Path, build: BuildType, java_path: str) -> None:
     """Runs the Forge/NeoForge installer and injects the custom Java path into run.sh."""
@@ -100,7 +114,7 @@ def _run_forge_installer(installer_path: Path, dest_dir: Path, build: BuildType,
             raise LoaderInstallError("Installer finished but run.sh was not generated.")
 
         run_sh_path = dest_dir / "run.sh"
-        content = run_sh_path.read_text()
+        content = run_sh_path.read_text(encoding="utf-8")
 
         # Rewrite the java invocation line for user-supplied Java paths.
         # A best-effort match; anything unrecognized leaves run.sh untouched
@@ -112,13 +126,13 @@ def _run_forge_installer(installer_path: Path, dest_dir: Path, build: BuildType,
             if java_match:
                 indent, rest = java_match.groups()
                 content = content[:java_match.start()] + f"{indent}exec {shlex.quote(java_path)}{rest}" + content[java_match.end():]
-                run_sh_path.write_text(content)
+                run_sh_path.write_text(content, encoding="utf-8")
                 logger.info("Configured run.sh to use java at: %s", java_path)
             else:
                 logger.warning(
                     "run.sh has no recognized 'java @...' line; leaving the default java in place (custom Java path ignored)."
                 )
-        
+
     except subprocess.TimeoutExpired as e:
         logger.error(f"{build.value} installer timed out after 600 seconds.")
         raise LoaderInstallError(f"{build.value} installer timed out.") from e
@@ -127,11 +141,15 @@ def _run_forge_installer(installer_path: Path, dest_dir: Path, build: BuildType,
         logger.error(f"Stdout: {e.stdout}")
         logger.error(f"Stderr: {e.stderr}")
         raise LoaderInstallError(f"{build.value} installer failed.") from e
+    except OSError as e:
+        logger.error(f"Could not launch {build.value} installer using '{java_path}': {e}")
+        raise LoaderInstallError(f"Could not run {build.value} installer using '{java_path}': {e}") from e
+
 
 async def install_forge_family(build: BuildType, mc_version: str, loader_version: str, dest_dir: Path, java_path: str) -> None:
     """Handles Forge and NeoForge installation with exact version numbers."""
     logger.info(f"Installing {build.value} {mc_version} (Loader: {loader_version})")
-    
+
     if build == BuildType.FORGE:
         version_str = f"{mc_version}-{loader_version}"
         url = f"https://maven.minecraftforge.net/net/minecraftforge/forge/{version_str}/forge-{version_str}-installer.jar"
@@ -151,6 +169,7 @@ async def install_forge_family(build: BuildType, mc_version: str, loader_version
         installer_path.unlink(missing_ok=True)
         (dest_dir / "installer.jar.log").unlink(missing_ok=True)
 
+
 async def install_server(build: BuildType, mc_version: str, loader_version: str, dest_dir: Path, java_path: str) -> None:
     """Main entry point to install the correct server jar based on build type."""
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -164,12 +183,13 @@ async def install_server(build: BuildType, mc_version: str, loader_version: str,
         raise LoaderInstallError(f"Unsupported build type: {build}")
     logger.info(f"Successfully installed {build.value} server in {dest_dir}")
 
+
 async def get_loader_versions(build: BuildType, mc_version: str) -> list[str]:
     """Fetches available loader versions for the frontend dropdown."""
     if build == BuildType.VANILLA:
         return ["latest"]
-        
-    async with httpx.AsyncClient() as client:
+
+    async with httpx.AsyncClient(follow_redirects=True, timeout=httpx.Timeout(30.0, connect=15.0)) as client:
         try:
             if build == BuildType.FABRIC:
                 url = f"https://meta.fabricmc.net/v2/versions/loader/{mc_version}"
@@ -181,18 +201,20 @@ async def get_loader_versions(build: BuildType, mc_version: str) -> list[str]:
                     all_versions = [v["loader"]["version"] for v in data]
                     logger.debug("Fetched %s Fabric versions for %s", len(all_versions), mc_version)
                     return all_versions
-                    
+
             elif build == BuildType.NEOFORGE:
                 if mc_version == "1.20.1":
                     url = "https://maven.neoforged.net/api/maven/versions/releases/net/neoforged/forge"
                     prefix = f"{mc_version}-"
                 else:
                     parts = mc_version.split('.')
+                    if len(parts) < 2:
+                        raise LoaderInstallError(f"Invalid Minecraft version for NeoForge lookup: {mc_version}")
                     minor = parts[1]
                     patch = parts[2] if len(parts) > 2 else "0"
                     prefix = f"{minor}.{patch}."
                     url = "https://maven.neoforged.net/api/maven/versions/releases/net/neoforged/neoforge"
-                    
+
                 resp = await client.get(url)
                 resp.raise_for_status()
                 if resp.status_code == 200:
@@ -200,7 +222,7 @@ async def get_loader_versions(build: BuildType, mc_version: str) -> list[str]:
                     if mc_version == "1.20.1":
                         return [v.replace(prefix, "") for v in data["versions"] if v.startswith(prefix)][::-1]
                     return [v for v in data["versions"] if v.startswith(prefix)][::-1]
-                        
+
             elif build == BuildType.FORGE:
                 url = "https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml"
                 resp = await client.get(url)
@@ -209,11 +231,11 @@ async def get_loader_versions(build: BuildType, mc_version: str) -> list[str]:
                     root = ET.fromstring(resp.text)
                     versions = []
                     for version in root.findall(".//version"):
-                        if version.text.startswith(f"{mc_version}-"):
+                        if version.text and version.text.startswith(f"{mc_version}-"):
                             versions.append(version.text.replace(f"{mc_version}-", ""))
                     return versions[::-1]
         except Exception as e:
             logger.error(f"Failed to fetch loader versions: {e}")
             raise LoaderInstallError(f"Could not fetch {build.value} loader versions for {mc_version}: {e}") from e
-            
+
     return []

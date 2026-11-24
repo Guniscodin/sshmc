@@ -68,9 +68,16 @@ def _write_atomic(path: Path, payload: str) -> None:
         temp.unlink(missing_ok=True)
 
 
+def _sanitize_line_part(value: str) -> str:
+    return str(value).replace("\r", "").replace("\n", "")
+
+
 def write_properties(path: Path, properties: dict[str, str]) -> None:
     """Rewrite a .properties file from a dict, one key per line."""
-    payload = "".join(f"{key}={value}\n" for key, value in properties.items())
+    payload = "".join(
+        f"{_sanitize_line_part(key)}={_sanitize_line_part(value)}\n"
+        for key, value in properties.items()
+    )
     _write_atomic(path, payload)
 
 

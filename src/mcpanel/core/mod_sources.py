@@ -40,7 +40,13 @@ class SourcePreflightError(Exception):
         super().__init__(message)
 
 
-async def _manifest_mod_candidates(profile_id: str, server_dir: Path, profile_root_path: Path, warnings: list[str]) -> tuple[list[dict], dict | None, dict]:
+async def _manifest_mod_candidates(
+    profile_id: str,
+    server_dir: Path,
+    profile_root_path: Path,
+    warnings: list[str],
+    pending_cache_removals: list[Path] | None = None,
+) -> tuple[list[dict], dict | None, dict]:
     path = manifest_path(profile_id)
     if path.is_symlink():
         raise ValueError("The Modrinth manifest cannot be a symbolic link.")
@@ -60,14 +66,17 @@ async def _manifest_mod_candidates(profile_id: str, server_dir: Path, profile_ro
             continue
         if item.get("pending_removal"):
             # Mod was removed while the server was running; skip it during staging
-            # and clean up its cached file if not used by any other mod
+            # and clean up its cached file once the transaction commits.
             cache_name = item.get("cache_filename")
             cache_file = cache / cache_name if isinstance(cache_name, str) and Path(cache_name).name == cache_name else (cache / f"{item.get('sha256')}.jar" if item.get("sha256") else None)
             if cache_file and cache_file.is_file() and not cache_file.is_symlink():
-                try:
-                    cache_file.unlink(missing_ok=True)
-                except OSError:
-                    pass
+                if pending_cache_removals is not None:
+                    pending_cache_removals.append(cache_file)
+                else:
+                    try:
+                        cache_file.unlink(missing_ok=True)
+                    except OSError:
+                        pass
             changed = True
             continue
         digest = item.get("sha256")
@@ -280,8 +289,9 @@ async def build_profile_sources(profile, repo_dir: Path, server_dir: Path, skip_
             await asyncio.to_thread(copy_source_tree, base_path, "mods", base_owner, base_candidates)
         else:
             base_candidates = []
+        pending_cache_removals: list[Path] = []
         manifest_mods, reconciled_manifest, manifest_data = await _manifest_mod_candidates(
-            profile.id, server_dir, profile_root_path, warnings
+            profile.id, server_dir, profile_root_path, warnings, pending_cache_removals
         )
         legacy_mods = await asyncio.to_thread(mod_legacy.legacy_candidates, server_dir, ownership, manifest_data)
         link_candidates = await mod_downloads.install_configured_mods(
@@ -331,7 +341,7 @@ async def build_profile_sources(profile, repo_dir: Path, server_dir: Path, skip_
                 folder, relative = item["relative"].split("/", 1)
                 copied = await asyncio.to_thread(copy_candidate, {**item, "relative": relative}, new_root / folder, profile_root_path)
                 ownership_files.append(copied)
-                   # After staging succeeds, purge pending_removal entries so they are gone
+            # After staging succeeds, purge pending_removal entries so they are gone
             # from the manifest on the next read (they were already excluded from staging).
             if reconciled_manifest is not None:
                 reconciled_manifest["mods"] = [
@@ -352,5 +362,18 @@ async def build_profile_sources(profile, repo_dir: Path, server_dir: Path, skip_
             if not (stage_root / "RECOVERY_FAILED").exists():
                 await asyncio.to_thread(shutil.rmtree, stage_root, True)
             raise
+        if pending_cache_removals:
+            cache_dir = modrinth_cache_dir(profile.id)
+            active_cache_files = {
+                (cache_dir / item["cache_filename"]).resolve()
+                for item in (reconciled_manifest or manifest_data).get("mods", [])
+                if isinstance(item, dict) and isinstance(item.get("cache_filename"), str)
+            }
+            for cache_file in pending_cache_removals:
+                try:
+                    if cache_file.resolve() not in active_cache_files:
+                        cache_file.unlink(missing_ok=True)
+                except OSError:
+                    pass
         await asyncio.to_thread(shutil.rmtree, stage_root, True)
         return {"warnings": list(dict.fromkeys(warnings)), "mods": mod_candidates}

@@ -11,7 +11,7 @@ class ModDownload(BaseModel):
     """A direct HTTPS download for an additional server mod JAR."""
     url: str = Field(..., min_length=8, max_length=2048)
     filename: Optional[str] = Field(default=None, max_length=180)
-    sha256: Optional[str] = Field(default=None, min_length=64, max_length=64)
+    sha256: Optional[str] = Field(default=None, max_length=128)
     skip_on_start: bool = False
 
     @field_validator("url")
@@ -47,12 +47,14 @@ class ModDownload(BaseModel):
             raise ValueError("Mod filenames must end in .jar.")
         return value
 
+
 class BuildType(str, Enum):
     """Strict enum for supported server types."""
     VANILLA = "vanilla"
     FABRIC = "fabric"
     FORGE = "forge"
     NEOFORGE = "neoforge"
+
 
 class ProfileStatus(str, Enum):
     """Strict enum for the runtime state of a server."""
@@ -62,12 +64,13 @@ class ProfileStatus(str, Enum):
     STOPPING = "stopping"
     CRASHED = "crashed"
 
+
 class ProfileBase(BaseModel):
     """Base fields shared between creation and reading from DB."""
     name: str = Field(..., min_length=1, max_length=50)
     build: BuildType
-    mc_version: str = Field(..., min_length=1) 
-    loader_version: str = Field(default="latest") 
+    mc_version: str = Field(..., min_length=1)
+    loader_version: str = Field(default="latest")
     git_url: Optional[str] = Field(default=None, description="Optional URL to mods/configs repo")
     modpack_name: Optional[str] = Field(default=None, description="Optional shared mod pack name")
     launch_dir: Optional[str] = Field(default=None, description="Optional imported directory the server launches from")
@@ -91,7 +94,7 @@ class ProfileBase(BaseModel):
         le=100,
         description="Maximum number of backups kept per profile (oldest are pruned automatically)",
     )
-    
+
     # Server settings
     ram_mb: int = Field(default=2048, ge=512, le=32768, description="RAM limit in MB")
     port: int = Field(default=25565, ge=1024, le=65535)
@@ -106,7 +109,7 @@ class ProfileBase(BaseModel):
         if any(char in value for char in ("\x00", "\r", "\n")):
             raise ValueError("Newlines and null characters are not allowed.")
         return value
-    
+
     @field_validator("description")
     @classmethod
     def validate_description(cls, value: str) -> str:
@@ -118,10 +121,15 @@ class ProfileBase(BaseModel):
         """Basic validation to ensure it looks like a git URL if provided."""
         if v is not None and v != "":
             v = v.strip()
+            if not v:
+                return None
+            if any(char.isspace() or ord(char) < 32 for char in v):
+                raise ValueError("git_url cannot contain whitespace or control characters")
             if not (v.startswith("http://") or v.startswith("https://") or v.startswith("git@")):
                 raise ValueError("git_url must be a valid HTTP(S) or SSH git URL")
             return v
         return None
+
 
 class Profile(ProfileBase):
     """Full profile model as stored in the database."""
@@ -130,18 +138,19 @@ class Profile(ProfileBase):
     rcon_password: str = Field(default_factory=lambda: uuid4().hex[:12])
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
+
 class RuntimeState(BaseModel):
     """
-    Tracks the live state of a profile. 
+    Tracks the live state of a profile.
     Used to reconstruct state if the panel restarts.
     """
     profile_id: str
     status: ProfileStatus = ProfileStatus.STOPPED
-    
+
     # Process tracking
     pid: Optional[int] = None
-    pid_create_time: Optional[float] = None 
-    
+    pid_create_time: Optional[float] = None
+
     # Metadata
     started_at: Optional[datetime] = None
     current_commit: Optional[str] = None
